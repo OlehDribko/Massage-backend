@@ -1,0 +1,17 @@
+import { z } from "zod";
+
+export const createSubscriberSchema = z.object({
+  name: z.string().min(3).max(40),
+  email: z.string().email(),
+  password: z.string().min(8).max(25),
+});
+
+export const createUserSchema = z.object({
+  name: z.string().min(3).max(40),
+  email: z.string().email(),
+  password: z.string().min(8).max(25),
+  marketingConsent: z.boolean(),
+});
+
+export type CreateSubscriberRequest = z.infer<typeof createSubscriberSchema>;
+export type CreateUserRequest = z.infer<typeof createUserSchema>;

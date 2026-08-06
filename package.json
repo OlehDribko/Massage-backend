@@ -1,0 +1,44 @@
+{
+  "name": "massage-backend",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "tsx watch src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OlehDribko/Massage-backend.git"
+  },
+  "keywords": [],
+  "author": "Oleh_Dribko <oleg.dr.ua1@gmail.com>",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/OlehDribko/Massage-backend/issues"
+  },
+  "homepage": "https://github.com/OlehDribko/Massage-backend#readme",
+  "description": "",
+  "dependencies": {
+    "@prisma/client": "^7.9.1",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.1.2",
+    "prisma": "^7.9.1",
+    "tsx": "^4.23.1",
+    "typescript": "^6.0.3"
+  },
+  "allowScripts": {
+    "@prisma/engines@7.9.1": true,
+    "esbuild@0.28.1": true,
+    "fsevents@2.3.3": true,
+    "prisma@7.9.1": true
+  }
+}
