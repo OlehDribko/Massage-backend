@@ -10,7 +10,7 @@ export const validateCreateUser = (
 
   if (!result.success) {
     const issues = result.error.issues;
-    console.log(issues);
+
     const errorMessages = issues.map((issue) => {
       return { field: issue.path, message: issue.message };
     });

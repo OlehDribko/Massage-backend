@@ -12,4 +12,5 @@ app.post("/api", (req, res, next) => {
 });
 app.use("/api/users", userRoute);
 app.use(errorHandler);
+
 export default app;
