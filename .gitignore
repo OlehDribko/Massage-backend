@@ -1,5 +1,12 @@
-node_modules
+node_modules/
 dist/
 .env
 .env.*
 .DS_Store
+
+# локальні/AI/IDE 
+.agents/
+.claude/
+.windsurf/
+.neon
+skills-lock.json
