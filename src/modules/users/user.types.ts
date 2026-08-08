@@ -10,3 +10,10 @@ export interface User {
   createdAt: Date;
   updatedAt: Date;
 }
+export type CreateUserData = {
+  name: string;
+  email: string;
+  passwordHash: string;
+  status: UserStatus;
+  marketingConsent: boolean;
+};
