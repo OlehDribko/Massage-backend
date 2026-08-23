@@ -11,6 +11,7 @@ export const registerUser = async (input: CreateUserRequest): Promise<User> => {
     throw new AppError(409, "User with this email already exists");
   }
   const passwordHash = await hashPassword(input.password);
+
   const userData = {
     name: input.name,
     email: input.email,
@@ -18,5 +19,27 @@ export const registerUser = async (input: CreateUserRequest): Promise<User> => {
     status: UserStatus.registered,
     marketingConsent: input.marketingConsent,
   };
+
   return userRepository.createUser(userData);
+};
+
+export const subscribedToMarketingService = async (
+  email: string,
+): Promise<{ user: User; created: boolean }> => {
+  const user = await userRepository.findUserByEmail(email);
+
+  if (user?.marketingConsent === true) {
+    throw new AppError(409, "User is already subscribed to marketing");
+  }
+
+  if (!user) {
+    const createdUser = await userRepository.createSubscriber({
+      email,
+      status: UserStatus.subscribed,
+      marketingConsent: true,
+    });
+    return { user: createdUser, created: true };
+  }
+  const userUpdated = await userRepository.updateMarketingConsent(email, true);
+  return { user: userUpdated, created: false };
 };

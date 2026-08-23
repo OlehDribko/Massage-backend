@@ -17,3 +17,9 @@ export type CreateUserData = {
   status: UserStatus;
   marketingConsent: boolean;
 };
+
+export type CreateSubscriberData = {
+  email: string;
+  marketingConsent: boolean;
+  status: UserStatus;
+};
