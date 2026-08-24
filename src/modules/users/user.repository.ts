@@ -1,6 +1,6 @@
-import type { User } from "@prisma/client";
 import { prisma } from "../../shared/database/prisma.js";
 
+import type { User } from "@prisma/client";
 import type { CreateSubscriberData } from "./user.types.js";
 import type { CreateUserData } from "./user.types.js";
 
