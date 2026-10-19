@@ -35,6 +35,8 @@ const SSLMODE_ALLOWED: Record<DatabaseSslMode, readonly string[]> = {
 
 const CHANNEL_BINDING_ALLOWED = ["prefer", "disable"];
 
+const SUPPORTED_PARAMETERS = ["sslmode", "channel_binding"];
+
 const decode = (value: string): string | undefined => {
   try {
     return decodeURIComponent(value);
@@ -43,11 +45,23 @@ const decode = (value: string): string | undefined => {
   }
 };
 
-// Error messages name the problem, never the URL or its parts.
+// Error messages are fixed strings naming only predefined fields and rules.
+// They never include input fragments: with unencoded "@", "?" or "#" in a
+// password, any "part" of the URL (host, parameter name, fragment) may in fact
+// be a piece of the secret.
 export const parseDatabaseUrl = (
   url: string,
   sslMode: DatabaseSslMode,
 ): DatabaseUrlResult => {
+  // "#" is never valid in a connection URL (it starts a fragment, which would
+  // otherwise be dropped silently); in credentials it must be encoded as %23.
+  if (url.includes("#")) {
+    return {
+      ok: false,
+      error: 'must not contain "#" (percent-encode it as %23 in credentials)',
+    };
+  }
+
   if (!URL.canParse(url)) {
     return { ok: false, error: "is not a valid URL" };
   }
@@ -80,8 +94,20 @@ export const parseDatabaseUrl = (
   const seen = new Set<string>();
 
   for (const [name, value] of parsed.searchParams) {
+    if (!SUPPORTED_PARAMETERS.includes(name)) {
+      return {
+        ok: false,
+        error: `contains an unsupported query parameter (supported: ${SUPPORTED_PARAMETERS.join(", ")})`,
+      };
+    }
     if (seen.has(name)) {
-      return { ok: false, error: `parameter "${name}" is repeated` };
+      return {
+        ok: false,
+        error:
+          name === "sslmode"
+            ? 'parameter "sslmode" is repeated'
+            : 'parameter "channel_binding" is repeated',
+      };
     }
     seen.add(name);
 
@@ -89,7 +115,7 @@ export const parseDatabaseUrl = (
       if (!SSLMODE_ALLOWED[sslMode].includes(value)) {
         return {
           ok: false,
-          error: `parameter "sslmode" conflicts with DATABASE_SSL_MODE=${sslMode} (allowed: ${SSLMODE_ALLOWED[sslMode].join(", ")})`,
+          error: `parameter "sslmode" conflicts with the configured TLS mode ${sslMode} (allowed: ${SSLMODE_ALLOWED[sslMode].join(", ")})`,
         };
       }
       continue;
@@ -104,10 +130,7 @@ export const parseDatabaseUrl = (
         };
       }
       preferChannelBinding = value === "prefer" && sslMode === "verify-full";
-      continue;
     }
-
-    return { ok: false, error: `parameter "${name}" is not supported` };
   }
 
   return {

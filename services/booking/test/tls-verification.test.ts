@@ -15,8 +15,13 @@ import { killRunningChildren, startTsProcess } from "./helpers/child-process.js"
 
 const SSL_REQUEST_CODE = 80877103;
 
+// These tests require the `openssl` CLI. Without it they fail (not skip), so a
+// missing tool never looks like a passed TLS check.
 const run = (args: string[], cwd: string) => {
   const result = spawnSync("openssl", args, { cwd, encoding: "utf8" });
+  if (result.error !== undefined) {
+    throw new Error(`openssl is required for TLS verification tests: ${result.error.message}`);
+  }
   if (result.status !== 0) {
     throw new Error(`openssl ${args[0] ?? ""} failed: ${result.stderr}`);
   }

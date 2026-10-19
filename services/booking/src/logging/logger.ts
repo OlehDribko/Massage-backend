@@ -38,12 +38,13 @@ export type SafeErrorLog = {
   stack?: string;
 };
 
-const SAFE_CODE = /^[A-Z][A-Z0-9_]{0,39}$/;
+// Node/driver codes (EADDRINUSE, P2002) and PostgreSQL SQLSTATE (42501).
+const SAFE_CODE = /^(?:[A-Z][A-Z0-9_]{0,39}|[0-9A-Z]{5})$/;
 
 /**
  * Describes an error for logs without its message: provider and driver errors
  * (Brevo, Prisma, pg) may embed connection strings, emails or keys in messages.
- * Keeps the class name, a short machine code (e.g. EADDRINUSE, P2002) and
+ * Keeps the class name, a short machine code (e.g. EADDRINUSE, P2002, SQLSTATE) and
  * stack frames without the first (message) line.
  */
 export const describeError = (error: unknown): SafeErrorLog => {

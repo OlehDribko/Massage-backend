@@ -24,8 +24,9 @@ const running = new Set<ChildProcess>();
 export const startTsProcess = (
   relativeFile: string,
   env: Record<string, string>,
+  args: string[] = [],
 ): RunningChild => {
-  const child = spawn(process.execPath, ["--import", "tsx", relativeFile], {
+  const child = spawn(process.execPath, ["--import", "tsx", relativeFile, ...args], {
     cwd: bookingDir,
     env: { PATH: process.env.PATH ?? "", ...env },
     stdio: ["ignore", "pipe", "pipe"],

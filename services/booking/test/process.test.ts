@@ -102,6 +102,22 @@ describe("entry point (src/server.ts)", () => {
     expectNoSentinels(child.output());
   });
 
+  it.each([
+    ["unencoded @ and ?", "postgresql://app:p@LEAKSECRET1?LEAKSECRET2@db.example.invalid/booking"],
+    ["fragment", "postgresql://app:pw@db.example.invalid/booking#LEAKSECRET1"],
+    ["broken percent-encoding", "postgresql://app:LEAKSECRET1%zz@db.example.invalid/booking"],
+  ])("rejects a malformed DATABASE_URL (%s) without printing any part of it", async (_label, url) => {
+    const child = startTsProcess("src/server.ts", { ...baseEnv, DATABASE_URL: url });
+
+    const exit = await child.exited;
+
+    expect(exit.code).toBe(1);
+    expect(messages(child)).toContain("invalid configuration");
+    // output() = stdout + stderr of the process.
+    expect(child.output()).not.toContain("LEAKSECRET");
+    expect(child.output()).not.toContain("db.example.invalid");
+  });
+
   it("requires legacy settings when ENABLE_LEGACY_USER_ROUTES=true without printing secrets", async () => {
     const child = startTsProcess("src/server.ts", {
       ...baseEnv,

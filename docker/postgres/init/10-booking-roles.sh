@@ -8,7 +8,8 @@
 # Roles:
 #   $POSTGRES_USER    – admin/superuser, used only for this initialisation
 #   booking_migrator  – owns the tables it creates; runs `prisma migrate deploy`
-#   booking_app       – runtime role: DML only, no CREATE/ALTER/DROP/TRUNCATE
+#   booking_app       – runtime role: DML on business tables (granted by the
+#                       migration task), no CREATE/ALTER/DROP/TRUNCATE
 #
 # The current tables live in the public schema (temporary, until the planned
 # move to a dedicated `booking` schema). No schemas of future services here.
@@ -37,13 +38,7 @@ REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT USAGE, CREATE ON SCHEMA public TO booking_migrator;
 GRANT USAGE ON SCHEMA public TO booking_app;
 
--- Future tables/sequences created by the migrator: DML for the runtime role.
-ALTER DEFAULT PRIVILEGES FOR ROLE booking_migrator IN SCHEMA public
-  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO booking_app;
-ALTER DEFAULT PRIVILEGES FOR ROLE booking_migrator IN SCHEMA public
-  GRANT USAGE, SELECT ON SEQUENCES TO booking_app;
-
--- Existing objects (none on a fresh volume; kept for completeness).
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO booking_app;
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO booking_app;
+-- No default privileges for the runtime role (closed by default). The
+-- migration task (services/booking/src/migrate) grants DML on business tables
+-- only after a successful `prisma migrate deploy`, never on _prisma_migrations.
 SQL

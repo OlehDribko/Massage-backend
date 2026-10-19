@@ -2,52 +2,20 @@ import pg from "pg";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../../generated/prisma/client.js";
 import { describeError, type Logger } from "../../logging/logger.js";
-import { parseDatabaseUrl, type DatabaseSslMode } from "./database-url.js";
+import { buildPoolConfig, type PoolOptions } from "./pool-config.js";
 
-export type { DatabaseSslMode };
-
-export type DatabaseOptions = {
-  url: string;
-  /**
-   * verify-full: TLS with certificate and hostname verification (default).
-   * disable: plain TCP, only for local databases (e.g. Docker Compose).
-   */
-  sslMode: DatabaseSslMode;
-  poolMax: number;
-  connectTimeoutMs: number;
-};
-
-/**
- * Builds the pg pool config. The URL is parsed by parseDatabaseUrl (allow-listed
- * parameters only) and never passed to pg as `connectionString`: pg would let
- * URL parameters override the explicit TLS settings. TLS comes only from sslMode.
- */
-export const buildPoolConfig = (options: DatabaseOptions): pg.PoolConfig => {
-  const parsed = parseDatabaseUrl(options.url, options.sslMode);
-  if (!parsed.ok) {
-    // Config validation rejects such URLs at start-up; this is a safety net.
-    throw new Error(`DATABASE_URL ${parsed.error}`);
-  }
-  const url = parsed.value;
-
-  return {
-    host: url.host,
-    port: url.port,
-    user: url.user,
-    password: url.password,
-    ...(url.database !== undefined ? { database: url.database } : {}),
-    // Node verifies the chain against its CA store and the hostname (SNI is
-    // set by pg for DNS names; IP addresses are checked against IP SANs).
-    ssl: options.sslMode === "verify-full" ? { rejectUnauthorized: true } : false,
-    enableChannelBinding: url.preferChannelBinding,
-    max: options.poolMax,
-    connectionTimeoutMillis: options.connectTimeoutMs,
-    idleTimeoutMillis: 30_000,
-  };
-};
+export type { DatabaseSslMode } from "./database-url.js";
+export { buildPoolConfig };
+export type DatabaseOptions = PoolOptions;
 
 export type Database = {
   prisma: PrismaClient;
+  /**
+   * Lightweight availability check (`SELECT 1`) through the shared pool with
+   * its own driver-level timeout. On timeout pg fails the query and the pool
+   * destroys that connection, so the next check opens a fresh one.
+   */
+  ping: (timeoutMs: number) => Promise<void>;
   /** Disconnects Prisma and ends the pool. Safe to call more than once. */
   close: () => Promise<void>;
 };
@@ -73,15 +41,27 @@ export const createDatabase = (options: DatabaseOptions, logger: Logger): Databa
     }),
   });
 
+  const ping = async (timeoutMs: number): Promise<void> => {
+    // pg 8.x honours a per-query `query_timeout` (lib/client.js), but
+    // @types/pg's QueryConfig does not declare it; a non-literal object keeps
+    // the call type-safe without an assertion. Covered by readiness tests.
+    const readinessQuery = { text: "SELECT 1", query_timeout: timeoutMs };
+    await pool.query(readinessQuery);
+  };
+
   let closing: Promise<void> | undefined;
 
   const close = (): Promise<void> => {
     closing ??= (async () => {
-      await prisma.$disconnect();
-      await pool.end();
+      try {
+        await prisma.$disconnect();
+      } finally {
+        // The adapter does not own this pool; end it even if $disconnect fails.
+        await pool.end();
+      }
     })();
     return closing;
   };
 
-  return { prisma, close };
+  return { prisma, ping, close };
 };

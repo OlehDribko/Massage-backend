@@ -44,7 +44,8 @@ COPY services/booking/package.json services/booking/
 # is otherwise affected.
 RUN --mount=type=cache,target=/root/.npm npm ci --omit=dev --omit=optional
 
-# --- one-off migration task: Prisma CLI + config + migrations, no application code
+# --- one-off migration task: Prisma CLI, migrations and the small migration
+# runner (privilege repair → migrate deploy → runtime grants); no API code.
 FROM base AS migrate
 RUN apt-get update \
     && apt-get install -y --no-install-recommends openssl \
@@ -56,12 +57,15 @@ COPY --from=deps /app/node_modules /app/node_modules
 COPY package.json package-lock.json ./
 COPY services/booking/package.json services/booking/prisma.config.ts services/booking/
 COPY services/booking/prisma services/booking/prisma
+COPY --from=build /app/services/booking/dist/migrate services/booking/dist/migrate
+COPY --from=build /app/services/booking/dist/logging services/booking/dist/logging
+COPY --from=build /app/services/booking/dist/shared/database/database-url.js /app/services/booking/dist/shared/database/pool-config.js services/booking/dist/shared/database/
 WORKDIR /app/services/booking
 USER node
-# Requires MIGRATION_DATABASE_URL at run time. After applying migrations the
-# migrator revokes the runtime role's access to _prisma_migrations (created by
-# the first deploy); both steps are idempotent. `exec` keeps signals direct.
-CMD ["sh", "-c", "node /app/node_modules/prisma/build/index.js migrate deploy && exec node /app/node_modules/prisma/build/index.js db execute --file prisma/privileges/after-migrate.sql"]
+# Requires MIGRATION_DATABASE_URL, MIGRATION_DATABASE_SSL_MODE (default
+# verify-full) and BOOKING_RUNTIME_ROLE at run time. Exit code is non-zero if
+# any step fails; Prisma's own exit code is preserved.
+CMD ["node", "dist/migrate/run-migrations.js"]
 
 # --- API runtime (default target)
 FROM base AS runtime

@@ -40,6 +40,7 @@ describe("loadConfig", () => {
       databaseSslMode: "verify-full",
       databasePoolMax: 5,
       databaseConnectTimeoutMs: 5_000,
+      databaseQueryTimeoutMs: 30_000,
       appVersion: undefined,
       corsOrigin: undefined,
       shutdownTimeoutMs: 10_000,
@@ -202,7 +203,7 @@ describe("loadConfig", () => {
     ] satisfies [string, Record<string, string>][]) {
       const errors = expectErrors({ DATABASE_URL: url, ...extra });
       expect(errors).toHaveLength(1);
-      expect(errors[0]).toMatch(/^DATABASE_URL: parameter "/);
+      expect(errors[0]).toMatch(/^DATABASE_URL: (parameter "(sslmode|channel_binding)"|contains an unsupported query parameter)/);
       expect(errors[0]).not.toContain("url-secret-value");
     }
   });

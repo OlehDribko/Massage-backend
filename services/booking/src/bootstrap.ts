@@ -21,8 +21,12 @@ export const createApplication = ({
   database: Database;
   isShuttingDown: () => boolean;
 }): Express => {
+  // (a) Promise.race in the probe bounds the HTTP response time;
+  // (b) query_timeout makes the driver fail the hung query itself;
+  // (c) the pool then destroys that connection, so the next probe starts a
+  //     fresh query instead of waiting on the old one.
   const probeReadiness = createReadinessProbe(
-    () => database.prisma.$queryRaw`SELECT 1`,
+    () => database.ping(config.readinessTimeoutMs),
     config.readinessTimeoutMs,
   );
 

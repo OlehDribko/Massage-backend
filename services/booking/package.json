@@ -14,8 +14,9 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "prisma": "DOTENV_CONFIG_PATH=${DOTENV_CONFIG_PATH:-../../.env} prisma",
-    "migrate:deploy": "npm run prisma -- migrate deploy && npm run prisma -- db execute --file prisma/privileges/after-migrate.sql"
+    "migrate:deploy": "tsx --env-file-if-exists=${DOTENV_CONFIG_PATH:-../../.env} src/migrate/run-migrations.ts"
   },
   "dependencies": {
     "@getbrevo/brevo": "^6.0.3",

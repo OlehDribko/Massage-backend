@@ -11,6 +11,7 @@ const options = (overrides: Partial<DatabaseOptions> = {}): DatabaseOptions => (
   sslMode: "verify-full",
   poolMax: 7,
   connectTimeoutMs: 4_000,
+  queryTimeoutMs: 9_000,
   ...overrides,
 });
 
@@ -27,6 +28,9 @@ describe("buildPoolConfig", () => {
       max: 7,
       connectionTimeoutMillis: 4_000,
       idleTimeoutMillis: 30_000,
+      query_timeout: 9_000,
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 10_000,
     });
   });
 
@@ -61,7 +65,7 @@ describe("buildPoolConfig", () => {
       buildPoolConfig(
         options({ url: "postgresql://u:SECRET@db.example.invalid/booking?sslmode=no-verify" }),
       ),
-    ).toThrow(/^DATABASE_URL parameter "sslmode" conflicts/);
+    ).toThrow(/^database URL parameter "sslmode" conflicts/);
   });
 });
 

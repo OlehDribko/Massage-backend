@@ -43,6 +43,8 @@ services:
     image: massage-booking-migrate:local
     environment:
       MIGRATION_DATABASE_URL: postgresql://booking_migrator:local-migrator-password@postgres:5432/booking
+      MIGRATION_DATABASE_SSL_MODE: disable
+      BOOKING_RUNTIME_ROLE: booking_app
     depends_on:
       postgres:
         condition: service_healthy

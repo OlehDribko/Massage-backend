@@ -78,6 +78,9 @@ const baseEnvSchema = z.object({
     )
     .default(5),
   DATABASE_CONNECT_TIMEOUT_MS: positiveMsSchema.default(5_000),
+  // Driver-level limit for business queries (Prisma). Readiness uses its own
+  // shorter per-query limit (READINESS_TIMEOUT_MS).
+  DATABASE_QUERY_TIMEOUT_MS: positiveMsSchema.default(30_000),
   APP_VERSION: optionalNonEmpty.pipe(
     z
       .string()
@@ -114,6 +117,7 @@ export type AppConfig = {
   databaseSslMode: "verify-full" | "disable";
   databasePoolMax: number;
   databaseConnectTimeoutMs: number;
+  databaseQueryTimeoutMs: number;
   appVersion: string | undefined;
   corsOrigin: string | undefined;
   shutdownTimeoutMs: number;
@@ -147,6 +151,7 @@ export const loadConfig = (env: EnvSource): ConfigResult => {
     DATABASE_SSL_MODE: trimmed(env.DATABASE_SSL_MODE),
     DATABASE_POOL_MAX: trimmed(env.DATABASE_POOL_MAX),
     DATABASE_CONNECT_TIMEOUT_MS: trimmed(env.DATABASE_CONNECT_TIMEOUT_MS),
+    DATABASE_QUERY_TIMEOUT_MS: trimmed(env.DATABASE_QUERY_TIMEOUT_MS),
     APP_VERSION: env.APP_VERSION,
     FRONTEND_URL: env.FRONTEND_URL,
     SHUTDOWN_TIMEOUT_MS: trimmed(env.SHUTDOWN_TIMEOUT_MS),
@@ -171,6 +176,7 @@ export const loadConfig = (env: EnvSource): ConfigResult => {
     databaseSslMode: base.data.DATABASE_SSL_MODE,
     databasePoolMax: base.data.DATABASE_POOL_MAX,
     databaseConnectTimeoutMs: base.data.DATABASE_CONNECT_TIMEOUT_MS,
+    databaseQueryTimeoutMs: base.data.DATABASE_QUERY_TIMEOUT_MS,
     appVersion: base.data.APP_VERSION,
     corsOrigin: base.data.FRONTEND_URL,
     shutdownTimeoutMs: base.data.SHUTDOWN_TIMEOUT_MS,

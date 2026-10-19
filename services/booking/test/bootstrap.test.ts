@@ -9,7 +9,7 @@ import { createCapturingLogger } from "./helpers/logs.js";
 // never reach a query (validation fails first or the route is absent).
 const DUMMY_DATABASE_URL = "postgresql://user:pass@127.0.0.1:5/booking";
 const database = createDatabase(
-  { url: DUMMY_DATABASE_URL, sslMode: "disable", poolMax: 1, connectTimeoutMs: 1_000 },
+  { url: DUMMY_DATABASE_URL, sslMode: "disable", poolMax: 1, connectTimeoutMs: 1_000, queryTimeoutMs: 1_000 },
   createCapturingLogger().logger,
 );
 

@@ -27,6 +27,7 @@ const main = () => {
       sslMode: config.databaseSslMode,
       poolMax: config.databasePoolMax,
       connectTimeoutMs: config.databaseConnectTimeoutMs,
+      queryTimeoutMs: config.databaseQueryTimeoutMs,
     },
     logger,
   );

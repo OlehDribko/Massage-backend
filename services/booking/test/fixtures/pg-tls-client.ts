@@ -17,6 +17,7 @@ const config = buildPoolConfig({
   sslMode: env.TEST_SSL_MODE,
   poolMax: 1,
   connectTimeoutMs: 5_000,
+  queryTimeoutMs: 5_000,
 });
 
 const client = new pg.Client(config);
