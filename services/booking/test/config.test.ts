@@ -37,6 +37,9 @@ describe("loadConfig", () => {
       port: 3001,
       logLevel: "info",
       databaseUrl: DB_URL,
+      databaseSslMode: "verify-full",
+      databasePoolMax: 5,
+      databaseConnectTimeoutMs: 5_000,
       appVersion: undefined,
       corsOrigin: undefined,
       shutdownTimeoutMs: 10_000,
@@ -153,5 +156,34 @@ describe("loadConfig", () => {
       "APP_VERSION",
       "SHUTDOWN_TIMEOUT_MS",
     ]);
+  });
+
+  it("keeps TLS verification on unless DATABASE_SSL_MODE=disable is explicit", () => {
+    expect(expectConfig({ DATABASE_URL: DB_URL }).databaseSslMode).toBe("verify-full");
+    expect(
+      expectConfig({ DATABASE_URL: DB_URL, DATABASE_SSL_MODE: "disable" }).databaseSslMode,
+    ).toBe("disable");
+
+    for (const value of ["require", "no-verify", "prefer", "off"]) {
+      const errors = expectErrors({ DATABASE_URL: DB_URL, DATABASE_SSL_MODE: value });
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toMatch(/^DATABASE_SSL_MODE:/);
+    }
+  });
+
+  it("validates pool size and connect timeout", () => {
+    const config = expectConfig({
+      DATABASE_URL: DB_URL,
+      DATABASE_POOL_MAX: "10",
+      DATABASE_CONNECT_TIMEOUT_MS: "3000",
+    });
+    expect(config.databasePoolMax).toBe(10);
+    expect(config.databaseConnectTimeoutMs).toBe(3000);
+
+    for (const value of ["0", "51", "x"]) {
+      expect(expectErrors({ DATABASE_URL: DB_URL, DATABASE_POOL_MAX: value })[0]).toMatch(
+        /^DATABASE_POOL_MAX:/,
+      );
+    }
   });
 });

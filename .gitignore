@@ -3,6 +3,8 @@
 node_modules/
 dist/
 *.tsbuildinfo
+# Prisma Client (generator output inside each service)
+services/*/src/generated/
 .env
 .env.*
 !.env.example

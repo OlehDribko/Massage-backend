@@ -1,4 +1,4 @@
-import type { Prisma, PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient } from "../../../generated/prisma/client.js";
 import type { CreateSubscriberData } from "../types/user.types.js";
 import type { CreateUserData } from "../types/user.types.js";
 import type { DbUser } from "../types/user.types.js";

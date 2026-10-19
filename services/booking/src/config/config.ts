@@ -67,6 +67,23 @@ const baseEnvSchema = z.object({
     )
     .default("info"),
   DATABASE_URL: postgresUrlSchema,
+  // TLS with certificate verification unless explicitly disabled (local only).
+  DATABASE_SSL_MODE: z
+    .enum(["verify-full", "disable"], { error: "must be verify-full or disable" })
+    .default("verify-full"),
+  DATABASE_POOL_MAX: z
+    .string()
+    .regex(/^\d{1,3}$/, "must be an integer between 1 and 50")
+    .transform(Number)
+    .pipe(
+      z
+        .number()
+        .int()
+        .min(1, "must be an integer between 1 and 50")
+        .max(50, "must be an integer between 1 and 50"),
+    )
+    .default(5),
+  DATABASE_CONNECT_TIMEOUT_MS: positiveMsSchema.default(5_000),
   APP_VERSION: optionalNonEmpty.pipe(
     z
       .string()
@@ -100,6 +117,9 @@ export type AppConfig = {
   port: number;
   logLevel: z.output<typeof baseEnvSchema>["LOG_LEVEL"];
   databaseUrl: string;
+  databaseSslMode: "verify-full" | "disable";
+  databasePoolMax: number;
+  databaseConnectTimeoutMs: number;
   appVersion: string | undefined;
   corsOrigin: string | undefined;
   shutdownTimeoutMs: number;
@@ -130,6 +150,9 @@ export const loadConfig = (env: EnvSource): ConfigResult => {
     PORT: trimmed(env.PORT),
     LOG_LEVEL: trimmed(env.LOG_LEVEL),
     DATABASE_URL: env.DATABASE_URL,
+    DATABASE_SSL_MODE: trimmed(env.DATABASE_SSL_MODE),
+    DATABASE_POOL_MAX: trimmed(env.DATABASE_POOL_MAX),
+    DATABASE_CONNECT_TIMEOUT_MS: trimmed(env.DATABASE_CONNECT_TIMEOUT_MS),
     APP_VERSION: env.APP_VERSION,
     FRONTEND_URL: env.FRONTEND_URL,
     SHUTDOWN_TIMEOUT_MS: trimmed(env.SHUTDOWN_TIMEOUT_MS),
@@ -146,6 +169,9 @@ export const loadConfig = (env: EnvSource): ConfigResult => {
     port: base.data.PORT,
     logLevel: base.data.LOG_LEVEL,
     databaseUrl: base.data.DATABASE_URL,
+    databaseSslMode: base.data.DATABASE_SSL_MODE,
+    databasePoolMax: base.data.DATABASE_POOL_MAX,
+    databaseConnectTimeoutMs: base.data.DATABASE_CONNECT_TIMEOUT_MS,
     appVersion: base.data.APP_VERSION,
     corsOrigin: base.data.FRONTEND_URL,
     shutdownTimeoutMs: base.data.SHUTDOWN_TIMEOUT_MS,

@@ -7,7 +7,7 @@ import type {
 } from "../tokens/action-token.service.js";
 import type { Logger } from "../../../logging/logger.js";
 
-import type { User } from "@prisma/client";
+import type { User } from "../../../generated/prisma/client.js";
 import type { SendTransactionalEmailType } from "../types/email.types.js";
 
 export type EmailServiceConfig = {

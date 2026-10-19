@@ -11,7 +11,7 @@ import type {
 import { hashPassword } from "../../../shared/security/password.js";
 import type { UserRepository } from "../repository/user.repository.js";
 import { AppError } from "../../../shared/errors/app-error.js";
-import { UserStatus } from "@prisma/client";
+import { UserStatus } from "../../../generated/prisma/client.js";
 import type { ActionTokenService } from "../../email/tokens/action-token.service.js";
 import type { EmailService } from "../../email/service/email.service.js";
 import { describeError, type Logger } from "../../../logging/logger.js";

@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@prisma/client";
+import type { Database } from "./shared/database/database.js";
 import type { Express } from "express";
 import { createApp } from "./app.js";
 import type { AppConfig } from "./config/config.js";
@@ -13,21 +13,21 @@ import { createLegacyUserRouter } from "./modules/users/legacy-user-routes.js";
 export const createApplication = ({
   config,
   logger,
-  prisma,
+  database,
   isShuttingDown,
 }: {
   config: AppConfig;
   logger: Logger;
-  prisma: PrismaClient;
+  database: Database;
   isShuttingDown: () => boolean;
 }): Express => {
   const probeReadiness = createReadinessProbe(
-    () => prisma.$queryRaw`SELECT 1`,
+    () => database.prisma.$queryRaw`SELECT 1`,
     config.readinessTimeoutMs,
   );
 
   const legacyUserRouter = config.legacyUserRoutes.enabled
-    ? createLegacyUserRouter({ prisma, config: config.legacyUserRoutes, logger })
+    ? createLegacyUserRouter({ prisma: database.prisma, config: config.legacyUserRoutes, logger })
     : undefined;
 
   return createApp({

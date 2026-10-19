@@ -12,11 +12,16 @@ Massage-backend/
   package-lock.json     # єдиний lock-файл
   eslint.config.mjs     # ESLint (typescript-eslint, type-aware)
   .env.example          # перелік змінних середовища (без значень секретів)
+  compose.yaml          # локальний стек: PostgreSQL + міграції + Booking API
+  .dockerignore
+  docker/postgres/init/ # створення локальних ролей БД (лише для нового volume)
   services/
     booking/            # @massage/booking
       src/              # код сервісу (server.ts — точка входу)
       test/             # Vitest-тести та test fixtures (не потрапляють у dist)
       prisma/           # schema.prisma, migrations/
+      src/generated/    # Prisma Client (prisma generate; не в Git)
+      Dockerfile        # цілі runtime (API) і migrate
       tsconfig.json         # typecheck/lint: src + test + конфіги
       tsconfig.build.json   # збірка лише src → dist
 ```
@@ -31,7 +36,7 @@ Node.js **24** (`engines: ^24.0.0`, `.nvmrc`).
 
 ```sh
 npm ci                        # з кореня репозиторію
-npm run prisma -- generate    # Prisma Client (потрібен DATABASE_URL у середовищі або .env)
+npm run prisma -- generate    # Prisma Client у services/booking/src/generated (БД не потрібна)
 ```
 
 ## Команди (з кореня)
@@ -57,7 +62,10 @@ npm run prisma -- generate    # Prisma Client (потрібен DATABASE_URL у 
 | `NODE_ENV` | `production` | `development` / `test` / `production` |
 | `PORT` | `3001` | Ціле число 1–65535; сервер слухає `0.0.0.0` |
 | `LOG_LEVEL` | `info` | Рівень pino |
-| `DATABASE_URL` | — (обов'язково) | `postgres://` або `postgresql://` |
+| `DATABASE_URL` | — (обов'язково) | `postgres://` або `postgresql://`; runtime-роль (лише DML) |
+| `DATABASE_SSL_MODE` | `verify-full` | TLS з перевіркою сертифіката; `disable` — лише для локальної БД. TLS-параметри в URL (`sslmode` тощо) ігноруються |
+| `DATABASE_POOL_MAX` | `5` | Розмір пулу `pg` (1–50), один пул на процес |
+| `DATABASE_CONNECT_TIMEOUT_MS` | `5000` | Таймаут встановлення з'єднання |
 | `APP_VERSION` | — | Повертається в `/health/ready` |
 | `FRONTEND_URL` | — | CORS origin; без нього CORS-заголовки не додаються |
 | `SHUTDOWN_TIMEOUT_MS` | `10000` | Граничний час graceful shutdown |
@@ -65,6 +73,8 @@ npm run prisma -- generate    # Prisma Client (потрібен DATABASE_URL у 
 | `ENABLE_LEGACY_USER_ROUTES` | `false` | Лише `true`/`false` (без урахування регістру); інші значення — помилка |
 
 Коли `ENABLE_LEGACY_USER_ROUTES=true`, додатково обов'язкові `BREVO_API_KEY`, `EMAIL_FROM_NAME`, `EMAIL_FROM_EMAIL`, `ACTION_TOKEN_SECRET` і `FRONTEND_URL`. Коли прапорець вимкнений, `/api/users/*` не підключаються, а Brevo-клієнт і сервіс токенів не створюються. Сам імпорт модулів не читає `process.env` і не вимагає секретів.
+
+**`DATABASE_URL` і `MIGRATION_DATABASE_URL`.** `DATABASE_URL` використовує лише застосунок, під runtime-роллю без DDL. `MIGRATION_DATABASE_URL` читає лише `prisma.config.ts` для `prisma migrate`, під роллю migrator. Якщо `MIGRATION_DATABASE_URL` не задано, datasource не налаштовується: `prisma generate` і `validate` працюють, а `migrate deploy` і `migrate status` завершуються помилкою. Fallback на `DATABASE_URL` чи фіктивний URL немає, тож реальний `DATABASE_URL` з `.env` випадково не стане цільовою БД для міграцій.
 
 **`.env`:**
 - `npm run dev` передає кореневий `.env` через Node-прапорець `--env-file-if-exists`;
@@ -100,7 +110,7 @@ npm run prisma -- generate    # Prisma Client (потрібен DATABASE_URL у 
 1. Процес позначається як такий, що завершується, і `/health/ready` починає повертати 503.
 2. Сервер перестає приймати нові з'єднання; активні запити завершуються; keep-alive з'єднання, що звільнилися, закриваються.
 3. Закривається Prisma-з'єднання; процес виходить з кодом `0`.
-4. Якщо пункт 2 не вклався в `SHUTDOWN_TIMEOUT_MS`, з'єднання закриваються примусово, ресурси звільняються, вихід з кодом `1`. Помилка під час закриття також дає код `1`.
+4. `SHUTDOWN_TIMEOUT_MS` — один дедлайн на пункти 2–3 разом, зокрема на закриття БД. Коли він минає, з'єднання закриваються примусово і процес виходить з кодом `1`, навіть якщо `server.close()` чи закриття пулу ще не завершилися. Ці операції не скасовуються, процес просто перестає їх чекати. Помилка під час закриття також дає код `1`.
 
 Повторний сигнал лише логується, процедура не запускається вдруге. Помилка запуску (наприклад, зайнятий порт) дає лог `failed to start HTTP server` і код виходу `1`.
 
@@ -118,6 +128,64 @@ npm run prisma -- generate    # Prisma Client (потрібен DATABASE_URL у 
 
 Відповіді валідації (`400 Validation failed`) і `AppError` не змінилися.
 
+## Локальний запуск через Docker Compose
+
+Стек складається з трьох сервісів:
+- `postgres` — офіційний образ, за замовчуванням `postgres:17-bookworm`, змінюється через `POSTGRES_IMAGE`. Версію Postgres у Neon ще не з'ясовано, після цього її треба узгодити;
+- `booking-migrate` — одноразовий `prisma migrate deploy`;
+- `booking-api` — скомпільований API.
+
+API стартує лише після того, як PostgreSQL пройшов health-check, а міграції завершилися успішно.
+
+Compose автоматично читає `.env` з кореня для підстановки змінних. `compose.yaml` не використовує змінних із секретами (лише `POSTGRES_IMAGE` і `BOOKING_API_PORT` з defaults), а `--env-file /dev/null` нижче вимикає це читання повністю.
+
+```sh
+# запуск (збирає образи; API на http://127.0.0.1:3001)
+docker compose --env-file /dev/null up --build -d
+
+# стан і логи
+docker compose --env-file /dev/null ps
+docker compose --env-file /dev/null logs -f booking-api
+docker compose --env-file /dev/null logs booking-migrate
+
+# повторно застосувати міграції (ідемпотентно: "No pending migrations")
+docker compose --env-file /dev/null run --rm booking-migrate
+
+# перезбірка після змін коду
+docker compose --env-file /dev/null build
+docker compose --env-file /dev/null up -d
+
+# зупинка; дані в volume зберігаються
+docker compose --env-file /dev/null down
+```
+
+Інший порт API: `BOOKING_API_PORT=3002 docker compose --env-file /dev/null up -d`. Порт PostgreSQL назовні не публікується; доступ до БД — через `docker compose --env-file /dev/null exec postgres psql -U booking_admin -d booking`.
+
+**Тестові локальні credentials** (лише для цього стеку, задані в `compose.yaml`):
+
+| Роль | Пароль | Хто використовує | Права |
+|---|---|---|---|
+| `booking_admin` | `local-admin-password` | Лише контейнер `postgres` (ініціалізація) | Суперкористувач |
+| `booking_migrator` | `local-migrator-password` | `booking-migrate` (`MIGRATION_DATABASE_URL`) | `CREATE` у `public`, власник таблиць |
+| `booking_app` | `local-app-password` | `booking-api` (`DATABASE_URL`) | `SELECT/INSERT/UPDATE/DELETE` на таблиці migrator, `USAGE/SELECT` на послідовності; без `CREATE`, `DROP`, `ALTER`, `TRUNCATE`, тимчасових таблиць |
+
+Права runtime-ролі на майбутні таблиці migrator видаються через `ALTER DEFAULT PRIVILEGES`.
+
+**Volume.** Дані зберігаються в named volume `massage-booking-local_booking-postgres-data`. Звичайне `docker compose down` його не видаляє. Init-скрипти з `docker/postgres/init/` офіційний образ виконує **лише для нового (порожнього) volume**, тож зміни ролей не застосуються до наявного. Щоб навмисно почати з чистої БД, видаліть volume явно (дані буде втрачено): `docker compose --env-file /dev/null down -v`.
+
+**Схема `public` тимчасова.** Поточні таблиці та міграції лишаються в `public`. Перехід на окрему схему `booking` — окреме завдання.
+
+**Відомі обмеження локальних ролей.** Default privileges поширюються й на службову таблицю `_prisma_migrations`, тож runtime-роль має на неї DML (не DDL). Для хмарних середовищ це варто прибрати окремо.
+
+### Docker-образ
+
+`services/booking/Dockerfile`, build context — корінь репозиторію:
+- `runtime` (default) — Node 24 bookworm-slim, `npm ci --omit=dev --omit=optional`, лише `dist` і production-залежності. Запускається від користувача `node` командою `node dist/server.js`; tsx немає.
+  - `--omit=optional` потрібен, бо `prisma` і `typescript` позначені як `devOptional` (необов'язкові peer-залежності `@prisma/client`) і без нього потрапили б у образ.
+- `migrate` — Prisma CLI, `prisma.config.ts`, `schema.prisma` і міграції, без коду застосунку. Команда: `prisma migrate deploy`.
+
+Збірка не потребує секретів і не звертається до БД: `prisma generate` виконується без `MIGRATION_DATABASE_URL`. Під час `npm ci` postinstall Prisma завантажує schema engine з CDN Prisma, тож для збірки потрібен доступ до мережі.
+
 ## Ще не налаштовано
 
-Docker, CI/CD, інфраструктура AWS, `trust proxy` для роботи за балансувальником, повне мапування помилок Prisma. Бізнес-функціонал користувачів буде перебудований (Firebase, Notifications).
+CI/CD, інфраструктура AWS, `trust proxy` для роботи за балансувальником, повне мапування помилок Prisma. Бізнес-функціонал користувачів буде перебудований (Firebase, Notifications).

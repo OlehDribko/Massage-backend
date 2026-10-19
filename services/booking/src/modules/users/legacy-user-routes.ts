@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@prisma/client";
+import type { PrismaClient } from "../../generated/prisma/client.js";
 import type { Router } from "express";
 import type { LegacyUserRoutesConfig } from "../../config/config.js";
 import type { Logger } from "../../logging/logger.js";

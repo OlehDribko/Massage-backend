@@ -2,7 +2,7 @@ import { createApplication } from "./bootstrap.js";
 import { loadConfig } from "./config/config.js";
 import { createShutdownState, runHttpServer } from "./lifecycle/http-server.js";
 import { createLogger } from "./logging/logger.js";
-import { createPrismaClient } from "./shared/database/prisma.js";
+import { createDatabase } from "./shared/database/database.js";
 
 // Production entry point. Reads only process.env; no .env file is loaded here
 // (the dev script passes the root .env via Node's --env-file-if-exists).
@@ -21,7 +21,15 @@ const main = () => {
 
   const { config } = loaded;
   const logger = createLogger({ level: config.logLevel, appVersion: config.appVersion });
-  const prisma = createPrismaClient(config.databaseUrl);
+  const database = createDatabase(
+    {
+      url: config.databaseUrl,
+      sslMode: config.databaseSslMode,
+      poolMax: config.databasePoolMax,
+      connectTimeoutMs: config.databaseConnectTimeoutMs,
+    },
+    logger,
+  );
   const shutdownState = createShutdownState();
 
   logger.info(
@@ -30,6 +38,8 @@ const main = () => {
       port: config.port,
       legacyUserRoutesEnabled: config.legacyUserRoutes.enabled,
       corsEnabled: config.corsOrigin !== undefined,
+      databaseSslMode: config.databaseSslMode,
+      databasePoolMax: config.databasePoolMax,
     },
     "starting booking service",
   );
@@ -37,7 +47,7 @@ const main = () => {
   const app = createApplication({
     config,
     logger,
-    prisma,
+    database,
     isShuttingDown: shutdownState.isShuttingDown,
   });
 
@@ -48,7 +58,7 @@ const main = () => {
     logger,
     shutdownState,
     shutdownTimeoutMs: config.shutdownTimeoutMs,
-    onClose: () => prisma.$disconnect(),
+    onClose: () => database.close(),
   });
 };
 

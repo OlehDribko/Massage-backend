@@ -40,7 +40,8 @@ const SHUTDOWN_SIGNALS = ["SIGTERM", "SIGINT"] satisfies NodeJS.Signals[];
  * 2. stop accepting new connections and let active requests finish;
  * 3. close resources via onClose;
  * 4. exit with 0, or with 1 on timeout / failure.
- * A repeated signal is logged and ignored; the timeout still applies.
+ * SHUTDOWN_TIMEOUT_MS bounds steps 2-3 together. A repeated signal is logged
+ * and ignored; the deadline still applies.
  */
 export const runHttpServer = ({
   app,
@@ -53,12 +54,36 @@ export const runHttpServer = ({
 }: RunHttpServerOptions): Server => {
   const server = createServer(app);
   let finishing = false;
+  let deadline: NodeJS.Timeout | undefined;
+
+  /**
+   * One deadline for the whole procedure (HTTP drain + resource cleanup).
+   * When it fires the process exits with code 1 even if server.close() or
+   * onClose() is still pending: those operations are not cancelled, the
+   * process simply stops waiting for them.
+   */
+  const startDeadline = () => {
+    if (deadline !== undefined) {
+      return;
+    }
+    deadline = setTimeout(() => {
+      logger.error(
+        { timeoutMs: shutdownTimeoutMs, phase: finishing ? "cleanup" : "http" },
+        "shutdown timed out",
+      );
+      server.closeAllConnections();
+      logger.info({ exitCode: 1 }, "process exiting");
+      logger.flush();
+      process.exit(1);
+    }, shutdownTimeoutMs);
+  };
 
   const finish = async (exitCode: number): Promise<void> => {
     if (finishing) {
       return;
     }
     finishing = true;
+    startDeadline();
 
     let code = exitCode;
     try {
@@ -68,6 +93,7 @@ export const runHttpServer = ({
       code = 1;
     }
 
+    clearTimeout(deadline);
     logger.info({ exitCode: code }, "process exiting");
     logger.flush();
     // All work is done at this point: the server is closed (or never started)
@@ -100,19 +126,10 @@ export const runHttpServer = ({
     }
 
     logger.info({ signal, timeoutMs: shutdownTimeoutMs }, "shutdown started");
-
-    const timer = setTimeout(() => {
-      logger.error(
-        { timeoutMs: shutdownTimeoutMs },
-        "shutdown timed out; closing remaining connections",
-      );
-      server.closeAllConnections();
-      void finish(1);
-    }, shutdownTimeoutMs);
+    startDeadline();
 
     // Stops accepting connections; the callback runs once active ones end.
     server.close((error) => {
-      clearTimeout(timer);
       if (error) {
         logger.error({ error: describeError(error) }, "HTTP server close failed");
         void finish(1);

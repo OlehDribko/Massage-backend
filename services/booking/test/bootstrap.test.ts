@@ -2,16 +2,19 @@ import request from "supertest";
 import { afterAll, describe, expect, it } from "vitest";
 import { createApplication } from "../src/bootstrap.js";
 import { loadConfig, type AppConfig } from "../src/config/config.js";
-import { createPrismaClient } from "../src/shared/database/prisma.js";
+import { createDatabase } from "../src/shared/database/database.js";
 import { createCapturingLogger } from "./helpers/logs.js";
 
 // Unreachable address: creating the client does not connect, and these tests
 // never reach a query (validation fails first or the route is absent).
 const DUMMY_DATABASE_URL = "postgresql://user:pass@127.0.0.1:5/booking";
-const prisma = createPrismaClient(DUMMY_DATABASE_URL);
+const database = createDatabase(
+  { url: DUMMY_DATABASE_URL, sslMode: "disable", poolMax: 1, connectTimeoutMs: 1_000 },
+  createCapturingLogger().logger,
+);
 
 afterAll(async () => {
-  await prisma.$disconnect();
+  await database.close();
 });
 
 const configFrom = (env: Record<string, string>): AppConfig => {
@@ -26,7 +29,7 @@ const appFor = (config: AppConfig) =>
   createApplication({
     config,
     logger: createCapturingLogger().logger,
-    prisma,
+    database,
     isShuttingDown: () => false,
   });
 

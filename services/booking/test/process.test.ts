@@ -30,6 +30,19 @@ const listeningPort = async (child: RunningChild): Promise<number> => {
   return port;
 };
 
+const isProcessAlive = (child: RunningChild): boolean => {
+  const pid = child.process.pid;
+  if (pid === undefined) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const messages = (child: RunningChild): (string | undefined)[] =>
   child.entries().map((entry) => entry.msg);
 
@@ -119,9 +132,14 @@ describe("entry point (src/server.ts)", () => {
 });
 
 describe("graceful shutdown (fixture)", () => {
-  const startFixture = (mode: "complete" | "hang", shutdownTimeoutMs: number) =>
+  const startFixture = (
+    mode: "complete" | "hang",
+    shutdownTimeoutMs: number,
+    cleanup: "resolve" | "hang" = "resolve",
+  ) =>
     startTsProcess("test/fixtures/shutdown-fixture.ts", {
       FIXTURE_MODE: mode,
+      FIXTURE_CLEANUP: cleanup,
       SHUTDOWN_TIMEOUT_MS: String(shutdownTimeoutMs),
     });
 
@@ -168,8 +186,9 @@ describe("graceful shutdown (fixture)", () => {
     expect(exit).toEqual({ code: 1, signal: null });
     expect(elapsedMs).toBeGreaterThanOrEqual(timeoutMs - 50);
     expect(elapsedMs).toBeLessThan(5_000);
-    expect(messages(child)).toContain("shutdown timed out; closing remaining connections");
-    expect(messages(child)).toContain("fixture resources released");
+    expect(messages(child)).toContain("shutdown timed out");
+    // The deadline expired during the HTTP phase, so cleanup was not reached.
+    expect(messages(child)).not.toContain("fixture resources released");
     expect(await response).toEqual({ ok: false, status: 0 });
   });
 
@@ -189,5 +208,24 @@ describe("graceful shutdown (fixture)", () => {
     expect(exit.code).toBe(1);
     expect(messages(child).filter((message) => message === "shutdown started")).toHaveLength(1);
     expect(messages(child).filter((message) => message === "process exiting")).toHaveLength(1);
+  });
+
+  it("bounds the whole shutdown, including a cleanup that never finishes", async () => {
+    const timeoutMs = 400;
+    const child = startFixture("complete", timeoutMs, "hang");
+    await listeningPort(child);
+
+    const startedAt = Date.now();
+    child.process.kill("SIGTERM");
+    await child.waitForLog(hasMessage("fixture cleanup started and will never finish"));
+    const exit = await child.exited;
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(exit).toEqual({ code: 1, signal: null });
+    expect(elapsedMs).toBeGreaterThanOrEqual(timeoutMs - 50);
+    // Generous margin for process start-up noise, far below "never".
+    expect(elapsedMs).toBeLessThan(timeoutMs + 3_000);
+    expect(messages(child)).toContain("shutdown timed out");
+    expect(isProcessAlive(child)).toBe(false);
   });
 });

@@ -9,6 +9,8 @@ import { createLogger } from "../../src/logging/logger.js";
 const fixtureEnv = z
   .object({
     FIXTURE_MODE: z.enum(["complete", "hang"]),
+    // "hang": the cleanup dependency (stand-in for closing the DB) never settles.
+    FIXTURE_CLEANUP: z.enum(["resolve", "hang"]).default("resolve"),
     SHUTDOWN_TIMEOUT_MS: z.string().regex(/^\d+$/).transform(Number),
   })
   .parse(process.env);
@@ -63,6 +65,12 @@ runHttpServer({
   shutdownState,
   shutdownTimeoutMs: fixtureEnv.SHUTDOWN_TIMEOUT_MS,
   onClose: () => {
+    if (fixtureEnv.FIXTURE_CLEANUP === "hang") {
+      logger.info("fixture cleanup started and will never finish");
+      // An active handle, like a stuck database socket, keeps the event loop alive.
+      setInterval(() => undefined, 1_000);
+      return new Promise<void>(() => undefined);
+    }
     logger.info("fixture resources released");
     return Promise.resolve();
   },
