@@ -1,0 +1,46 @@
+{
+  "name": "@massage/booking",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Booking service: users, email verification, marketing subscription (current backend)",
+  "type": "module",
+  "engines": {
+    "node": "^24.0.0"
+  },
+  "scripts": {
+    "dev": "tsx watch --env-file-if-exists=${DOTENV_CONFIG_PATH:-../../.env} src/server.ts",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
+    "start": "node dist/server.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "prisma": "DOTENV_CONFIG_PATH=${DOTENV_CONFIG_PATH:-../../.env} prisma"
+  },
+  "dependencies": {
+    "@getbrevo/brevo": "^6.0.3",
+    "@prisma/adapter-neon": "^7.9.1",
+    "@prisma/client": "^7.9.1",
+    "axios": "^1.19.0",
+    "bcrypt": "^6.0.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
+    "pino": "10.4.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/bcrypt": "^6.0.0",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/node": "^26.1.2",
+    "@types/supertest": "7.2.1",
+    "prisma": "^7.9.1",
+    "supertest": "7.3.1",
+    "tsx": "^4.23.1",
+    "typescript": "^6.0.3",
+    "vite": "8.3.4",
+    "vitest": "5.0.4"
+  }
+}
