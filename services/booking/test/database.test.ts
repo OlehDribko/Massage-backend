@@ -38,27 +38,30 @@ describe("buildPoolConfig", () => {
     expect(config.port).toBe(5432);
   });
 
-  it("ignores ssl-related URL parameters that could weaken TLS", () => {
-    for (const query of [
-      "sslmode=disable",
-      "sslmode=no-verify",
-      "ssl=0",
-      "sslmode=require&sslrootcert=/tmp/ca.pem",
-    ]) {
+  it("keeps verify-full when the URL carries a compatible sslmode", () => {
+    for (const mode of ["require", "verify-ca", "verify-full"]) {
       const config = buildPoolConfig(
-        options({ url: `postgresql://u:p@db.example.invalid/booking?${query}` }),
+        options({ url: `postgresql://u:p@db.example.invalid/booking?sslmode=${mode}` }),
       );
       expect(config.ssl).toEqual({ rejectUnauthorized: true });
       expect(config).not.toHaveProperty("connectionString");
     }
   });
 
-  it("enables SCRAM channel binding only over TLS when the URL asks for it", () => {
-    const url = "postgresql://u:p@db.example.invalid/booking?channel_binding=require";
+  it("enables opportunistic SCRAM channel binding only for channel_binding=prefer over TLS", () => {
+    const url = "postgresql://u:p@db.example.invalid/booking?channel_binding=prefer";
     expect(buildPoolConfig(options({ url })).enableChannelBinding).toBe(true);
     expect(
       buildPoolConfig(options({ url, sslMode: "disable" })).enableChannelBinding,
     ).toBe(false);
+  });
+
+  it("refuses to build a config from a URL that config validation would reject", () => {
+    expect(() =>
+      buildPoolConfig(
+        options({ url: "postgresql://u:SECRET@db.example.invalid/booking?sslmode=no-verify" }),
+      ),
+    ).toThrow(/^DATABASE_URL parameter "sslmode" conflicts/);
   });
 });
 

@@ -58,8 +58,10 @@ COPY services/booking/package.json services/booking/prisma.config.ts services/bo
 COPY services/booking/prisma services/booking/prisma
 WORKDIR /app/services/booking
 USER node
-# Requires MIGRATION_DATABASE_URL at run time.
-CMD ["node", "/app/node_modules/prisma/build/index.js", "migrate", "deploy"]
+# Requires MIGRATION_DATABASE_URL at run time. After applying migrations the
+# migrator revokes the runtime role's access to _prisma_migrations (created by
+# the first deploy); both steps are idempotent. `exec` keeps signals direct.
+CMD ["sh", "-c", "node /app/node_modules/prisma/build/index.js migrate deploy && exec node /app/node_modules/prisma/build/index.js db execute --file prisma/privileges/after-migrate.sql"]
 
 # --- API runtime (default target)
 FROM base AS runtime

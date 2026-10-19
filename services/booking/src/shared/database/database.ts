@@ -2,8 +2,9 @@ import pg from "pg";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../../generated/prisma/client.js";
 import { describeError, type Logger } from "../../logging/logger.js";
+import { parseDatabaseUrl, type DatabaseSslMode } from "./database-url.js";
 
-export type DatabaseSslMode = "disable" | "verify-full";
+export type { DatabaseSslMode };
 
 export type DatabaseOptions = {
   url: string;
@@ -17,28 +18,28 @@ export type DatabaseOptions = {
 };
 
 /**
- * Builds the pg pool config from a postgres:// URL.
- *
- * The URL is parsed here instead of being passed as `connectionString`: pg
- * lets URL parameters (sslmode=disable / no-verify, sslrootcert, ...) override
- * the explicit config, which could silently weaken TLS. TLS is therefore taken
- * only from `sslMode`; ssl-related URL parameters are ignored.
+ * Builds the pg pool config. The URL is parsed by parseDatabaseUrl (allow-listed
+ * parameters only) and never passed to pg as `connectionString`: pg would let
+ * URL parameters override the explicit TLS settings. TLS comes only from sslMode.
  */
 export const buildPoolConfig = (options: DatabaseOptions): pg.PoolConfig => {
-  const url = new URL(options.url);
-  const database = decodeURIComponent(url.pathname.replace(/^\//, ""));
+  const parsed = parseDatabaseUrl(options.url, options.sslMode);
+  if (!parsed.ok) {
+    // Config validation rejects such URLs at start-up; this is a safety net.
+    throw new Error(`DATABASE_URL ${parsed.error}`);
+  }
+  const url = parsed.value;
 
   return {
-    host: url.hostname,
-    port: url.port === "" ? 5432 : Number(url.port),
-    user: decodeURIComponent(url.username),
-    password: decodeURIComponent(url.password),
-    ...(database !== "" ? { database } : {}),
+    host: url.host,
+    port: url.port,
+    user: url.user,
+    password: url.password,
+    ...(url.database !== undefined ? { database: url.database } : {}),
+    // Node verifies the chain against its CA store and the hostname (SNI is
+    // set by pg for DNS names; IP addresses are checked against IP SANs).
     ssl: options.sslMode === "verify-full" ? { rejectUnauthorized: true } : false,
-    // SCRAM channel binding (e.g. Neon's channel_binding=require); TLS only.
-    enableChannelBinding:
-      options.sslMode === "verify-full" &&
-      url.searchParams.get("channel_binding") === "require",
+    enableChannelBinding: url.preferChannelBinding,
     max: options.poolMax,
     connectionTimeoutMillis: options.connectTimeoutMs,
     idleTimeoutMillis: 30_000,

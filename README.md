@@ -63,7 +63,7 @@ npm run prisma -- generate    # Prisma Client у services/booking/src/generated 
 | `PORT` | `3001` | Ціле число 1–65535; сервер слухає `0.0.0.0` |
 | `LOG_LEVEL` | `info` | Рівень pino |
 | `DATABASE_URL` | — (обов'язково) | `postgres://` або `postgresql://`; runtime-роль (лише DML) |
-| `DATABASE_SSL_MODE` | `verify-full` | TLS з перевіркою сертифіката; `disable` — лише для локальної БД. TLS-параметри в URL (`sslmode` тощо) ігноруються |
+| `DATABASE_SSL_MODE` | `verify-full` | TLS з перевіркою ланцюжка сертифікатів і імені хоста; `disable` — лише для локальної БД |
 | `DATABASE_POOL_MAX` | `5` | Розмір пулу `pg` (1–50), один пул на процес |
 | `DATABASE_CONNECT_TIMEOUT_MS` | `5000` | Таймаут встановлення з'єднання |
 | `APP_VERSION` | — | Повертається в `/health/ready` |
@@ -73,6 +73,17 @@ npm run prisma -- generate    # Prisma Client у services/booking/src/generated 
 | `ENABLE_LEGACY_USER_ROUTES` | `false` | Лише `true`/`false` (без урахування регістру); інші значення — помилка |
 
 Коли `ENABLE_LEGACY_USER_ROUTES=true`, додатково обов'язкові `BREVO_API_KEY`, `EMAIL_FROM_NAME`, `EMAIL_FROM_EMAIL`, `ACTION_TOKEN_SECRET` і `FRONTEND_URL`. Коли прапорець вимкнений, `/api/users/*` не підключаються, а Brevo-клієнт і сервіс токенів не створюються. Сам імпорт модулів не читає `process.env` і не вимагає секретів.
+
+**Формат `DATABASE_URL`** (`src/shared/database/database-url.ts`). URL розбирається самим сервісом і не передається в `pg` як `connectionString`:
+- спецсимволи в імені користувача, паролі та назві БД мають бути percent-encoded (`@` → `%40` тощо); `+` лишається плюсом;
+- IPv6-хост вказується у квадратних дужках (`[::1]`); unix-сокети не підтримуються;
+- дозволені параметри:
+  - `sslmode` — лише якщо не слабший за `DATABASE_SSL_MODE`: для `verify-full` це `require`, `verify-ca` або `verify-full` (перевірка все одно повна); для `disable` — лише `disable`;
+  - `channel_binding=prefer|disable`.
+- `channel_binding=require` **відхиляється**: node-postgres використовує SCRAM-SHA-256-PLUS лише тоді, коли сервер його пропонує, і не вміє відмовити серверу, що його не пропонує. Для Neon-URL замініть `require` на `prefer`.
+- будь-який інший параметр (`sslrootcert`, `sslcert`, `options`, `schema`, ...) дає помилку запуску, а не мовчки ігнорується.
+
+У повідомленнях про помилки є назва параметра, але не значення.
 
 **`DATABASE_URL` і `MIGRATION_DATABASE_URL`.** `DATABASE_URL` використовує лише застосунок, під runtime-роллю без DDL. `MIGRATION_DATABASE_URL` читає лише `prisma.config.ts` для `prisma migrate`, під роллю migrator. Якщо `MIGRATION_DATABASE_URL` не задано, datasource не налаштовується: `prisma generate` і `validate` працюють, а `migrate deploy` і `migrate status` завершуються помилкою. Fallback на `DATABASE_URL` чи фіктивний URL немає, тож реальний `DATABASE_URL` з `.env` випадково не стане цільовою БД для міграцій.
 
@@ -131,7 +142,7 @@ npm run prisma -- generate    # Prisma Client у services/booking/src/generated 
 ## Локальний запуск через Docker Compose
 
 Стек складається з трьох сервісів:
-- `postgres` — офіційний образ, за замовчуванням `postgres:17-bookworm`, змінюється через `POSTGRES_IMAGE`. Версію Postgres у Neon ще не з'ясовано, після цього її треба узгодити;
+- `postgres` — офіційний образ, за замовчуванням закріплений `postgres:17.11-bookworm`, змінюється через `POSTGRES_IMAGE`. Версію Postgres у Neon ще не з'ясовано, після цього її треба узгодити;
 - `booking-migrate` — одноразовий `prisma migrate deploy`;
 - `booking-api` — скомпільований API.
 
@@ -175,7 +186,7 @@ docker compose --env-file /dev/null down
 
 **Схема `public` тимчасова.** Поточні таблиці та міграції лишаються в `public`. Перехід на окрему схему `booking` — окреме завдання.
 
-**Відомі обмеження локальних ролей.** Default privileges поширюються й на службову таблицю `_prisma_migrations`, тож runtime-роль має на неї DML (не DDL). Для хмарних середовищ це варто прибрати окремо.
+**Службова таблиця `_prisma_migrations`.** Default privileges видали б runtime-ролі DML і на неї, бо таблицю створює migrator під час першого `migrate deploy`. Тому migrate-задача після кожного `migrate deploy` виконує від імені migrator (власника таблиці) `prisma/privileges/after-migrate.sql`: це ідемпотентний `REVOKE ALL ... FROM booking_app`. SQL чинних міграцій не змінювався. Для локального CLI той самий ланцюжок запускає `npm run migrate:deploy -w @massage/booking`. Звичайний `prisma migrate deploy` без цього кроку права не прибирає.
 
 ### Docker-образ
 

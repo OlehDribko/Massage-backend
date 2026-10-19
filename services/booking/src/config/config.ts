@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { parseDatabaseUrl } from "../shared/database/database-url.js";
 
 const nonEmpty = z.string().trim().min(1, "must not be empty");
 
@@ -33,14 +34,6 @@ const booleanFlagSchema = z
   .pipe(z.enum(["true", "false"], { error: 'must be "true" or "false"' }))
   .transform((value) => value === "true");
 
-const postgresUrlSchema = z
-  .string()
-  .trim()
-  .refine(
-    (value) => URL.canParse(value) && /^postgres(ql)?:$/.test(new URL(value).protocol),
-    "must be a postgres:// or postgresql:// URL",
-  );
-
 const httpUrlSchema = z
   .string()
   .trim()
@@ -66,7 +59,8 @@ const baseEnvSchema = z.object({
       }),
     )
     .default("info"),
-  DATABASE_URL: postgresUrlSchema,
+  // Structure and parameters are checked in loadConfig together with DATABASE_SSL_MODE.
+  DATABASE_URL: nonEmpty,
   // TLS with certificate verification unless explicitly disabled (local only).
   DATABASE_SSL_MODE: z
     .enum(["verify-full", "disable"], { error: "must be verify-full or disable" })
@@ -162,6 +156,11 @@ export const loadConfig = (env: EnvSource): ConfigResult => {
 
   if (!base.success) {
     return { ok: false, errors: formatIssues(base.error.issues) };
+  }
+
+  const databaseUrl = parseDatabaseUrl(base.data.DATABASE_URL, base.data.DATABASE_SSL_MODE);
+  if (!databaseUrl.ok) {
+    return { ok: false, errors: [`DATABASE_URL: ${databaseUrl.error}`] };
   }
 
   const config: AppConfig = {

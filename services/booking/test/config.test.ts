@@ -186,4 +186,24 @@ describe("loadConfig", () => {
       );
     }
   });
+
+  it("validates DATABASE_URL parameters against DATABASE_SSL_MODE without echoing values", () => {
+    const base = "postgresql://user:url-secret-value@db.example.invalid/booking";
+
+    expect(expectConfig({ DATABASE_URL: `${base}?sslmode=require` }).databaseUrl).toContain(
+      "sslmode=require",
+    );
+
+    for (const [url, extra] of [
+      [`${base}?sslmode=no-verify`, {}],
+      [`${base}?sslrootcert=/tmp/ca.pem`, {}],
+      [`${base}?channel_binding=require`, {}],
+      [`${base}?sslmode=require`, { DATABASE_SSL_MODE: "disable" }],
+    ] satisfies [string, Record<string, string>][]) {
+      const errors = expectErrors({ DATABASE_URL: url, ...extra });
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toMatch(/^DATABASE_URL: parameter "/);
+      expect(errors[0]).not.toContain("url-secret-value");
+    }
+  });
 });

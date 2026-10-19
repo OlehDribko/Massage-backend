@@ -14,8 +14,10 @@ x-booking-build: &booking-build
 
 services:
   postgres:
-    # Neon's Postgres version for this project is not known yet; align later.
-    image: ${POSTGRES_IMAGE:-postgres:17-bookworm}
+    # Exact minor version for reproducibility (verified: PostgreSQL 17.11).
+    # Neon's version for this project is not known yet; override with
+    # POSTGRES_IMAGE (e.g. POSTGRES_IMAGE=postgres:18-bookworm) to align later.
+    image: ${POSTGRES_IMAGE:-postgres:17.11-bookworm}
     environment:
       POSTGRES_DB: booking
       POSTGRES_USER: booking_admin

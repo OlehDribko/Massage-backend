@@ -14,7 +14,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
-    "prisma": "DOTENV_CONFIG_PATH=${DOTENV_CONFIG_PATH:-../../.env} prisma"
+    "prisma": "DOTENV_CONFIG_PATH=${DOTENV_CONFIG_PATH:-../../.env} prisma",
+    "migrate:deploy": "npm run prisma -- migrate deploy && npm run prisma -- db execute --file prisma/privileges/after-migrate.sql"
   },
   "dependencies": {
     "@getbrevo/brevo": "^6.0.3",
