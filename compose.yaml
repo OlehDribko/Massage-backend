@@ -1,0 +1,93 @@
+# Local development stack: PostgreSQL + one-off migrations + Booking API.
+#
+# Safe start (does not read the repository's root .env for interpolation):
+#   docker compose --env-file /dev/null up --build -d
+#
+# All credentials below are local test values. Nothing here comes from .env;
+# the only interpolated variables (POSTGRES_IMAGE, BOOKING_API_PORT) have
+# defaults and contain no secrets.
+name: massage-booking-local
+
+x-booking-build: &booking-build
+  context: .
+  dockerfile: services/booking/Dockerfile
+
+services:
+  postgres:
+    # Exact minor version for reproducibility (verified: PostgreSQL 17.11).
+    # Neon's version for this project is not known yet; override with
+    # POSTGRES_IMAGE (e.g. POSTGRES_IMAGE=postgres:18-bookworm) to align later.
+    image: ${POSTGRES_IMAGE:-postgres:17.11-bookworm}
+    environment:
+      POSTGRES_DB: booking
+      POSTGRES_USER: booking_admin
+      POSTGRES_PASSWORD: local-admin-password
+      BOOKING_MIGRATOR_PASSWORD: local-migrator-password
+      BOOKING_APP_PASSWORD: local-app-password
+    volumes:
+      - booking-postgres-data:/var/lib/postgresql/data
+      # Runs only when the volume is new (empty data directory).
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    # No published port: reachable only from containers on the compose network.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U booking_admin -d booking"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  booking-migrate:
+    build:
+      <<: *booking-build
+      target: migrate
+    image: massage-booking-migrate:local
+    environment:
+      MIGRATION_DATABASE_URL: postgresql://booking_migrator:local-migrator-password@postgres:5432/booking
+      MIGRATION_DATABASE_SSL_MODE: disable
+      BOOKING_RUNTIME_ROLE: booking_app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  booking-api:
+    build:
+      <<: *booking-build
+      target: runtime
+    image: massage-booking-api:local
+    environment:
+      NODE_ENV: production
+      PORT: "3001"
+      LOG_LEVEL: info
+      APP_VERSION: local
+      DATABASE_URL: postgresql://booking_app:local-app-password@postgres:5432/booking
+      # Local Postgres has no TLS. External databases keep the verify-full default.
+      DATABASE_SSL_MODE: disable
+      ENABLE_LEGACY_USER_ROUTES: "false"
+      SHUTDOWN_TIMEOUT_MS: "10000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      booking-migrate:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:${BOOKING_API_PORT:-3001}:3001"
+    init: true
+    # Longer than SHUTDOWN_TIMEOUT_MS so the app finishes its own shutdown.
+    stop_grace_period: 20s
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3001/health/live').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  booking-postgres-data:

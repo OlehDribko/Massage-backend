@@ -1,7 +1,13 @@
+# Шаблони без "/" на початку діють на будь-якій глибині,
+# тобто й для services/*/ (node_modules, dist, .env).
 node_modules/
 dist/
+*.tsbuildinfo
+# Prisma Client (generator output inside each service)
+services/*/src/generated/
 .env
 .env.*
+!.env.example
 .DS_Store
 
 # локальні/AI/IDE 

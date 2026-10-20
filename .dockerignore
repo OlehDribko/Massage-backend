@@ -1,0 +1,32 @@
+# Allow-list would be stricter, but npm workspaces need manifests from every
+# service; exclude everything that must not reach the build context instead.
+
+# Secrets and local environment
+**/.env
+**/.env.*
+.neon
+
+# VCS, dependencies, build output, generated code (regenerated in the image)
+.git
+**/node_modules
+**/dist
+**/src/generated
+**/*.tsbuildinfo
+**/coverage
+
+# Local agent / IDE configuration
+.agents
+.claude
+.windsurf
+.vscode
+.idea
+skills-lock.json
+**/.DS_Store
+
+# Not needed in images
+**/test
+**/*.md
+docker-compose*.yml
+compose*.yaml
+eslint.config.mjs
+.nvmrc

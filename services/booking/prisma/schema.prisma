@@ -1,0 +1,29 @@
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "esm"
+  runtime             = "nodejs"
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserStatus {
+  subscribed
+  registered
+}
+
+model User {
+  id               String     @id @default(uuid())
+  name             String?
+  email            String     @unique
+  passwordHash     String?
+  status           UserStatus
+  marketingConsent          Boolean   @default(false)
+  emailVerified             Boolean   @default(false)
+  emailVerificationSentAt   DateTime?
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
+}

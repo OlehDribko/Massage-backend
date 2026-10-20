@@ -1,0 +1,1 @@
+CREATE TABLE "Widget" ("id" INTEGER NOT NULL, CONSTRAINT "Widget_pkey" PRIMARY KEY ("id"));
