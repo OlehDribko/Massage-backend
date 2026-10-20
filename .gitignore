@@ -16,3 +16,14 @@ services/*/src/generated/
 .windsurf/
 .neon
 skills-lock.json
+# Terraform: provider cache, state, saved plans, local values.
+# Kept in Git: *.tf, .terraform.lock.hcl and *.example files.
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+*.tfvars.json
+*.tfbackend
+crash.log
+crash.*.log

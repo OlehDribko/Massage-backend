@@ -23,7 +23,8 @@
 skills-lock.json
 **/.DS_Store
 
-# Not needed in images
+# Not needed in images (infra may hold local Terraform state)
+infra
 **/test
 **/*.md
 docker-compose*.yml

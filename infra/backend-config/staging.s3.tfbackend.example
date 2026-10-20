@@ -1,0 +1,9 @@
+# Partial S3 backend configuration for the "staging" state.
+# Copy to staging.s3.tfbackend (ignored by Git) and set the bucket name from
+# `terraform output state_bucket_name` in infra/bootstrap.
+# No credentials here: they come from the environment (AWS_PROFILE).
+bucket       = "massage-backend-tfstate-ACCOUNT_ID-eu-west-3"
+key          = "envs/staging/terraform.tfstate"
+region       = "eu-west-3"
+encrypt      = true
+use_lockfile = true

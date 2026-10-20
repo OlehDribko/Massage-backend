@@ -1,0 +1,6 @@
+# Step 2 of the bootstrap (after the bucket exists): copy to backend.tf and run
+#   terraform init -migrate-state -backend-config=../backend-config/bootstrap.s3.tfbackend
+# Settings live in the partial configuration file, not here. See infra/README.md.
+terraform {
+  backend "s3" {}
+}
