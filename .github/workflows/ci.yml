@@ -1,0 +1,144 @@
+# CI for the booking service: code checks, migration/privilege integration
+# tests and a smoke test of the built Docker images. No secrets, no external
+# services (Neon, Brevo, Firebase, AWS), no image publishing, no deploy.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Keep in sync with compose.yaml (checked by test/postgres-image.test.ts).
+  POSTGRES_IMAGE: postgres:17.11-bookworm
+  # Never read a .env file in CI; Prisma telemetry/update checks off.
+  DOTENV_CONFIG_PATH: /dev/null
+  CHECKPOINT_DISABLE: "1"
+  NPM_CONFIG_AUDIT: "false"
+  NPM_CONFIG_FUND: "false"
+
+jobs:
+  code:
+    name: code (lint, typecheck, unit tests, build)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Tool versions (openssl is required by the TLS tests)
+        run: |
+          node --version
+          npm --version
+          openssl version
+      - run: npm ci
+      - name: Prisma generate (no database)
+        run: npm run prisma -- generate
+      - run: npm run lint
+      - run: npm run typecheck
+      - name: Unit, process and TLS tests
+        run: npm test
+      - run: npm run build
+
+  integration:
+    name: integration (migrations and privileges, PostgreSQL)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - name: Prisma generate (no database)
+        run: npm run prisma -- generate
+      - name: Pull PostgreSQL image
+        run: docker pull "$POSTGRES_IMAGE"
+      - name: Integration tests (fresh, repeated, failing and legacy migrations; wrong password)
+        env:
+          INTEGRATION_POSTGRES_IMAGE: ${{ env.POSTGRES_IMAGE }}
+        run: npm run test:integration
+      - name: Remove leftover test containers
+        if: always()
+        run: docker ps -aq --filter label=massage-booking.integration-test=1 | xargs -r docker rm -f
+
+  docker:
+    name: docker (runtime and migrate images, linux/amd64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      BOOKING_RUNTIME_IMAGE: massage-booking-api:ci-${{ github.run_id }}-${{ github.run_attempt }}
+      BOOKING_MIGRATE_IMAGE: massage-booking-migrate:ci-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - name: Build runtime image
+        run: docker build --platform linux/amd64 -f services/booking/Dockerfile --target runtime -t "$BOOKING_RUNTIME_IMAGE" .
+      - name: Build migrate image
+        run: docker build --platform linux/amd64 -f services/booking/Dockerfile --target migrate -t "$BOOKING_MIGRATE_IMAGE" .
+      - name: Check image platform
+        run: |
+          for image in "$BOOKING_RUNTIME_IMAGE" "$BOOKING_MIGRATE_IMAGE"; do
+            platform="$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")"
+            echo "$image: $platform"
+            test "$platform" = "linux/amd64"
+          done
+      - name: Pull PostgreSQL image
+        run: docker pull "$POSTGRES_IMAGE"
+      - name: Smoke test (migrate twice, privileges, live/ready/legacy, non-root, SIGTERM)
+        env:
+          INTEGRATION_POSTGRES_IMAGE: ${{ env.POSTGRES_IMAGE }}
+        run: npm run test:smoke
+      - name: Remove test containers, networks and images
+        if: always()
+        run: |
+          docker ps -aq --filter label=massage-booking.smoke-test=1 | xargs -r docker rm -f
+          docker network ls -q --filter label=massage-booking.smoke-test=1 | xargs -r docker network rm
+          docker image rm "$BOOKING_RUNTIME_IMAGE" "$BOOKING_MIGRATE_IMAGE" || echo "images already removed"
+
+  # Single stable status for branch protection: "CI / required".
+  required:
+    name: required
+    if: always()
+    needs: [code, integration, docker]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: All required jobs succeeded
+        env:
+          CODE: ${{ needs.code.result }}
+          INTEGRATION: ${{ needs.integration.result }}
+          DOCKER: ${{ needs.docker.result }}
+        run: |
+          echo "code=$CODE integration=$INTEGRATION docker=$DOCKER"
+          for result in "$CODE" "$INTEGRATION" "$DOCKER"; do
+            if [ "$result" != "success" ]; then
+              echo "::error::A required job did not succeed ($result)"
+              exit 1
+            fi
+          done
