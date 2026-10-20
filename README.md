@@ -118,7 +118,7 @@ npm run prisma -- generate    # Prisma Client у services/booking/src/generated 
 
 ## Логи
 
-Структуровані JSON-логи (pino) пишуться в stdout:
+Структуровані JSON-логи (pino) пишуться в stdout **синхронно**, тож останні рядки перед завершенням процесу не губляться й не переставляються:
 - старт і зупинка процесу;
 - HTTP-запити: `requestId`, `method`, `path` без query, `status`, `durationMs`;
 - непередбачені помилки.

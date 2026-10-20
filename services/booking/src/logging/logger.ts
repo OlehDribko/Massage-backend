@@ -29,7 +29,11 @@ export const createLogger = (
     },
   };
 
-  return destination === undefined ? pino(pinoOptions) : pino(pinoOptions, destination);
+  // stdout is written synchronously. pino's default asynchronous destination
+  // flushes buffered lines synchronously on process.exit() while an earlier
+  // write may still be in flight in the libuv threadpool, so the last lines
+  // before exit (shutdown, fatal errors) could be reordered or lost.
+  return pino(pinoOptions, destination ?? pino.destination({ dest: 1, sync: true }));
 };
 
 export type SafeErrorLog = {

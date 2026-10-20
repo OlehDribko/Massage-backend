@@ -60,8 +60,10 @@ export const startTsProcess = (
     output += chunk;
   });
 
+  // "close" (not "exit"): fires only after stdout/stderr have ended, so every
+  // line the process wrote is already in entries()/output().
   const exited = new Promise<ExitResult>((resolve) => {
-    child.once("exit", (code, signal) => {
+    child.once("close", (code, signal) => {
       running.delete(child);
       resolve({ code, signal });
       for (const listener of listeners) {

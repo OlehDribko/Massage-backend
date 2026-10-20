@@ -1,5 +1,5 @@
 import { createServer, type Server } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   getFreePort,
   hasMessage,
@@ -148,16 +148,46 @@ describe("entry point (src/server.ts)", () => {
 });
 
 describe("graceful shutdown (fixture)", () => {
+  type FixtureRun = { label: string; child: RunningChild; signals: NodeJS.Signals[] };
+  let runs: FixtureRun[] = [];
+
+  // On failure: the fixture's complete output (it receives no secrets), the
+  // signals the test sent and how the process ended.
+  beforeEach(({ onTestFailed }) => {
+    runs = [];
+    onTestFailed(() => {
+      for (const run of runs) {
+        const { exitCode, signalCode } = run.child.process;
+        process.stderr.write(
+          `\n----- shutdown fixture ${run.label}; signals sent: ${run.signals.join(", ") || "none"}; ` +
+            `exitCode=${String(exitCode)} signalCode=${String(signalCode)} -----\n${run.child.output()}\n`,
+        );
+      }
+    });
+  });
+
   const startFixture = (
     mode: "complete" | "hang",
     shutdownTimeoutMs: number,
     cleanup: "resolve" | "hang" = "resolve",
-  ) =>
-    startTsProcess("test/fixtures/shutdown-fixture.ts", {
+  ): RunningChild => {
+    const child = startTsProcess("test/fixtures/shutdown-fixture.ts", {
       FIXTURE_MODE: mode,
       FIXTURE_CLEANUP: cleanup,
       SHUTDOWN_TIMEOUT_MS: String(shutdownTimeoutMs),
     });
+    runs.push({
+      label: `(mode=${mode}, cleanup=${cleanup}, timeout=${String(shutdownTimeoutMs)} ms)`,
+      child,
+      signals: [],
+    });
+    return child;
+  };
+
+  const sendSignal = (child: RunningChild, signal: NodeJS.Signals) => {
+    runs.find((run) => run.child === child)?.signals.push(signal);
+    child.process.kill(signal);
+  };
 
   it("lets an active request finish before the process exits", async () => {
     const child = startFixture("complete", 10_000);
@@ -169,7 +199,7 @@ describe("graceful shutdown (fixture)", () => {
     }));
     await child.waitForLog(hasMessage("slow request started"));
 
-    child.process.kill("SIGTERM");
+    sendSignal(child, "SIGTERM");
 
     expect(await response).toEqual({ status: 200, body: '{"completed":true}' });
     expect(await child.exited).toEqual({ code: 0, signal: null });
@@ -195,7 +225,7 @@ describe("graceful shutdown (fixture)", () => {
     await child.waitForLog(hasMessage("slow request started"));
 
     const startedAt = Date.now();
-    child.process.kill("SIGTERM");
+    sendSignal(child, "SIGTERM");
     const exit = await child.exited;
     const elapsedMs = Date.now() - startedAt;
 
@@ -215,9 +245,9 @@ describe("graceful shutdown (fixture)", () => {
     void fetch(`http://127.0.0.1:${port}/slow`).catch(() => undefined);
     await child.waitForLog(hasMessage("slow request started"));
 
-    child.process.kill("SIGTERM");
+    sendSignal(child, "SIGTERM");
     await child.waitForLog(hasMessage("shutdown started"));
-    child.process.kill("SIGINT");
+    sendSignal(child, "SIGINT");
     await child.waitForLog(hasMessage("shutdown already in progress"));
 
     const exit = await child.exited;
@@ -232,7 +262,7 @@ describe("graceful shutdown (fixture)", () => {
     await listeningPort(child);
 
     const startedAt = Date.now();
-    child.process.kill("SIGTERM");
+    sendSignal(child, "SIGTERM");
     await child.waitForLog(hasMessage("fixture cleanup started and will never finish"));
     const exit = await child.exited;
     const elapsedMs = Date.now() - startedAt;
@@ -243,5 +273,18 @@ describe("graceful shutdown (fixture)", () => {
     expect(elapsedMs).toBeLessThan(timeoutMs + 3_000);
     expect(messages(child)).toContain("shutdown timed out");
     expect(isProcessAlive(child)).toBe(false);
+  });
+});
+
+describe("logging right before process exit", () => {
+  it("keeps the last lines complete and in order while the threadpool is busy", async () => {
+    // One busy threadpool thread: an asynchronous stdout write would still be
+    // queued when process.exit() flushes the later lines synchronously.
+    const child = startTsProcess("test/fixtures/exit-log-order-fixture.ts", {
+      UV_THREADPOOL_SIZE: "1",
+    });
+
+    expect(await child.exited).toEqual({ code: 0, signal: null });
+    expect(messages(child)).toEqual(["first line", "second line", "process exiting"]);
   });
 });
