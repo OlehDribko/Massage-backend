@@ -17,6 +17,7 @@
     "lint": "npm run lint --workspaces --if-present",
     "test": "npm run test -w @massage/booking",
     "test:integration": "npm run test:integration -w @massage/booking",
+    "test:smoke": "npm run test:smoke -w @massage/booking",
     "prisma": "npm run prisma -w @massage/booking --",
     "migrate:deploy": "npm run migrate:deploy -w @massage/booking"
   },

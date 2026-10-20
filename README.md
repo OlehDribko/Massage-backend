@@ -14,6 +14,7 @@ Massage-backend/
   .env.example          # перелік змінних середовища (без значень секретів)
   compose.yaml          # локальний стек: PostgreSQL + міграції + Booking API
   .dockerignore
+  .github/workflows/ci.yml  # GitHub Actions CI (див. «CI»)
   docker/postgres/init/ # створення локальних ролей БД (лише для нового volume)
   services/
     booking/            # @massage/booking
@@ -48,6 +49,7 @@ npm run prisma -- generate    # Prisma Client у services/booking/src/generated 
 | `npm start` | Запуск зібраного коду: `node dist/server.js` (лише змінні середовища, `.env` не читається) |
 | `npm test` | Vitest, один прогін (unit- і процесні тести; Docker не потрібен; TLS-тести потребують `openssl`) |
 | `npm run test:integration` | Інтеграційні тести міграцій і прав у PostgreSQL-контейнерах; **потрібен запущений Docker**, без нього тести падають, а не пропускаються |
+| `npm run test:smoke` | Smoke-тест зібраних Docker-образів (migrate + runtime + PostgreSQL); потрібні Docker і змінні `BOOKING_RUNTIME_IMAGE`, `BOOKING_MIGRATE_IMAGE` (див. «CI») |
 | `npm run lint` | ESLint для всіх workspace |
 | `npm run typecheck` | `tsc --noEmit` (код, тести, конфіги) |
 | `npm run migrate:deploy` | Штатний ланцюжок міграцій (підготовка прав → `prisma migrate deploy` → права runtime-ролі); потрібні `MIGRATION_DATABASE_URL` і `BOOKING_RUNTIME_ROLE` |
@@ -213,19 +215,61 @@ docker compose --env-file /dev/null down
 
 Збірка не потребує секретів і не звертається до БД: `prisma generate` виконується без `MIGRATION_DATABASE_URL`. Під час `npm ci` postinstall Prisma завантажує schema engine з CDN Prisma, тож для збірки потрібен доступ до мережі.
 
-**Платформа:** образи зібрано й запущено лише для **linux/arm64** (Docker Desktop на Apple Silicon). `linux/amd64` не перевірявся (див. «Відкриті пункти»).
+**Платформа:** вручну образи перевірено на **linux/arm64** (Docker Desktop на Apple Silicon). CI збирає й запускає їх для **linux/amd64** на x64-runner (див. «CI»). Остаточну архітектуру для AWS ще не обрано.
 
 ## Тести
 
 - `npm test` — unit- і процесні тести без Docker. TLS-тести (`test/tls-verification.test.ts`) генерують тимчасовий CA через CLI **`openssl`**; без нього вони завершуються помилкою «openssl is required…», а не пропускаються.
 - `npm run test:integration` — міграції та права в контейнерах `postgres:17.11-bookworm` (змінюється через `INTEGRATION_POSTGRES_IMAGE`). Потрібен запущений Docker. Кожен сценарій отримує окремий контейнер із випадковими паролями й міткою `massage-booking.integration-test=1`; після тесту контейнер видаляється. Підключення йдуть через опублікований порт із паролем, а не через `trust`.
+- `npm run test:smoke` — перевірка вже зібраних образів, а не вихідного коду. Тест створює окрему Docker-мережу з PostgreSQL, двічі запускає migrate-образ і перевіряє права runtime-ролі та відмову з неправильним паролем через `psql` у тій самій мережі. Потім запускає runtime-образ і перевіряє live/ready/legacy, користувача не-root і SIGTERM. Ресурси отримують мітку `massage-booking.smoke-test=1` і видаляються навіть при збої; при збої тест виводить логи контейнерів.
+- `test/postgres-image.test.ts` (частина `npm test`) перевіряє, що `compose.yaml`, тестовий helper і CI використовують той самий образ PostgreSQL.
+
+## CI (GitHub Actions)
+
+Workflow `.github/workflows/ci.yml` запускається на pull request у `main`, на push у `main` і вручну (`workflow_dispatch`). Фільтрів шляхів немає, тож перевірки йдуть на кожну зміну.
+
+Не використовує секретів, не звертається до Neon, Brevo, Firebase чи AWS, не публікує образи й **не виконує деплой в AWS** (CD ще не налаштовано). Права — лише `contents: read`; застарілий запуск для того самого PR чи гілки скасовується.
+
+| Job | Що перевіряє |
+|---|---|
+| `code` | `npm ci`, `prisma generate` без БД, lint, typecheck, `npm test` (unit, процесні, TLS через `openssl`), build |
+| `integration` | `npm run test:integration` на `postgres:17.11-bookworm`: перші й повторні міграції, невдала міграція, перехід зі старих прав, відсутність доступу до `_prisma_migrations`, DML на бізнес-таблицях, відмова з неправильним паролем |
+| `docker` | Збірка `runtime` і `migrate` для **linux/amd64**, перевірка платформи, `npm run test:smoke` |
+| `required` | Підсумковий статус: успішний лише тоді, коли всі три jobs вище мають результат `success` (failure, cancelled або skipped дають помилку) |
+
+Runner — `ubuntu-24.04` (x64), Node 24. Actions закріплено за повними SHA комітів.
+
+**Платформа.** CI перевіряє `linux/amd64` на x64-runner; вручну перевірено `linux/arm64`. Це не визначає архітектуру для AWS.
+
+**Branch protection** налаштовується окремо в GitHub після першого успішного запуску: позначте як обов'язкову перевірку `required` (у списку перевірок PR вона показується як «CI / required»).
+
+### Повторити локально
+
+```sh
+# code
+export DOTENV_CONFIG_PATH=/dev/null   # не читати кореневий .env
+npm ci
+npm run prisma -- generate
+npm run lint && npm run typecheck && npm test && npm run build
+
+# integration (потрібен Docker)
+npm run test:integration
+
+# docker (на Apple Silicon --platform linux/amd64 працює через емуляцію; без нього — нативний arm64)
+docker build --platform linux/amd64 -f services/booking/Dockerfile --target runtime -t massage-booking-api:smoke .
+docker build --platform linux/amd64 -f services/booking/Dockerfile --target migrate -t massage-booking-migrate:smoke .
+BOOKING_RUNTIME_IMAGE=massage-booking-api:smoke BOOKING_MIGRATE_IMAGE=massage-booking-migrate:smoke npm run test:smoke
+docker image rm massage-booking-api:smoke massage-booking-migrate:smoke
+```
+
+Синтаксис workflow перевіряється через [actionlint](https://github.com/rhysd/actionlint), наприклад так: `docker run --rm -v "$PWD/.github/workflows/ci.yml:/repo/ci.yml:ro" -w /repo rhysd/actionlint:1.7.12 ci.yml`.
 
 ## Відкриті пункти (до відповідних етапів)
 
 - **Схема `booking`.** URL-параметр `schema` зараз заборонений. Для окремих схем знадобиться явна змінна, наприклад опція `schema` адаптера `PrismaPg`, узгоджена з налаштуванням Prisma CLI. Права раннера також прив'язані до `public`.
 - **Повна політика `MIGRATION_DATABASE_URL`.** Раннер перевіряє URL і TLS для власного з'єднання, але Prisma CLI (schema engine) трактує `sslmode` та інші параметри по-своєму; ця поведінка не перевірена.
-- **linux/amd64.** Образи не збиралися й не запускалися на amd64; архітектуру AWS ще не визначено.
+- **Архітектура AWS.** Перевірено arm64 вручну і amd64 у CI (amd64 підтверджується лише після першого запуску в GitHub). Остаточну архітектуру для ECS ще не обрано.
 
 ## Ще не налаштовано
 
-CI/CD, інфраструктура AWS, `trust proxy` для роботи за балансувальником, повне мапування помилок Prisma. Бізнес-функціонал користувачів буде перебудований (Firebase, Notifications).
+CD (публікація образів і деплой), інфраструктура AWS, branch protection у GitHub, `trust proxy` для роботи за балансувальником, повне мапування помилок Prisma. Бізнес-функціонал користувачів буде перебудований (Firebase, Notifications).
