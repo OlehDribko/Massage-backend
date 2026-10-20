@@ -226,7 +226,7 @@ docker compose --env-file /dev/null down
 
 ## CI (GitHub Actions)
 
-Workflow `.github/workflows/ci.yml` запускається на pull request у `main`, на push у `main` і вручну (`workflow_dispatch`). Фільтрів шляхів немає, тож перевірки йдуть на кожну зміну.
+Workflow `.github/workflows/ci.yml` запускається на pull request і push у `main` та `develop`, а також вручну (`workflow_dispatch`). Фільтрів шляхів немає, тож перевірки йдуть на кожну зміну.
 
 Не використовує секретів, не звертається до Neon, Brevo, Firebase чи AWS, не публікує образи й **не виконує деплой в AWS** (CD ще не налаштовано). Права — лише `contents: read`; застарілий запуск для того самого PR чи гілки скасовується.
 
