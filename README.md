@@ -241,6 +241,8 @@ Workflow `.github/workflows/ci.yml` запускається на pull request �
 
 Runner — `ubuntu-24.04` (x64), Node 24. Actions закріплено за повними SHA комітів.
 
+Ручний workflow `.github/workflows/ecr-publish.yml` (`ECR publish (booking)`, лише `workflow_dispatch` на `develop`) після перевірки успішного CI для того самого коміту публікує образи `runtime` і `migrate` у ECR з тегом-SHA і записує їхні digest. Він теж не входить у `CI / required`, а його роль ще не створена (див. [infra/README.md](infra/README.md)).
+
 Окремий ручний workflow `.github/workflows/aws-oidc-check.yml` (`AWS OIDC check`, лише `workflow_dispatch` на `develop`) перевіряє вхід GitHub Actions в AWS через OIDC роллю без прав. Він не входить у `CI / required` і потребує repository variables `AWS_OIDC_CHECK_ROLE_ARN` і `AWS_ACCOUNT_ID` (див. [infra/README.md](infra/README.md)).
 
 **Платформа.** CI перевіряє `linux/amd64` на x64-runner; вручну перевірено `linux/arm64`. Це не визначає архітектуру для AWS.

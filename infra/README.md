@@ -1,7 +1,8 @@
 # Інфраструктура (Terraform)
 
 - **bootstrap** — S3 bucket для Terraform state, GitHub Actions OIDC provider і роль перевірки входу.
-- **staging foundation** — мережа (VPC, public subnets, security groups) і спільні ECR-репозиторії. **Описано в Terraform, у AWS не створено.**
+- **staging foundation** — мережа (VPC, public subnets, security groups) і спільні ECR-репозиторії; **створено в AWS і перевірено**.
+- **публікація образів** — IAM-роль `massage-staging-github-ecr-publish` і workflow `ECR publish (booking)`; **поки лише описані**, у AWS не створені й не запускались.
 
 ECS, ALB, сертифікати, DNS, секрети, production і деплой ще не описані. Neon залишається зовнішньою БД і Terraform-ом не керується.
 
@@ -29,6 +30,7 @@ infra/
       network.tf                  # VPC, IGW, 2 public subnets, маршрути, default SG без правил
       security_groups.tf          # SG для ALB і API
       ecr.tf                      # ECR booking-api і booking-migrate
+      ecr_publish_role.tf         # IAM-роль публікації образів (GitHub OIDC, develop)
       outputs.tf                  # ID для майбутніх ECS/ALB
       .terraform.lock.hcl         # власний lock-файл (darwin_arm64, linux_amd64)
       terraform.tfvars.example
@@ -93,8 +95,10 @@ S3 тарифікується за обсяг збережених даних (�
 |---|---|---|
 | S3 bucket для state (`infra/bootstrap`) | так | так |
 | GitHub OIDC provider і роль `massage-backend-github-oidc-check` (`infra/bootstrap`) | так | так; вхід з `develop` перевірено workflow `AWS OIDC check` |
-| Staging: VPC, subnets, IGW, маршрути, security groups (`infra/environments/staging`) | так | **ні**: `plan`/`apply` не виконувались |
-| ECR `massage/booking-api`, `massage/booking-migrate` (`infra/environments/staging`) | так | **ні** |
+| Staging: VPC, subnets, IGW, маршрути, security groups (`infra/environments/staging`) | так | так (21 ресурс разом з ECR); налаштування перевірено read-only API, контрольний `plan` — `No changes` |
+| ECR `massage/booking-api`, `massage/booking-migrate` (`infra/environments/staging`) | так | так; образів ще немає |
+| IAM-роль `massage-staging-github-ecr-publish` (`infra/environments/staging`) | так | **ні** |
+| Workflow `.github/workflows/ecr-publish.yml` | так | не запускався |
 | ALB, listeners, ECS, сертифікати, DNS, секрети, production | ні | ні |
 
 > Команди, що змінюють AWS (`apply`, перенесення state), виконуються лише після окремого рішення.
@@ -246,7 +250,7 @@ repo:OlehDribko@131261254/Massage-backend@1318544830:ref:refs/heads/develop
 
 ## Staging: мережа та ECR
 
-`infra/environments/staging` — окрема root-конфігурація. Усе нижче **описано в Terraform, але в AWS не створено**: `plan` і `apply` для staging не виконувались, state `envs/staging/terraform.tfstate` у bucket ще немає. API ще ніде не запускається. **ALB і listeners не створені й у цій конфігурації не описані**: є лише security group для майбутнього ALB.
+`infra/environments/staging` — окрема root-конфігурація. Мережу й ECR із цього розділу **створено в AWS** (`apply` 21 ресурсу, state `envs/staging/terraform.tfstate`) і перевірено read-only API; контрольний `plan` показує `No changes`. API ще ніде не запускається. **ALB і listeners не створені й у цій конфігурації не описані**: є лише security group для майбутнього ALB.
 
 ### Відокремлення від bootstrap
 - **Окремий state.** Об'єкт `envs/staging/terraform.tfstate` лежить у тому ж bucket, але це окремий state зі своїм блокуванням (`use_lockfile`). `plan`/`apply` staging не торкаються ресурсів bootstrap, і навпаки.
@@ -348,8 +352,7 @@ Lifecycle прибирає лише **untagged** образи, старші за
 VPC, subnets, route tables, Internet Gateway і security groups окремої плати зазвичай не мають, але передача даних тарифікується. Актуальні тарифи дивіться на сторінках цін AWS для `eu-west-3`.
 
 ### Що лишається перед ECS/ALB
-- **Plan і apply** цієї конфігурації (окреме погодження); перед цим `terraform.tfvars` і `staging.s3.tfbackend` з прикладів.
-- **Публікація образів у ECR з CI:** окрема IAM-роль для push в ці два репозиторії, з довірою до потрібної гілки. Роль `github-oidc-check` для цього не розширюється.
+- **Публікація образів у ECR:** роль і workflow описані (див. «Публікація образів у ECR»), але ще не застосовані й не запускались.
 - **ECS:** кластер, task definitions для API і міграцій (CPU/пам'ять, змінні, health check `/health/ready`), task execution role (pull з ECR, логи), task role, лог-групи CloudWatch.
 - **Секрети** (`DATABASE_URL`, `MIGRATION_DATABASE_URL` для Neon, ключі Brevo/Firebase): Secrets Manager або SSM Parameter Store і доступ execution role до них.
 - **ALB:** сам балансувальник, listeners (443 з сертифікатом ACM; 80 лише з redirect на HTTPS), target group (`ip`, порт 3001, health check). Потрібні домен і DNS. До появи сертифіката публічні сценарії авторизації не вмикати.
@@ -359,6 +362,81 @@ VPC, subnets, route tables, Internet Gateway і security groups окремої �
   - домен і сертифікат;
   - чи потрібен IPv6 (зараз лише IPv4).
 - **Просування образів у production:** вирішено використовувати спільні репозиторії `massage/*` і передавати образ за digest. Відкрито, чи переносити ECR в окремий спільний root, коли з'явиться production.
+
+## Публікація образів у ECR
+
+Описано, але **ще не створено й не запускалось**: IAM-роль у `infra/environments/staging/ecr_publish_role.tf` і workflow `.github/workflows/ecr-publish.yml`.
+
+### Роль `massage-staging-github-ecr-publish`
+- **Federated principal:** наявний GitHub OIDC provider з bootstrap, дублікат не створюється. Його ARN передається явно змінною `github_oidc_provider_arn`; валідація вимагає, щоб це був провайдер `token.actions.githubusercontent.com` в акаунті `aws_account_id`. State bootstrap цей root не читає.
+- **Trust policy:** `sts:AssumeRoleWithWebIdentity`, `StringEquals` для `aud = sts.amazonaws.com` і точного immutable `sub`, без wildcard:
+  `repo:OlehDribko@131261254/Massage-backend@1318544830:ref:refs/heads/develop`.
+  Запуски з `pull_request` мають `sub` `…:pull_request` і роль не отримають. Будь-який job на `develop`, що запитує OIDC-токен, теоретично міг би взяти роль, тому `id-token: write` має лише job публікації; звичайний CI токенів не запитує.
+- **Permissions** (одна inline-політика; набір політик зафіксовано exclusive-ресурсами):
+  - `ecr:GetAuthorizationToken` на `*` — API не підтримує обмеження за ресурсом;
+  - лише на `massage/booking-api` і `massage/booking-migrate`: `BatchCheckLayerAvailability`, `InitiateLayerUpload`, `UploadLayerPart`, `CompleteLayerUpload`, `PutImage`, `BatchGetImage`, `GetDownloadUrlForLayer`, `DescribeImages`.
+
+  Прав на видалення образів чи репозиторіїв, зміну налаштувань ECR, інфраструктуру, IAM, ECS чи S3 state немає. Роль `massage-backend-github-oidc-check` не змінюється.
+
+### Workflow `ECR publish (booking)`
+- Лише `workflow_dispatch` на `develop`; публікує коміт `github.sha` (вершину `develop` на момент запуску).
+- **Job `verify-ci`** (лише `actions: read`): бере останній запуск workflow `CI` з подією `push` на `develop` для **цього самого SHA**. Якщо запуску немає, він не завершений або не `success`, публікація зупиняється. Коміти з робочих гілок (лише PR-запуски CI) не проходять.
+- **Job `publish`** (`contents: read`, `id-token: write`):
+  - checkout саме перевіреного SHA з перевіркою `git rev-parse HEAD`;
+  - вхід через OIDC з `allowed-account-ids`;
+  - `docker build --platform linux/amd64`: ціль `runtime` → `massage/booking-api`, ціль `migrate` → `massage/booking-migrate`;
+  - тег — повний SHA коміту; `latest` не використовується.
+- Actions закріплено за повними SHA: `checkout` v7.0.1, `configure-aws-credentials` v6.3.0, `upload-artifact` v7.0.2.
+- `concurrency: ecr-publish` без скасування: одночасно йде лише одна публікація.
+
+**Повторний і частково успішний запуск.** Перед збіркою кожного образу workflow через `ecr:DescribeImages` перевіряє, чи є тег із цим SHA:
+- **тег є** — образ не збирається й не пушиться повторно, береться його фактичний digest (`result: already-published`);
+- **тега немає** (`ImageNotFoundException`) — збірка, push, потім digest читається з ECR (`result: published`);
+- **будь-яка інша помилка** (наприклад, AccessDenied) — зупинка, а не «образу немає».
+
+Тож якщо перший запуск опублікував лише `booking-api`, повтор допублікує тільки `booking-migrate`. Теги в репозиторіях `IMMUTABLE`, тому перезапис неможливий і на рівні ECR.
+
+**Результат** — `ecr-publish-result.json` в artifact `ecr-publish-<sha>` (зберігається 90 днів) і таблиця в summary запуску:
+
+```json
+{
+  "commit_sha": "<40-символьний SHA>",
+  "region": "eu-west-3",
+  "run_id": "<id запуску>",
+  "images": {
+    "booking_api": {
+      "repository": "massage/booking-api",
+      "tag": "<SHA>",
+      "digest": "sha256:…",
+      "image_uri": "<account>.dkr.ecr.eu-west-3.amazonaws.com/massage/booking-api@sha256:…",
+      "result": "published | already-published"
+    },
+    "booking_migrate": { "…": "те саме для massage/booking-migrate" }
+  }
+}
+```
+
+Майбутній деплой (staging, потім production) використовуватиме `image_uri` **за digest**: production отримає ті самі образи, без повторної збірки.
+
+**Repository variables** (не secrets; постійних AWS access keys немає):
+
+| Змінна | Значення | Стан |
+|---|---|---|
+| `AWS_ACCOUNT_ID` | `849110175854` | уже існує |
+| `AWS_REGION` | `eu-west-3` | потрібно додати |
+| `AWS_ECR_PUBLISH_ROLE_ARN` | `terraform output -raw ecr_publish_role_arn` (staging) | потрібно додати після `apply` |
+
+**Порядок застосування і першої публікації:**
+1. Merge PR у `develop`, потім `develop` → `main`: `workflow_dispatch` має бути в default branch.
+2. У локальний `infra/environments/staging/terraform.tfvars` додати `github_oidc_provider_arn` — значення `terraform output -raw github_oidc_provider_arn` в `infra/bootstrap`. Змінна обов'язкова, без неї `plan` не запуститься.
+3. `terraform plan -out=…` у staging. Очікується лише створення ролі, її inline-політики та двох exclusive-ресурсів, без змін мережі й ECR.
+4. Погоджений `apply`.
+5. Додати repository variables `AWS_REGION` і `AWS_ECR_PUBLISH_ROLE_ARN`.
+6. Переконатися, що CI для поточної вершини `develop` (push) успішний, і запустити `gh workflow run ecr-publish.yml --ref develop`. Перевірити artifact з digest і образи в ECR.
+
+**Витрати.**
+- ECR тарифікується за обсяг збережених образів; tagged образи lifecycle не видаляє, тож обсяг накопичуватиметься з кожною публікацією.
+- Запуски GitHub Actions витрачають хвилини runner'ів і місце для artifacts. Для публічного репозиторію на стандартних runner'ах GitHub зазвичай не бере плату за хвилини, але ліміти й умови варто перевіряти в документації GitHub.
 
 ## Резервні копії state
 
