@@ -141,11 +141,17 @@ jobs:
       - run: terraform version
       - name: terraform fmt
         run: terraform fmt -check -recursive infra
-      - name: terraform init (no backend, lock file must match)
+      - name: "bootstrap: init (no backend, lock file must match)"
         working-directory: infra/bootstrap
         run: terraform init -backend=false -input=false -lockfile=readonly
-      - name: terraform validate
+      - name: "bootstrap: validate"
         working-directory: infra/bootstrap
+        run: terraform validate
+      - name: "staging: init (no backend, lock file must match)"
+        working-directory: infra/environments/staging
+        run: terraform init -backend=false -input=false -lockfile=readonly
+      - name: "staging: validate"
+        working-directory: infra/environments/staging
         run: terraform validate
 
   # Single stable status for branch protection: "CI / required".

@@ -1,6 +1,9 @@
 # Інфраструктура (Terraform)
 
-Перший етап: **bootstrap** — S3 bucket для Terraform state і (код, ще не застосований) GitHub Actions OIDC з роллю перевірки входу. Мережа, ECR, ECS, ALB і деплой тут ще не описані. Neon залишається зовнішньою БД і Terraform-ом не керується.
+- **bootstrap** — S3 bucket для Terraform state, GitHub Actions OIDC provider і роль перевірки входу.
+- **staging foundation** — мережа (VPC, public subnets, security groups) і ECR для staging; поки **лише код**, не застосований.
+
+ECS, ALB, сертифікати, DNS, секрети, production і деплой ще не описані. Neon залишається зовнішньою БД і Terraform-ом не керується.
 
 ```
 infra/
@@ -18,6 +21,17 @@ infra/
     bootstrap.s3.tfbackend.example
     staging.s3.tfbackend.example
     production.s3.tfbackend.example
+  environments/
+    staging/                      # окрема root-конфігурація, state envs/staging/terraform.tfstate
+      versions.tf, providers.tf   # ті самі версії; allowed_account_ids; default_tags Environment=staging
+      backend.tf                  # backend "s3" (часткова конфігурація)
+      variables.tf                # акаунт, регіон, CIDR, AZ, порт API, CIDR для ALB, термін untagged
+      network.tf                  # VPC, IGW, 2 public subnets, маршрути, default SG без правил
+      security_groups.tf          # SG для ALB і API
+      ecr.tf                      # ECR booking-api і booking-migrate
+      outputs.tf                  # ID для майбутніх ECS/ALB
+      .terraform.lock.hcl         # власний lock-файл (darwin_arm64, linux_amd64)
+      terraform.tfvars.example
 ```
 
 У Git потрапляють лише `*.tf`, lock-файл і `*.example`. Ігноруються:
@@ -76,7 +90,8 @@ S3 тарифікується за обсяг збережених даних (�
 - State самого bootstrap перенесено в цей bucket: ключ `bootstrap/terraform.tfstate`, блокування `use_lockfile`. Backend описано в `backend.tf`.
 - Контрольний `terraform plan` після перенесення показує `No changes`.
 - Конфігурацій staging і production ще немає.
-- GitHub OIDC provider і роль перевірки входу описані в коді (`github_oidc.tf`), але **ще не застосовані** (див. «GitHub Actions → AWS через OIDC»).
+- GitHub OIDC provider і роль перевірки входу створено; вхід з `develop` перевірено workflow `AWS OIDC check`.
+- Staging foundation (`infra/environments/staging`) — лише код: `plan`/`apply` ще не виконувалися.
 
 > Команди, що змінюють AWS (`apply`, перенесення state), виконуються лише після окремого рішення.
 
@@ -225,6 +240,111 @@ repo:OlehDribko@131261254/Massage-backend@1318544830:ref:refs/heads/develop
 4. **Налаштування variables** `AWS_OIDC_CHECK_ROLE_ARN` і `AWS_ACCOUNT_ID` у GitHub (Settings → Secrets and variables → Actions → Variables).
 5. **Ручна перевірка OIDC:** запуск `AWS OIDC check` на `develop`. Очікуваний результат: `OIDC sign-in OK: arn:aws:sts::<ACCOUNT_ID>:assumed-role/massage-backend-github-oidc-check/gha-oidc-check-<run_id>`.
 
+## Staging: мережа та ECR
+
+`infra/environments/staging` — окрема root-конфігурація. На цьому етапі вона **лише описана в коді**: `plan` і `apply` ще не виконувались, і API ще ніде не запускається.
+
+### Відокремлення від bootstrap
+- **Окремий state.** Об'єкт `envs/staging/terraform.tfstate` лежить у тому ж bucket, але це окремий state зі своїм блокуванням (`use_lockfile`). `plan`/`apply` staging не торкаються ресурсів bootstrap, і навпаки.
+- **Власні файли.** Окремі `backend.tf`, змінні, lock-файл і `default_tags` (`Environment = staging`). Ініціалізація: `terraform init -backend-config=../../backend-config/staging.s3.tfbackend`.
+- **Доступ.** Як і для інших ключів state, розмежування доступу між bootstrap і staging у bucket ще не налаштоване (див. «Ключі state»).
+
+### Схема
+
+```
+Internet
+   │  HTTP 80 / HTTPS 443 (alb_ingress_cidrs, за замовчуванням 0.0.0.0/0)
+   ▼
+[SG alb] ── майбутній ALB (ще не створений)
+   │  TCP app_port (3001) лише до SG api
+   ▼
+[SG api] ── майбутні ECS Fargate tasks з public IP (ще не створені)
+   │  egress: TCP 443 і TCP 5432 → 0.0.0.0/0
+   ▼
+Internet Gateway → ECR, CloudWatch Logs, Neon, Brevo, Firebase
+
+VPC 10.20.0.0/16
+  public subnet eu-west-3a  10.20.0.0/24 ┐
+  public subnet eu-west-3b  10.20.1.0/24 ┴─ route table: 0.0.0.0/0 → IGW
+```
+
+| Ресурс | Призначення |
+|---|---|
+| `aws_vpc.main` | окрема VPC, DNS увімкнено |
+| `aws_default_security_group.main` | default SG без жодних правил, щоб ніщо не використовувало її випадково |
+| `aws_internet_gateway.main`, `aws_route_table.public`, `aws_route.public_internet`, `aws_route_table_association.public` | вихід в інтернет для public subnets |
+| `aws_subnet.public` (2) | різні AZ; `map_public_ip_on_launch = false` |
+| `aws_security_group.alb` + правила | вхід 80/443 з `alb_ingress_cidrs`; вихід лише TCP `app_port` до SG api |
+| `aws_security_group.api` + правила | вхід лише TCP `app_port` від SG alb; вихід TCP 443 і 5432 |
+| `aws_ecr_repository.booking` (2) + `aws_ecr_lifecycle_policy.booking` (2) | `massage-staging/booking-api` і `massage-staging/booking-migrate` |
+
+NAT Gateway, Elastic IP і VPC endpoints не створюються. ECS tasks отримуватимуть public IP (`assign_public_ip` у сервісі) і виходитимуть в інтернет напряму через Internet Gateway.
+
+### Public subnet ≠ відкритий доступ
+Public subnet лише має маршрут до Internet Gateway. Чи можна достукатися до ресурсу ззовні, вирішують security groups:
+- у SG api єдине вхідне правило — `app_port` **від SG alb**;
+- SSH та інших прямих публічних правил немає;
+- автоматичні public IP у subnets вимкнені.
+
+Навіть із public IP task прийматиме з'єднання лише від ALB.
+
+### Політика egress для API
+Потрібні напрямки:
+
+| Куди | Протокол / порт | Навіщо |
+|---|---|---|
+| ECR API, шари образів у S3 | TCP 443 | pull образу |
+| CloudWatch Logs | TCP 443 | логи |
+| Secrets Manager / SSM (згодом) | TCP 443 | секрети |
+| Brevo API, Firebase (Google APIs) | TCP 443 | HTTPS API |
+| Neon | TCP 5432 | PostgreSQL з TLS, `verify-full` |
+
+- Правила обмежені **портами**, а не IP-адресами, бо адреси Neon, Brevo, Google і публічних endpoint-ів AWS змінюються.
+- DNS (Amazon Route 53 Resolver у VPC) і Amazon Time Sync security groups не фільтрують, окремі правила для них не потрібні.
+- Порт 5432 потрібен, лише якщо Neon підключається через стандартний TCP-порт PostgreSQL (так працює драйвер `pg` у застосунку).
+- Звузити egress до конкретних адрес можна лише через VPC endpoints або egress-проксі, але це додаткові витрати й інфраструктура.
+
+SG alb має лише один вихідний напрямок — `app_port` до SG api. Для health checks ALB цього достатньо.
+
+### ECR: два репозиторії
+Dockerfile має дві цілі — `runtime` (API) і `migrate` (одноразова міграція). Для них заведено два репозиторії, `massage-staging/booking-api` і `massage-staging/booking-migrate`, а не один з префіксами тегів:
+- окремі права: ECS-сервісу API потрібен pull лише `booking-api`, задачі міграції — лише `booking-migrate`;
+- окремі результати сканування й lifecycle;
+- теги однакові для обох — git SHA коміту, без префіксів `runtime-`/`migrate-`.
+
+Репозиторіїв для ще не реалізованих сервісів (AI, Payments, Notifications) немає.
+
+Налаштування обох репозиторіїв:
+- приватні;
+- `IMMUTABLE` теги;
+- шифрування `AES256`;
+- basic scan on push;
+- `force_delete = false`.
+
+Enhanced scanning вмикається на рівні реєстру, і ця конфігурація його не змінює. Repository-level `scan_on_push` працює, поки тип сканування реєстру — `BASIC` (за замовчуванням); перед `apply` це варто перевірити.
+
+Lifecycle прибирає лише **untagged** образи, старші за `ecr_untagged_expiry_days` (30 днів). Tagged образи автоматично не видаляються, бо потрібні для rollback. Образи, на які посилається manifest list, lifecycle не видаляє, поки існує сам list.
+
+### Можливі витрати
+- **ECR** — зберігання образів (накопичується, бо tagged образи не видаляються) і трафік.
+- **Публічні IPv4-адреси** — AWS тарифікує публічні IPv4 погодинно; кожен ECS task із public IP і кожен вузол ALB матиме таку адресу.
+- **Передача даних в інтернет.**
+- **Згодом:** ALB (погодинно і за обсяг роботи), ECS Fargate (vCPU і пам'ять), CloudWatch Logs (обсяг і зберігання).
+
+VPC, subnets, route tables, Internet Gateway і security groups окремої плати зазвичай не мають, але передача даних тарифікується. Актуальні тарифи дивіться на сторінках цін AWS для `eu-west-3`.
+
+### Що лишається перед ECS/ALB
+- **Plan і apply** цієї конфігурації (окреме погодження); перед цим `terraform.tfvars` і `staging.s3.tfbackend` з прикладів.
+- **Публікація образів у ECR з CI:** окрема IAM-роль для push в ці два репозиторії, з довірою до потрібної гілки. Роль `github-oidc-check` для цього не розширюється.
+- **ECS:** кластер, task definitions для API і міграцій (CPU/пам'ять, змінні, health check `/health/ready`), task execution role (pull з ECR, логи), task role, лог-групи CloudWatch.
+- **Секрети** (`DATABASE_URL`, `MIGRATION_DATABASE_URL` для Neon, ключі Brevo/Firebase): Secrets Manager або SSM Parameter Store і доступ execution role до них.
+- **ALB:** listeners, target group (`ip`, порт 3001, health check), сертифікат ACM і домен або DNS. Без сертифіката лишається тільки HTTP.
+- **Невідомі дані:**
+  - чи потрібен Neon саме на порту 5432, чи лише HTTPS (serverless driver), і чи дозволяє Neon доступ з будь-яких IP (allowlist Neon прив'язав би до мінливих public IP tasks);
+  - домен і сертифікат;
+  - чи потрібен IPv6 (зараз лише IPv4).
+- **Просування образів у production:** окремі репозиторії production або спільний «shared» root для ECR — рішення відкрите.
+
 ## Резервні копії state
 
 - **Копії до міграції** (`terraform.tfstate.backup` і копія, зроблена перед `init -migrate-state`) містять state з **попереднім lineage**. Вони фіксують стан на момент міграції й не збігаються з lineage state у S3.
@@ -239,14 +359,16 @@ repo:OlehDribko@131261254/Massage-backend@1318544830:ref:refs/heads/develop
 
 ## Перевірки без AWS
 
-Ті самі перевірки виконує job `terraform` у CI (`.github/workflows/ci.yml`). Він працює без облікових даних AWS і без backend і не запускає `plan`/`apply`. Lock-файл там лише читається (`-lockfile=readonly`), тож розбіжність версії провайдера з lock-файлом робить job червоним. Локально:
+Ті самі перевірки виконує job `terraform` у CI (`.github/workflows/ci.yml`) — для `infra/bootstrap` і `infra/environments/staging`. Він працює без облікових даних AWS і без backend і не запускає `plan`/`apply`. Lock-файл там лише читається (`-lockfile=readonly`), тож розбіжність версії провайдера з lock-файлом робить job червоним. Локально:
 
 ```sh
-cd infra/bootstrap
-terraform fmt -check -recursive ..
-terraform init -backend=false -input=false -lockfile=readonly
-terraform validate
+terraform fmt -check -recursive infra
+for dir in infra/bootstrap infra/environments/staging; do
+  (cd "$dir" && terraform init -backend=false -input=false -lockfile=readonly && terraform validate)
+done
 ```
+
+У робочій копії, де backend уже ініціалізований (наприклад, `infra/bootstrap`), `init -backend=false` краще запускати в тимчасовій копії модуля, щоб не змінювати локальні налаштування backend.
 
 Вони не звертаються до AWS: `init -backend=false` лише завантажує провайдер із Terraform Registry.
 

@@ -16,7 +16,7 @@ Massage-backend/
   .dockerignore
   .github/workflows/ci.yml  # GitHub Actions CI (див. «CI»)
   docker/postgres/init/ # створення локальних ролей БД (лише для нового volume)
-  infra/                # Terraform: bootstrap (S3 bucket для state, GitHub OIDC) — infra/README.md
+  infra/                # Terraform: bootstrap (state, GitHub OIDC), environments/staging — infra/README.md
   services/
     booking/            # @massage/booking
       src/              # код сервісу (server.ts — точка входу)
@@ -236,7 +236,7 @@ Workflow `.github/workflows/ci.yml` запускається на pull request �
 | `code` | `npm ci`, `prisma generate` без БД, lint, typecheck, `npm test` (unit, процесні, TLS через `openssl`), build |
 | `integration` | `npm run test:integration` на `postgres:17.11-bookworm`: перші й повторні міграції, невдала міграція, перехід зі старих прав, відсутність доступу до `_prisma_migrations`, DML на бізнес-таблицях, відмова з неправильним паролем |
 | `docker` | Збірка `runtime` і `migrate` для **linux/amd64**, перевірка платформи, `npm run test:smoke` |
-| `terraform` | Terraform 1.16.6: `terraform fmt -check -recursive infra`; в `infra/bootstrap` — `init -backend=false -input=false -lockfile=readonly` і `validate`. Без облікових даних AWS, backend і `plan`/`apply` |
+| `terraform` | Terraform 1.16.6: `terraform fmt -check -recursive infra`; в `infra/bootstrap` і `infra/environments/staging` — `init -backend=false -input=false -lockfile=readonly` і `validate`. Без облікових даних AWS, backend і `plan`/`apply` |
 | `required` | Підсумковий статус: успішний лише тоді, коли всі чотири jobs вище мають результат `success` (failure, cancelled або skipped дають помилку) |
 
 Runner — `ubuntu-24.04` (x64), Node 24. Actions закріплено за повними SHA комітів.
@@ -267,7 +267,7 @@ docker image rm massage-booking-api:smoke massage-booking-migrate:smoke
 
 # terraform (Terraform 1.16.x)
 terraform fmt -check -recursive infra
-(cd infra/bootstrap && terraform init -backend=false -input=false -lockfile=readonly && terraform validate)
+for dir in infra/bootstrap infra/environments/staging; do (cd "$dir" && terraform init -backend=false -input=false -lockfile=readonly && terraform validate); done
 ```
 
 Синтаксис workflow перевіряється через [actionlint](https://github.com/rhysd/actionlint), наприклад так: `docker run --rm -v "$PWD/.github/workflows/ci.yml:/repo/ci.yml:ro" -w /repo rhysd/actionlint:1.7.12 ci.yml`.
