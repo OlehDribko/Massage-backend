@@ -1,0 +1,317 @@
+# Deploys one published booking commit to AWS staging (ECS Fargate):
+# provenance checks → migration task (exit code must be 0) → API service
+# update → ECS stability → HTTPS readiness with the expected version.
+# Manual only (workflow_dispatch on develop); not part of "CI / required".
+# Requires the GitHub environment `staging` (deployment branches: develop)
+# and the repository variables listed in infra/README.md.
+#
+# Rollback of the application: run this workflow again with an earlier
+# published commit and its digests, run_migrations = false. The database is
+# never rolled back automatically.
+name: Staging deploy (booking)
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Full commit SHA on develop whose images were published (ECR publish run)
+        required: true
+        type: string
+      api_digest:
+        description: Digest of massage/booking-api for that commit (sha256:...)
+        required: true
+        type: string
+      migrate_digest:
+        description: Digest of massage/booking-migrate for that commit (sha256:...)
+        required: true
+        type: string
+      run_migrations:
+        description: Run the migration task first (false only to roll the app back to an earlier image)
+        required: true
+        type: boolean
+        default: true
+
+# Nothing by default; each job gets only what it needs.
+permissions: {}
+
+# One staging deployment at a time; a running one is never cancelled.
+concurrency:
+  group: staging-deploy
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: verify commit and image provenance
+    if: github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      sha: ${{ steps.inputs.outputs.sha }}
+      api_digest: ${{ steps.inputs.outputs.api_digest }}
+      migrate_digest: ${{ steps.inputs.outputs.migrate_digest }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SHA: ${{ inputs.commit_sha }}
+      API_DIGEST: ${{ inputs.api_digest }}
+      MIGRATE_DIGEST: ${{ inputs.migrate_digest }}
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+    steps:
+      - name: Check out deploy scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts/staging-deploy
+
+      - name: Validate inputs
+        id: inputs
+        run: |
+          source .github/scripts/staging-deploy/lib.sh
+          require_sha "$SHA" "commit_sha"
+          require_digest "$API_DIGEST" "api_digest"
+          require_digest "$MIGRATE_DIGEST" "migrate_digest"
+          {
+            echo "sha=$SHA"
+            echo "api_digest=$API_DIGEST"
+            echo "migrate_digest=$MIGRATE_DIGEST"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Require the commit to be on develop
+        run: |
+          # "identical" or "ahead": develop (this run's commit) contains SHA.
+          status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${SHA}...${GITHUB_SHA}" --jq .status)"
+          if [ "$status" != "identical" ] && [ "$status" != "ahead" ]; then
+            echo "::error::${SHA} is not part of develop (compare status: ${status})"
+            exit 1
+          fi
+
+      - name: Require a successful CI run on develop for the commit
+        run: |
+          run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${SHA}&branch=develop&event=push&per_page=100" \
+            --jq '[.workflow_runs[] | select(.head_sha == env.SHA)] | sort_by(.id) | last // empty | {status, conclusion, html_url}')"
+          if [ -z "$run_json" ]; then
+            echo "::error::No CI push run on develop for ${SHA}"
+            exit 1
+          fi
+          echo "CI run: $(jq -r .html_url <<<"$run_json")"
+          if [ "$(jq -r '"\(.status)/\(.conclusion)"' <<<"$run_json")" != "completed/success" ]; then
+            echo "::error::CI for ${SHA} is not a completed success"
+            exit 1
+          fi
+
+      - name: Require a successful ECR publish run with these digests
+        run: |
+          run_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ecr-publish.yml/runs?head_sha=${SHA}&branch=develop&status=success&per_page=100" \
+            --jq '[.workflow_runs[] | select(.head_sha == env.SHA and .conclusion == "success")] | sort_by(.id) | last | .id // empty')"
+          if [ -z "$run_id" ]; then
+            echo "::error::No successful ECR publish run for ${SHA}"
+            exit 1
+          fi
+          echo "ECR publish run: ${run_id}"
+          mkdir -p "$RUNNER_TEMP/publish"
+          gh run download "$run_id" -R "$GITHUB_REPOSITORY" -n "ecr-publish-${SHA}" -D "$RUNNER_TEMP/publish"
+          .github/scripts/staging-deploy/verify-publish-result.sh \
+            "$RUNNER_TEMP/publish/ecr-publish-result.json" "$SHA" "$API_DIGEST" "$MIGRATE_DIGEST" \
+            "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+  deploy:
+    name: migrate and deploy (staging)
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    # The deploy role trusts only this environment's `sub` claim.
+    environment:
+      name: staging
+      url: ${{ vars.STAGING_API_BASE_URL }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      SHA: ${{ needs.verify.outputs.sha }}
+      API_DIGEST: ${{ needs.verify.outputs.api_digest }}
+      MIGRATE_DIGEST: ${{ needs.verify.outputs.migrate_digest }}
+      RUN_MIGRATIONS: ${{ inputs.run_migrations }}
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ROLE_ARN: ${{ vars.AWS_STAGING_DEPLOY_ROLE_ARN }}
+      CLUSTER: ${{ vars.STAGING_ECS_CLUSTER }}
+      SERVICE: ${{ vars.STAGING_ECS_SERVICE }}
+      API_FAMILY: ${{ vars.STAGING_API_TASK_FAMILY }}
+      MIGRATE_FAMILY: ${{ vars.STAGING_MIGRATE_TASK_FAMILY }}
+      MIGRATE_SUBNETS: ${{ vars.STAGING_MIGRATE_SUBNET_IDS }}
+      MIGRATE_SECURITY_GROUP: ${{ vars.STAGING_MIGRATE_SECURITY_GROUP }}
+      MIGRATE_LOG_GROUP: ${{ vars.STAGING_MIGRATE_LOG_GROUP }}
+      API_BASE_URL: ${{ vars.STAGING_API_BASE_URL }}
+      SCRIPTS: .github/scripts/staging-deploy
+    steps:
+      - name: Check repository variables
+        run: |
+          check() {
+            if ! [[ "$2" =~ $3 ]]; then
+              echo "::error::Repository variable $1 is missing or malformed"
+              exit 1
+            fi
+          }
+          check AWS_ACCOUNT_ID "$AWS_ACCOUNT_ID" '^[0-9]{12}$'
+          check AWS_REGION "$AWS_REGION" '^[a-z]{2}(-[a-z]+)+-[0-9]$'
+          check AWS_STAGING_DEPLOY_ROLE_ARN "$ROLE_ARN" "^arn:aws:iam::${AWS_ACCOUNT_ID}:role/[A-Za-z0-9+=,.@_-]+$"
+          check STAGING_ECS_CLUSTER "$CLUSTER" '^[A-Za-z0-9_-]{1,255}$'
+          check STAGING_ECS_SERVICE "$SERVICE" '^[A-Za-z0-9_-]{1,255}$'
+          check STAGING_API_TASK_FAMILY "$API_FAMILY" '^[A-Za-z0-9_-]{1,255}$'
+          check STAGING_MIGRATE_TASK_FAMILY "$MIGRATE_FAMILY" '^[A-Za-z0-9_-]{1,255}$'
+          check STAGING_MIGRATE_SUBNET_IDS "$MIGRATE_SUBNETS" '^subnet-[0-9a-f]+(,subnet-[0-9a-f]+)*$'
+          check STAGING_MIGRATE_SECURITY_GROUP "$MIGRATE_SECURITY_GROUP" '^sg-[0-9a-f]+$'
+          check STAGING_MIGRATE_LOG_GROUP "$MIGRATE_LOG_GROUP" '^/[A-Za-z0-9_./-]+$'
+          check STAGING_API_BASE_URL "$API_BASE_URL" '^https://[a-z0-9]+\.execute-api\.[a-z0-9-]+\.amazonaws\.com$'
+          echo "REGISTRY=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com" >> "$GITHUB_ENV"
+
+      - name: Check out deploy scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts/staging-deploy
+
+      - name: Sign in to AWS via OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_STAGING_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          role-session-name: gha-staging-deploy-${{ github.run_id }}
+          role-duration-seconds: 3600
+
+      # Tags are immutable, so tag == commit SHA binds the digest to the commit.
+      - name: Check digests in ECR
+        run: |
+          for pair in "booking-api=${API_DIGEST}" "booking-migrate=${MIGRATE_DIGEST}"; do
+            repository="massage/${pair%%=*}" expected="${pair#*=}"
+            actual="$(aws ecr describe-images --repository-name "$repository" \
+              --image-ids imageTag="$SHA" --query 'imageDetails[0].imageDigest' --output text)"
+            if [ "$actual" != "$expected" ]; then
+              echo "::error::${repository}:${SHA} has digest ${actual}, expected ${expected}"
+              exit 1
+            fi
+            echo "${repository}:${SHA} = ${actual}"
+          done
+
+      - name: Record the currently deployed revision
+        run: |
+          previous="$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
+            --query 'services[0].taskDefinition' --output text)"
+          aws ecs describe-task-definition --task-definition "$previous" > "$RUNNER_TEMP/previous.json"
+          previous_image="$(jq -r '.taskDefinition.containerDefinitions[0].image' "$RUNNER_TEMP/previous.json")"
+          previous_version="$(jq -r '[.taskDefinition.containerDefinitions[0].environment[]? | select(.name == "APP_VERSION") | .value][0] // "unknown"' "$RUNNER_TEMP/previous.json")"
+          {
+            echo "PREVIOUS_TASK_DEFINITION=$previous"
+            echo "PREVIOUS_IMAGE=$previous_image"
+            echo "PREVIOUS_VERSION=$previous_version"
+          } >> "$GITHUB_ENV"
+          echo "Currently deployed: ${previous} (${previous_image}, APP_VERSION ${previous_version})"
+
+      - name: Run the migration task
+        if: env.RUN_MIGRATIONS == 'true'
+        run: |
+          aws ecs describe-task-definition --task-definition "$MIGRATE_FAMILY" > "$RUNNER_TEMP/migrate-base.json"
+          "$SCRIPTS/render-task-definition.sh" "$RUNNER_TEMP/migrate-base.json" booking-migrate \
+            "${REGISTRY}/massage/booking-migrate@${MIGRATE_DIGEST}" > "$RUNNER_TEMP/migrate.json"
+          taskdef="$(aws ecs register-task-definition --cli-input-json "file://$RUNNER_TEMP/migrate.json" \
+            --query 'taskDefinition.taskDefinitionArn' --output text)"
+          echo "Migration task definition: ${taskdef}"
+
+          subnets="$(jq -Rc 'split(",")' <<<"$MIGRATE_SUBNETS")"
+          network="$(jq -nc --argjson subnets "$subnets" --arg sg "$MIGRATE_SECURITY_GROUP" \
+            '{awsvpcConfiguration: {subnets: $subnets, securityGroups: [$sg], assignPublicIp: "ENABLED"}}')"
+          aws ecs run-task --cluster "$CLUSTER" --task-definition "$taskdef" --launch-type FARGATE \
+            --count 1 --started-by "gha-${GITHUB_RUN_ID}" --network-configuration "$network" \
+            > "$RUNNER_TEMP/run-task.json"
+          if [ "$(jq '.failures | length' "$RUNNER_TEMP/run-task.json")" != "0" ]; then
+            echo "::error::RunTask failed: $(jq -c .failures "$RUNNER_TEMP/run-task.json")"
+            exit 1
+          fi
+          task="$(jq -r '.tasks[0].taskArn' "$RUNNER_TEMP/run-task.json")"
+          echo "Migration task: ${task}"
+          echo "Logs: CloudWatch ${MIGRATE_LOG_GROUP}, stream migrate/booking-migrate/${task##*/}"
+
+          # Up to 20 minutes; the task itself has no time limit in ECS.
+          for _ in $(seq 1 120); do
+            aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task" > "$RUNNER_TEMP/task.json"
+            rc=0
+            "$SCRIPTS/check-migration-task.sh" "$RUNNER_TEMP/task.json" booking-migrate || rc=$?
+            if [ "$rc" -eq 0 ]; then
+              exit 0
+            elif [ "$rc" -ne 2 ]; then
+              echo "::error::Migration failed; the API was not updated. Check the CloudWatch log stream named above."
+              exit 1
+            fi
+            sleep 10
+          done
+          echo "::error::Migration task did not stop within 20 minutes; the API was not updated (task still running: ${task})"
+          exit 1
+
+      - name: Update the API service
+        run: |
+          aws ecs describe-task-definition --task-definition "$API_FAMILY" > "$RUNNER_TEMP/api-base.json"
+          "$SCRIPTS/render-task-definition.sh" "$RUNNER_TEMP/api-base.json" booking-api \
+            "${REGISTRY}/massage/booking-api@${API_DIGEST}" "$SHA" > "$RUNNER_TEMP/api.json"
+          taskdef="$(aws ecs register-task-definition --cli-input-json "file://$RUNNER_TEMP/api.json" \
+            --query 'taskDefinition.taskDefinitionArn' --output text)"
+          echo "API_TASK_DEFINITION=$taskdef" >> "$GITHUB_ENV"
+          echo "API task definition: ${taskdef}"
+          aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" \
+            --task-definition "$taskdef" --desired-count 1 > /dev/null
+
+      - name: Wait for a completed rollout
+        run: |
+          # Up to 25 minutes. The circuit breaker rolls back to the previous
+          # revision if the new tasks never become healthy.
+          for _ in $(seq 1 100); do
+            aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" > "$RUNNER_TEMP/service.json"
+            rc=0
+            "$SCRIPTS/check-service-deployment.sh" "$RUNNER_TEMP/service.json" "$API_TASK_DEFINITION" || rc=$?
+            if [ "$rc" -eq 0 ]; then
+              exit 0
+            elif [ "$rc" -ne 2 ]; then
+              exit 1
+            fi
+            sleep 15
+          done
+          echo "::error::Rollout did not complete within 25 minutes"
+          exit 1
+
+      - name: Check readiness over HTTPS
+        run: |
+          # Cloud Map and API Gateway may need a few seconds to route to the new task.
+          for _ in $(seq 1 18); do
+            status="$(curl -sS -o "$RUNNER_TEMP/ready.json" -w '%{http_code}' --max-time 10 \
+              "${API_BASE_URL}/health/ready" || echo 000)"
+            if "$SCRIPTS/check-readiness.sh" "$status" "$RUNNER_TEMP/ready.json" "$SHA"; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::${API_BASE_URL}/health/ready did not report ready with version ${SHA}"
+          exit 1
+
+      - name: Summary and rollback instructions
+        if: always()
+        env:
+          OUTCOME: ${{ job.status }}
+        run: |
+          {
+            echo "### Staging deploy of \`${SHA}\`: ${OUTCOME}"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| API image | \`${REGISTRY:-?}/massage/booking-api@${API_DIGEST}\` |"
+            echo "| Migration image | \`${REGISTRY:-?}/massage/booking-migrate@${MIGRATE_DIGEST}\` |"
+            echo "| Migrations run | ${RUN_MIGRATIONS} |"
+            echo "| New API revision | \`${API_TASK_DEFINITION:-not registered}\` |"
+            echo "| Previously deployed | \`${PREVIOUS_TASK_DEFINITION:-unknown}\` (APP_VERSION \`${PREVIOUS_VERSION:-unknown}\`) |"
+            echo
+            echo "**Application rollback:** run this workflow with the previous commit and its digests"
+            echo "(from its ECR publish artifact) and \`run_migrations = false\`. Previous API image:"
+            echo "\`${PREVIOUS_IMAGE:-unknown}\`. The database is never rolled back automatically."
+          } >> "$GITHUB_STEP_SUMMARY"
