@@ -5,9 +5,10 @@
 #
 # Trust: only tokens whose `sub` is exactly the develop branch of this
 # repository (immutable subject format). Pull requests get a different `sub`
-# (`...:pull_request`) and are rejected. Any job on develop that requests an
-# OIDC token could assume the role, so only the publish workflow has
-# `id-token: write`; the regular CI never requests a token.
+# (`...:pull_request`) and are rejected. The trust is per repository/ref, not
+# per workflow: any job running on develop with `id-token: write` (currently
+# ecr-publish.yml and aws-oidc-check.yml) could assume this role. The regular
+# CI never requests a token.
 #
 # Permissions: ECR login plus push/read on the two repositories. No delete,
 # no repository/infrastructure changes, no IAM, ECS or S3 state access.
