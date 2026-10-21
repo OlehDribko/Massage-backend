@@ -34,7 +34,7 @@ output "app_port" {
 }
 
 output "ecr_repository_urls" {
-  description = "ECR repository URLs: booking_api (runtime target) and booking_migrate (migrate target)."
+  description = "ECR repository URLs: booking_api (runtime target) and booking_migrate (migrate target). Shared with production."
   value       = { for key, repository in aws_ecr_repository.booking : key => repository.repository_url }
 }
 

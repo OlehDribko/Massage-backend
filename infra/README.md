@@ -1,7 +1,7 @@
 # Інфраструктура (Terraform)
 
 - **bootstrap** — S3 bucket для Terraform state, GitHub Actions OIDC provider і роль перевірки входу.
-- **staging foundation** — мережа (VPC, public subnets, security groups) і ECR для staging; поки **лише код**, не застосований.
+- **staging foundation** — мережа (VPC, public subnets, security groups) і спільні ECR-репозиторії. **Описано в Terraform, у AWS не створено.**
 
 ECS, ALB, сертифікати, DNS, секрети, production і деплой ще не описані. Neon залишається зовнішньою БД і Terraform-ом не керується.
 
@@ -89,9 +89,13 @@ S3 тарифікується за обсяг збережених даних (�
 - Bucket `massage-backend-tfstate-<ACCOUNT_ID>-eu-west-3` створено через `terraform apply` (6 ресурсів).
 - State самого bootstrap перенесено в цей bucket: ключ `bootstrap/terraform.tfstate`, блокування `use_lockfile`. Backend описано в `backend.tf`.
 - Контрольний `terraform plan` після перенесення показує `No changes`.
-- Конфігурацій staging і production ще немає.
-- GitHub OIDC provider і роль перевірки входу створено; вхід з `develop` перевірено workflow `AWS OIDC check`.
-- Staging foundation (`infra/environments/staging`) — лише код: `plan`/`apply` ще не виконувалися.
+| Компонент | Описано в Terraform | Створено в AWS |
+|---|---|---|
+| S3 bucket для state (`infra/bootstrap`) | так | так |
+| GitHub OIDC provider і роль `massage-backend-github-oidc-check` (`infra/bootstrap`) | так | так; вхід з `develop` перевірено workflow `AWS OIDC check` |
+| Staging: VPC, subnets, IGW, маршрути, security groups (`infra/environments/staging`) | так | **ні**: `plan`/`apply` не виконувались |
+| ECR `massage/booking-api`, `massage/booking-migrate` (`infra/environments/staging`) | так | **ні** |
+| ALB, listeners, ECS, сертифікати, DNS, секрети, production | ні | ні |
 
 > Команди, що змінюють AWS (`apply`, перенесення state), виконуються лише після окремого рішення.
 
@@ -242,7 +246,7 @@ repo:OlehDribko@131261254/Massage-backend@1318544830:ref:refs/heads/develop
 
 ## Staging: мережа та ECR
 
-`infra/environments/staging` — окрема root-конфігурація. На цьому етапі вона **лише описана в коді**: `plan` і `apply` ще не виконувались, і API ще ніде не запускається.
+`infra/environments/staging` — окрема root-конфігурація. Усе нижче **описано в Terraform, але в AWS не створено**: `plan` і `apply` для staging не виконувались, state `envs/staging/terraform.tfstate` у bucket ще немає. API ще ніде не запускається. **ALB і listeners не створені й у цій конфігурації не описані**: є лише security group для майбутнього ALB.
 
 ### Відокремлення від bootstrap
 - **Окремий state.** Об'єкт `envs/staging/terraform.tfstate` лежить у тому ж bucket, але це окремий state зі своїм блокуванням (`use_lockfile`). `plan`/`apply` staging не торкаються ресурсів bootstrap, і навпаки.
@@ -253,12 +257,13 @@ repo:OlehDribko@131261254/Massage-backend@1318544830:ref:refs/heads/develop
 
 ```
 Internet
-   │  HTTP 80 / HTTPS 443 (alb_ingress_cidrs, за замовчуванням 0.0.0.0/0)
+   │  HTTP 80 (лише майбутній redirect на HTTPS) / HTTPS 443
+   │  (alb_ingress_cidrs, за замовчуванням 0.0.0.0/0)
    ▼
-[SG alb] ── майбутній ALB (ще не створений)
+[SG alb] ── майбутній ALB і listeners (не описані й не створені)
    │  TCP app_port (3001) лише до SG api
    ▼
-[SG api] ── майбутні ECS Fargate tasks з public IP (ще не створені)
+[SG api] ── майбутні ECS Fargate tasks, assign_public_ip = true (не описані й не створені)
    │  egress: TCP 443 і TCP 5432 → 0.0.0.0/0
    ▼
 Internet Gateway → ECR, CloudWatch Logs, Neon, Brevo, Firebase
@@ -276,9 +281,11 @@ VPC 10.20.0.0/16
 | `aws_subnet.public` (2) | різні AZ; `map_public_ip_on_launch = false` |
 | `aws_security_group.alb` + правила | вхід 80/443 з `alb_ingress_cidrs`; вихід лише TCP `app_port` до SG api |
 | `aws_security_group.api` + правила | вхід лише TCP `app_port` від SG alb; вихід TCP 443 і 5432 |
-| `aws_ecr_repository.booking` (2) + `aws_ecr_lifecycle_policy.booking` (2) | `massage-staging/booking-api` і `massage-staging/booking-migrate` |
+| `aws_ecr_repository.booking` (2) + `aws_ecr_lifecycle_policy.booking` (2) | `massage/booking-api` і `massage/booking-migrate`, спільні для staging і production |
 
-NAT Gateway, Elastic IP і VPC endpoints не створюються. ECS tasks отримуватимуть public IP (`assign_public_ip` у сервісі) і виходитимуть в інтернет напряму через Internet Gateway.
+NAT Gateway, Elastic IP і VPC endpoints не описані. Без NAT Fargate tasks у public subnets можуть дістатися ECR, CloudWatch, Neon, Brevo і Firebase лише з публічною IP-адресою. Тому майбутній ECS-сервіс і задача міграцій **потребуватимуть `assign_public_ip = true`** у `network_configuration`; без цього pull образу й вихідні з'єднання не працюватимуть.
+
+**Порт 80** на SG alb призначений лише для майбутнього listener із redirect на HTTPS, а не для обслуговування API по HTTP. **Перед публічними сценаріями авторизації** (вхід, токени, підтвердження email) потрібні домен і сертифікат ACM: передавати облікові дані й токени по незашифрованому HTTP не можна.
 
 ### Public subnet ≠ відкритий доступ
 Public subnet лише має маршрут до Internet Gateway. Чи можна достукатися до ресурсу ззовні, вирішують security groups:
@@ -302,17 +309,24 @@ Public subnet лише має маршрут до Internet Gateway. Чи мож�
 - Правила обмежені **портами**, а не IP-адресами, бо адреси Neon, Brevo, Google і публічних endpoint-ів AWS змінюються.
 - DNS (Amazon Route 53 Resolver у VPC) і Amazon Time Sync security groups не фільтрують, окремі правила для них не потрібні.
 - Порт 5432 потрібен, лише якщо Neon підключається через стандартний TCP-порт PostgreSQL (так працює драйвер `pg` у застосунку).
-- Звузити egress до конкретних адрес можна лише через VPC endpoints або egress-проксі, але це додаткові витрати й інфраструктура.
+- Звузити egress до конкретних адрес можна через VPC endpoints для сервісів AWS або через egress-проксі для зовнішніх провайдерів. Вартість endpoints залежить від типу: gateway endpoints (S3, DynamoDB) окремо не тарифікуються, interface endpoints (наприклад, ECR API, CloudWatch Logs) тарифікуються погодинно і за обсяг даних. Нових endpoints у цій конфігурації немає.
 
 SG alb має лише один вихідний напрямок — `app_port` до SG api. Для health checks ALB цього достатньо.
 
-### ECR: два репозиторії
-Dockerfile має дві цілі — `runtime` (API) і `migrate` (одноразова міграція). Для них заведено два репозиторії, `massage-staging/booking-api` і `massage-staging/booking-migrate`, а не один з префіксами тегів:
+### ECR: два спільні репозиторії
+Dockerfile має дві цілі — `runtime` (API) і `migrate` (одноразова міграція). Для них заведено два репозиторії, `massage/booking-api` і `massage/booking-migrate`, а не один з префіксами тегів:
 - окремі права: ECS-сервісу API потрібен pull лише `booking-api`, задачі міграції — лише `booking-migrate`;
 - окремі результати сканування й lifecycle;
 - теги однакові для обох — git SHA коміту, без префіксів `runtime-`/`migrate-`.
 
 Репозиторіїв для ще не реалізованих сервісів (AI, Payments, Notifications) немає.
+
+**Спільні для staging і production.** Образ збирається один раз, перевіряється в staging і потрапляє в production **за digest** (`…/massage/booking-api@sha256:…`), без повторної збірки. Тому:
+- назви репозиторіїв задає окрема змінна `ecr_namespace` (`massage`), незалежна від `name_prefix` (`massage-staging`), а ресурси мають тег `Environment = shared`;
+- production використовуватиме ці самі репозиторії й не створюватиме дублікатів;
+- поки що ними керує root `infra/environments/staging`. Якщо пізніше знадобиться окремий спільний root, це буде перенесення записів state (`terraform state mv` або блоки `moved`/`import`), а не перестворення репозиторіїв з образами. Зараз переносити state не потрібно.
+
+Майбутня IAM-роль production для pull має отримати доступ до цих репозиторіїв, але не право push.
 
 Налаштування обох репозиторіїв:
 - приватні;
@@ -321,7 +335,7 @@ Dockerfile має дві цілі — `runtime` (API) і `migrate` (однора
 - basic scan on push;
 - `force_delete = false`.
 
-Enhanced scanning вмикається на рівні реєстру, і ця конфігурація його не змінює. Repository-level `scan_on_push` працює, поки тип сканування реєстру — `BASIC` (за замовчуванням); перед `apply` це варто перевірити.
+Enhanced scanning вмикається на рівні реєстру, і ця конфігурація його не змінює. Repository-level `scan_on_push` працює, поки тип сканування реєстру — `BASIC`. Read-only `aws ecr get-registry-scanning-configuration` у `eu-west-3` показав `BASIC`.
 
 Lifecycle прибирає лише **untagged** образи, старші за `ecr_untagged_expiry_days` (30 днів). Tagged образи автоматично не видаляються, бо потрібні для rollback. Образи, на які посилається manifest list, lifecycle не видаляє, поки існує сам list.
 
@@ -338,12 +352,13 @@ VPC, subnets, route tables, Internet Gateway і security groups окремої �
 - **Публікація образів у ECR з CI:** окрема IAM-роль для push в ці два репозиторії, з довірою до потрібної гілки. Роль `github-oidc-check` для цього не розширюється.
 - **ECS:** кластер, task definitions для API і міграцій (CPU/пам'ять, змінні, health check `/health/ready`), task execution role (pull з ECR, логи), task role, лог-групи CloudWatch.
 - **Секрети** (`DATABASE_URL`, `MIGRATION_DATABASE_URL` для Neon, ключі Brevo/Firebase): Secrets Manager або SSM Parameter Store і доступ execution role до них.
-- **ALB:** listeners, target group (`ip`, порт 3001, health check), сертифікат ACM і домен або DNS. Без сертифіката лишається тільки HTTP.
+- **ALB:** сам балансувальник, listeners (443 з сертифікатом ACM; 80 лише з redirect на HTTPS), target group (`ip`, порт 3001, health check). Потрібні домен і DNS. До появи сертифіката публічні сценарії авторизації не вмикати.
+- **ECS-мережа:** `assign_public_ip = true` і public subnets з outputs у `network_configuration` сервісу та задачі міграцій.
 - **Невідомі дані:**
   - чи потрібен Neon саме на порту 5432, чи лише HTTPS (serverless driver), і чи дозволяє Neon доступ з будь-яких IP (allowlist Neon прив'язав би до мінливих public IP tasks);
   - домен і сертифікат;
   - чи потрібен IPv6 (зараз лише IPv4).
-- **Просування образів у production:** окремі репозиторії production або спільний «shared» root для ECR — рішення відкрите.
+- **Просування образів у production:** вирішено використовувати спільні репозиторії `massage/*` і передавати образ за digest. Відкрито, чи переносити ECR в окремий спільний root, коли з'явиться production.
 
 ## Резервні копії state
 

@@ -9,4 +9,5 @@ aws_account_id = "000000000000"
 # availability_zones       = ["eu-west-3a", "eu-west-3b"]
 # app_port                 = 3001
 # alb_ingress_cidrs        = ["0.0.0.0/0"]
+# ecr_namespace            = "massage"   # shared with production, independent of name_prefix
 # ecr_untagged_expiry_days = 30

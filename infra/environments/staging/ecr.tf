@@ -4,11 +4,17 @@
 # Images are tagged with the git commit SHA; tags are immutable, so a tag
 # always points to the same image and older tags remain available for
 # rollback.
+#
+# The repositories are NOT staging-specific: one image is built once, tested
+# in staging and promoted to production by digest, without a rebuild.
+# Production will use these repositories instead of creating its own. They
+# are managed in this root for now; moving them to a shared root later is a
+# state move, not a re-creation.
 
 locals {
   ecr_repositories = {
-    booking_api     = "${var.name_prefix}/booking-api"
-    booking_migrate = "${var.name_prefix}/booking-migrate"
+    booking_api     = "${var.ecr_namespace}/booking-api"
+    booking_migrate = "${var.ecr_namespace}/booking-migrate"
   }
 
   # Only untagged images (e.g. leftovers of failed pushes) expire. Tagged
@@ -36,7 +42,12 @@ locals {
 resource "aws_ecr_repository" "booking" {
   for_each = local.ecr_repositories
 
-  name                 = each.value
+  name = each.value
+  # Shared with production: override the provider default tag.
+  tags = {
+    Environment = "shared"
+  }
+
   image_tag_mutability = "IMMUTABLE"
   force_delete         = false
 

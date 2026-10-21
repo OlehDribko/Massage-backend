@@ -74,6 +74,17 @@ variable "alb_ingress_cidrs" {
   }
 }
 
+variable "ecr_namespace" {
+  description = "Namespace of the ECR repositories (<namespace>/booking-api, <namespace>/booking-migrate). Shared by staging and production, so it is independent of name_prefix."
+  type        = string
+  default     = "massage"
+
+  validation {
+    condition     = can(regex("^[a-z0-9]+(?:[._-][a-z0-9]+)*$", var.ecr_namespace))
+    error_message = "ecr_namespace must be lowercase letters and digits, optionally separated by '.', '_' or '-'."
+  }
+}
+
 variable "ecr_untagged_expiry_days" {
   description = "Untagged images older than this many days are expired. Tagged images are never expired automatically."
   type        = number
