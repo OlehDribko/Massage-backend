@@ -9,7 +9,6 @@ terraform {
     }
   }
 
-  # No backend block: the bootstrap starts with local state, because the S3
-  # bucket that will hold the state is created here. Moving this state into
-  # the bucket is a separate, later step (see infra/README.md).
+  # The S3 backend is declared in backend.tf. A first-time bootstrap (bucket
+  # not created yet) starts without it; see infra/README.md.
 }

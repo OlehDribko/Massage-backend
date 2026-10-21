@@ -278,4 +278,4 @@ terraform fmt -check -recursive infra
 
 ## Ще не налаштовано
 
-CD (публікація образів і деплой), інфраструктура AWS (є лише Terraform-код bootstrap для state, ресурси не створені — див. [infra/README.md](infra/README.md)), branch protection у GitHub, `trust proxy` для роботи за балансувальником, повне мапування помилок Prisma. Бізнес-функціонал користувачів буде перебудований (Firebase, Notifications).
+CD (публікація образів і деплой), інфраструктура AWS (є лише bootstrap: S3 bucket для Terraform state створено, state bootstrap зберігається в ньому — див. [infra/README.md](infra/README.md)), branch protection у GitHub, `trust proxy` для роботи за балансувальником, повне мапування помилок Prisma. Бізнес-функціонал користувачів буде перебудований (Firebase, Notifications).
