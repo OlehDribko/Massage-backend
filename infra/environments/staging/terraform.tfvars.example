@@ -5,6 +5,13 @@ aws_account_id = "000000000000"
 # Existing GitHub OIDC provider (infra/bootstrap: terraform output -raw github_oidc_provider_arn).
 github_oidc_provider_arn = "arn:aws:iam::000000000000:oidc-provider/token.actions.githubusercontent.com"
 
+# Initial booking images by digest (artifact of the ECR publish run) and their
+# commit. Used only for the first task definition revisions; later deploys
+# come from .github/workflows/staging-deploy.yml.
+booking_api_image        = "000000000000.dkr.ecr.eu-west-3.amazonaws.com/massage/booking-api@sha256:<64 hex>"
+booking_migrate_image    = "000000000000.dkr.ecr.eu-west-3.amazonaws.com/massage/booking-migrate@sha256:<64 hex>"
+booking_image_commit_sha = "<40-character commit SHA>"
+
 # Defaults, change only if needed:
 # region                   = "eu-west-3"
 # name_prefix              = "massage-staging"
@@ -14,3 +21,11 @@ github_oidc_provider_arn = "arn:aws:iam::000000000000:oidc-provider/token.action
 # alb_ingress_cidrs        = ["0.0.0.0/0"]
 # ecr_namespace            = "massage"   # shared with production, independent of name_prefix
 # ecr_untagged_expiry_days = 30
+# booking_runtime_db_role  = "booking_app"
+# api_cpu                  = 256
+# api_memory               = 512
+# log_retention_days       = 14
+# vpc_link_az_ids          = ["euw3-az1", "euw3-az3"]
+# api_throttling_rate_limit  = 2
+# api_throttling_burst_limit = 10
+# github_deploy_environment  = "staging"
