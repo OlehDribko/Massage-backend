@@ -9,7 +9,7 @@ output "vpc_cidr" {
 }
 
 output "public_subnet_ids" {
-  description = "Public subnet IDs (one per availability zone) for the ALB and ECS tasks."
+  description = "Public subnet IDs (one per availability zone) for the ECS tasks."
   value       = [for zone in var.availability_zones : aws_subnet.public[zone].id]
 }
 
@@ -51,4 +51,40 @@ output "ecr_publish_role_arn" {
 output "ecr_publish_subject" {
   description = "Exact `sub` claim the ECR publish role trusts."
   value       = local.ecr_publish_subject
+}
+
+output "api_base_url" {
+  description = "Technical HTTPS address of the booking API (API Gateway default endpoint)."
+  value       = aws_apigatewayv2_api.api.api_endpoint
+}
+
+output "deploy_role_arn" {
+  description = "ARN of the staging deploy role (repository variable AWS_STAGING_DEPLOY_ROLE_ARN)."
+  value       = aws_iam_role.deploy.arn
+}
+
+output "deploy_subject" {
+  description = "Exact `sub` claim the staging deploy role trusts."
+  value       = local.deploy_subject
+}
+
+output "booking_secret_parameter_names" {
+  description = "SSM SecureString parameters to create outside Terraform (values never pass through Terraform)."
+  value       = local.booking_parameters
+}
+
+# Repository variables of the deploy workflow (no secrets).
+output "deploy_workflow_variables" {
+  description = "Values for the repository variables used by .github/workflows/staging-deploy.yml."
+  value = {
+    AWS_STAGING_DEPLOY_ROLE_ARN    = aws_iam_role.deploy.arn
+    STAGING_ECS_CLUSTER            = aws_ecs_cluster.main.name
+    STAGING_ECS_SERVICE            = aws_ecs_service.api.name
+    STAGING_API_TASK_FAMILY        = aws_ecs_task_definition.api.family
+    STAGING_MIGRATE_TASK_FAMILY    = aws_ecs_task_definition.migrate.family
+    STAGING_MIGRATE_SUBNET_IDS     = join(",", local.public_subnet_ids)
+    STAGING_MIGRATE_SECURITY_GROUP = aws_security_group.migrate.id
+    STAGING_MIGRATE_LOG_GROUP      = aws_cloudwatch_log_group.booking["migrate"].name
+    STAGING_API_BASE_URL           = aws_apigatewayv2_api.api.api_endpoint
+  }
 }
