@@ -29,3 +29,40 @@ variable "state_bucket_prefix" {
     error_message = "state_bucket_prefix must be 3-32 characters: lowercase letters, digits and hyphens, starting and ending with a letter or digit."
   }
 }
+
+# GitHub repository allowed to use the OIDC check role. Owner and repository
+# IDs are public and part of the immutable `sub` claim; they only change if
+# the repository is recreated (then the trust policy must be updated).
+variable "github_owner" {
+  description = "GitHub repository owner (login)."
+  type        = string
+  default     = "OlehDribko"
+}
+
+variable "github_owner_id" {
+  description = "Numeric GitHub ID of the repository owner."
+  type        = string
+  default     = "131261254"
+
+  validation {
+    condition     = can(regex("^[0-9]+$", var.github_owner_id))
+    error_message = "github_owner_id must be numeric."
+  }
+}
+
+variable "github_repository" {
+  description = "GitHub repository name."
+  type        = string
+  default     = "Massage-backend"
+}
+
+variable "github_repository_id" {
+  description = "Numeric GitHub ID of the repository."
+  type        = string
+  default     = "1318544830"
+
+  validation {
+    condition     = can(regex("^[0-9]+$", var.github_repository_id))
+    error_message = "github_repository_id must be numeric."
+  }
+}

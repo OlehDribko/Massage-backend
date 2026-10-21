@@ -16,7 +16,7 @@ Massage-backend/
   .dockerignore
   .github/workflows/ci.yml  # GitHub Actions CI (див. «CI»)
   docker/postgres/init/ # створення локальних ролей БД (лише для нового volume)
-  infra/                # Terraform: поки лише bootstrap S3 bucket для state (infra/README.md)
+  infra/                # Terraform: bootstrap (S3 bucket для state, GitHub OIDC) — infra/README.md
   services/
     booking/            # @massage/booking
       src/              # код сервісу (server.ts — точка входу)
@@ -240,6 +240,8 @@ Workflow `.github/workflows/ci.yml` запускається на pull request �
 | `required` | Підсумковий статус: успішний лише тоді, коли всі чотири jobs вище мають результат `success` (failure, cancelled або skipped дають помилку) |
 
 Runner — `ubuntu-24.04` (x64), Node 24. Actions закріплено за повними SHA комітів.
+
+Окремий ручний workflow `.github/workflows/aws-oidc-check.yml` (`AWS OIDC check`, лише `workflow_dispatch` на `develop`) перевіряє вхід GitHub Actions в AWS через OIDC роллю без прав. Він не входить у `CI / required` і потребує repository variables `AWS_OIDC_CHECK_ROLE_ARN` і `AWS_ACCOUNT_ID` (див. [infra/README.md](infra/README.md)).
 
 **Платформа.** CI перевіряє `linux/amd64` на x64-runner; вручну перевірено `linux/arm64`. Це не визначає архітектуру для AWS.
 
