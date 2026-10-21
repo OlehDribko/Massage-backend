@@ -2,6 +2,9 @@
 # The value below is a placeholder, not a real account.
 aws_account_id = "000000000000"
 
+# Existing GitHub OIDC provider (infra/bootstrap: terraform output -raw github_oidc_provider_arn).
+github_oidc_provider_arn = "arn:aws:iam::000000000000:oidc-provider/token.actions.githubusercontent.com"
+
 # Defaults, change only if needed:
 # region                   = "eu-west-3"
 # name_prefix              = "massage-staging"

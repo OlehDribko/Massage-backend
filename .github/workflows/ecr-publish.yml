@@ -1,0 +1,203 @@
+# Publishes the booking images of one develop commit to the shared ECR
+# repositories (massage/booking-api, massage/booking-migrate), tagged with the
+# full commit SHA. Only after CI has succeeded for exactly that commit.
+# Manual (workflow_dispatch on develop) for now; not part of "CI / required".
+# Requires repository variables AWS_ACCOUNT_ID, AWS_REGION and
+# AWS_ECR_PUBLISH_ROLE_ARN (see infra/README.md).
+name: ECR publish (booking)
+
+on:
+  workflow_dispatch:
+
+# Nothing by default; each job gets only what it needs.
+permissions: {}
+
+# One publication at a time; a running publication is never cancelled.
+concurrency:
+  group: ecr-publish
+  cancel-in-progress: false
+
+jobs:
+  verify-ci:
+    name: verify CI for the commit
+    # The publish role trusts only refs/heads/develop; other refs are skipped.
+    if: github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    outputs:
+      sha: ${{ steps.check.outputs.sha }}
+    steps:
+      - name: Require a successful CI run on develop for this commit
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          if ! [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Unexpected commit SHA"
+            exit 1
+          fi
+          # Latest CI run triggered by the push of this exact commit to develop.
+          run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${SHA}&branch=develop&event=push&per_page=100" \
+            --jq '[.workflow_runs[] | select(.head_sha == env.SHA)] | sort_by(.id) | last // empty | {id, status, conclusion, html_url}')"
+          if [ -z "$run_json" ]; then
+            echo "::error::No CI run found for ${SHA} on develop; publication stopped"
+            exit 1
+          fi
+          status="$(jq -r .status <<<"$run_json")"
+          conclusion="$(jq -r .conclusion <<<"$run_json")"
+          url="$(jq -r .html_url <<<"$run_json")"
+          echo "CI run: $url (status=$status, conclusion=$conclusion)"
+          if [ "$status" != "completed" ] || [ "$conclusion" != "success" ]; then
+            echo "::error::CI for ${SHA} is not a completed success; publication stopped"
+            exit 1
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: build and push images (linux/amd64)
+    needs: verify-ci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      SHA: ${{ needs.verify-ci.outputs.sha }}
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ROLE_ARN: ${{ vars.AWS_ECR_PUBLISH_ROLE_ARN }}
+    steps:
+      - name: Check repository variables
+        run: |
+          if ! [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
+            echo "::error::Repository variable AWS_ACCOUNT_ID must be a 12-digit account ID"
+            exit 1
+          fi
+          if ! [[ "$AWS_REGION" =~ ^[a-z]{2}(-[a-z]+)+-[0-9]$ ]]; then
+            echo "::error::Repository variable AWS_REGION must be an AWS region name"
+            exit 1
+          fi
+          if ! [[ "$ROLE_ARN" =~ ^arn:aws:iam::${AWS_ACCOUNT_ID}:role/[A-Za-z0-9+=,.@_-]+$ ]]; then
+            echo "::error::Repository variable AWS_ECR_PUBLISH_ROLE_ARN must be a role ARN in account AWS_ACCOUNT_ID"
+            exit 1
+          fi
+
+      - name: Check out the verified commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify-ci.outputs.sha }}
+          persist-credentials: false
+
+      - name: Confirm checked-out commit
+        run: |
+          if [ "$(git rev-parse HEAD)" != "$SHA" ]; then
+            echo "::error::Checked-out commit differs from the verified SHA"
+            exit 1
+          fi
+
+      - name: Sign in to AWS via OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ECR_PUBLISH_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          role-session-name: gha-ecr-publish-${{ github.run_id }}
+          role-duration-seconds: 3600
+
+      - name: Log in to ECR
+        run: |
+          registry="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          echo "REGISTRY=$registry" >> "$GITHUB_ENV"
+          aws ecr get-login-password --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin "$registry"
+
+      # Existing SHA tags are never rebuilt or overwritten (the repositories
+      # also have IMMUTABLE tags). A re-run after a partial failure publishes
+      # only the missing image and reports the digests of both.
+      - name: Publish images
+        run: |
+          set -euo pipefail
+
+          # Prints the digest of ${repository}:${SHA}.
+          # Returns 0 if it exists, 1 if the tag does not exist, 2 on any other
+          # error (e.g. AccessDenied), which must never be treated as "missing".
+          existing_digest() {
+            local repository="$1" output
+            if output="$(aws ecr describe-images --repository-name "$repository" \
+                --image-ids imageTag="$SHA" --query 'imageDetails[0].imageDigest' --output text 2>&1)"; then
+              echo "$output"
+              return 0
+            fi
+            if grep -q ImageNotFoundException <<<"$output"; then
+              return 1
+            fi
+            echo "::error::Cannot read ${repository}: ${output}" >&2
+            return 2
+          }
+
+          publish() {
+            local key="$1" target="$2" repository="$3" digest result rc
+            local image="${REGISTRY}/${repository}:${SHA}"
+            digest="$(existing_digest "$repository")" && rc=0 || rc=$?
+            if [ "$rc" -eq 0 ]; then
+              result="already-published"
+              echo "${repository}:${SHA} already exists; not rebuilt"
+            elif [ "$rc" -eq 1 ]; then
+              docker build --platform linux/amd64 -f services/booking/Dockerfile \
+                --target "$target" -t "$image" .
+              platform="$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")"
+              if [ "$platform" != "linux/amd64" ]; then
+                echo "::error::${image} is ${platform}, expected linux/amd64"
+                exit 1
+              fi
+              docker push "$image"
+              digest="$(existing_digest "$repository")"
+              result="published"
+            else
+              exit 1
+            fi
+            if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::Unexpected digest for ${repository}"
+              exit 1
+            fi
+            jq -n --arg key "$key" --arg repository "$repository" --arg tag "$SHA" \
+              --arg digest "$digest" --arg uri "${REGISTRY}/${repository}@${digest}" \
+              --arg result "$result" \
+              '{($key): {repository: $repository, tag: $tag, digest: $digest, image_uri: $uri, result: $result}}' \
+              > "image-${key}.json"
+          }
+
+          publish booking_api runtime massage/booking-api
+          publish booking_migrate migrate massage/booking-migrate
+
+          jq -n --arg sha "$SHA" --arg region "$AWS_REGION" --arg run "$GITHUB_RUN_ID" \
+            --slurpfile api image-booking_api.json --slurpfile migrate image-booking_migrate.json \
+            '{commit_sha: $sha, region: $region, run_id: $run, images: ($api[0] + $migrate[0])}' \
+            > ecr-publish-result.json
+
+          {
+            echo "### ECR publish for \`${SHA}\`"
+            echo
+            echo "| Image | Result | Digest URI |"
+            echo "|---|---|---|"
+            jq -r '.images | to_entries[] | "| \(.value.repository) | \(.value.result) | `\(.value.image_uri)` |"' ecr-publish-result.json
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat ecr-publish-result.json
+
+      - name: Upload publish result
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ecr-publish-${{ needs.verify-ci.outputs.sha }}
+          path: ecr-publish-result.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Log out of ECR
+        if: always()
+        run: |
+          if [ -n "${REGISTRY:-}" ]; then
+            docker logout "$REGISTRY"
+          fi

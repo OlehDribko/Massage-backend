@@ -95,3 +95,50 @@ variable "ecr_untagged_expiry_days" {
     error_message = "ecr_untagged_expiry_days must be an integer of at least 7."
   }
 }
+
+variable "github_oidc_provider_arn" {
+  description = "ARN of the existing GitHub Actions OIDC provider (created in infra/bootstrap; `terraform output -raw github_oidc_provider_arn` there)."
+  type        = string
+
+  validation {
+    condition     = var.github_oidc_provider_arn == "arn:aws:iam::${var.aws_account_id}:oidc-provider/token.actions.githubusercontent.com"
+    error_message = "github_oidc_provider_arn must be the GitHub OIDC provider in account aws_account_id."
+  }
+}
+
+# GitHub repository allowed to publish images. Owner and repository IDs are
+# public and part of the immutable `sub` claim (same values as in
+# infra/bootstrap).
+variable "github_owner" {
+  description = "GitHub repository owner (login)."
+  type        = string
+  default     = "OlehDribko"
+}
+
+variable "github_owner_id" {
+  description = "Numeric GitHub ID of the repository owner."
+  type        = string
+  default     = "131261254"
+
+  validation {
+    condition     = can(regex("^[0-9]+$", var.github_owner_id))
+    error_message = "github_owner_id must be numeric."
+  }
+}
+
+variable "github_repository" {
+  description = "GitHub repository name."
+  type        = string
+  default     = "Massage-backend"
+}
+
+variable "github_repository_id" {
+  description = "Numeric GitHub ID of the repository."
+  type        = string
+  default     = "1318544830"
+
+  validation {
+    condition     = can(regex("^[0-9]+$", var.github_repository_id))
+    error_message = "github_repository_id must be numeric."
+  }
+}

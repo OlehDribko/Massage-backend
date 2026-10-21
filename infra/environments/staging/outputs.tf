@@ -42,3 +42,13 @@ output "ecr_repository_arns" {
   description = "ECR repository ARNs for future IAM policies (push from CI, pull by ECS)."
   value       = { for key, repository in aws_ecr_repository.booking : key => repository.arn }
 }
+
+output "ecr_publish_role_arn" {
+  description = "ARN of the ECR publish role (repository variable AWS_ECR_PUBLISH_ROLE_ARN)."
+  value       = aws_iam_role.ecr_publish.arn
+}
+
+output "ecr_publish_subject" {
+  description = "Exact `sub` claim the ECR publish role trusts."
+  value       = local.ecr_publish_subject
+}
