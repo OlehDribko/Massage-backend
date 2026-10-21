@@ -1,0 +1,67 @@
+# Manual check that GitHub Actions can sign in to AWS via OIDC from develop.
+# Uses the sign-in check role (no AWS permissions); not a deploy workflow and
+# not part of "CI / required". Requires repository variables
+# AWS_OIDC_CHECK_ROLE_ARN and AWS_ACCOUNT_ID (see infra/README.md).
+name: AWS OIDC check
+
+on:
+  workflow_dispatch:
+
+# Nothing by default; the job below gets only what it needs.
+permissions: {}
+
+concurrency:
+  group: aws-oidc-check
+  cancel-in-progress: false
+
+jobs:
+  oidc-check:
+    name: oidc-check (develop)
+    # The role trusts only refs/heads/develop; other refs are skipped here.
+    # No `environment:` — it would change the OIDC `sub` claim.
+    if: github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: eu-west-3
+      ROLE_ARN: ${{ vars.AWS_OIDC_CHECK_ROLE_ARN }}
+      EXPECTED_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      SESSION_NAME: gha-oidc-check-${{ github.run_id }}
+    steps:
+      - name: Check repository variables
+        run: |
+          if ! [[ "$EXPECTED_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
+            echo "::error::Repository variable AWS_ACCOUNT_ID must be a 12-digit account ID"
+            exit 1
+          fi
+          if ! [[ "$ROLE_ARN" =~ ^arn:aws:iam::${EXPECTED_ACCOUNT_ID}:role/[A-Za-z0-9+=,.@_-]+$ ]]; then
+            echo "::error::Repository variable AWS_OIDC_CHECK_ROLE_ARN must be a role ARN in account AWS_ACCOUNT_ID"
+            exit 1
+          fi
+
+      - name: Sign in to AWS via OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_OIDC_CHECK_ROLE_ARN }}
+          aws-region: eu-west-3
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          role-session-name: gha-oidc-check-${{ github.run_id }}
+          role-duration-seconds: 900
+
+      - name: Verify caller identity
+        run: |
+          read -r account arn < <(aws sts get-caller-identity --query '[Account, Arn]' --output text)
+          role_name="${ROLE_ARN##*/}"
+          expected_arn="arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/${role_name}/${SESSION_NAME}"
+          if [ "$account" != "$EXPECTED_ACCOUNT_ID" ]; then
+            echo "::error::Signed in to an unexpected AWS account"
+            exit 1
+          fi
+          if [ "$arn" != "$expected_arn" ]; then
+            echo "::error::Unexpected caller ARN: $arn"
+            exit 1
+          fi
+          echo "OIDC sign-in OK: $arn"

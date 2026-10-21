@@ -1,6 +1,6 @@
 # Інфраструктура (Terraform)
 
-Перший етап: **bootstrap** — S3 bucket для Terraform state. Мережа, ECR, ECS, ALB, OIDC і деплой тут ще не описані. Neon залишається зовнішньою БД і Terraform-ом не керується.
+Перший етап: **bootstrap** — S3 bucket для Terraform state і (код, ще не застосований) GitHub Actions OIDC з роллю перевірки входу. Мережа, ECR, ECS, ALB і деплой тут ще не описані. Neon залишається зовнішньою БД і Terraform-ом не керується.
 
 ```
 infra/
@@ -9,6 +9,7 @@ infra/
     providers.tf                  # регіон, allowed_account_ids, default_tags; без профілю
     variables.tf                  # aws_account_id, region (eu-west-3), state_bucket_prefix
     main.tf                       # bucket і його налаштування
+    github_oidc.tf                # OIDC provider GitHub + роль перевірки входу (develop)
     outputs.tf                    # ім'я/ARN bucket, ключі state
     .terraform.lock.hcl           # точні версії й хеші провайдера (darwin_arm64, linux_amd64)
     terraform.tfvars.example      # шаблон значень змінних
@@ -75,6 +76,7 @@ S3 тарифікується за обсяг збережених даних (�
 - State самого bootstrap перенесено в цей bucket: ключ `bootstrap/terraform.tfstate`, блокування `use_lockfile`. Backend описано в `backend.tf`.
 - Контрольний `terraform plan` після перенесення показує `No changes`.
 - Конфігурацій staging і production ще немає.
+- GitHub OIDC provider і роль перевірки входу описані в коді (`github_oidc.tf`), але **ще не застосовані** (див. «GitHub Actions → AWS через OIDC»).
 
 > Команди, що змінюють AWS (`apply`, перенесення state), виконуються лише після окремого рішення.
 
@@ -172,6 +174,57 @@ terraform init -migrate-state -backend-config=../backend-config/bootstrap.s3.tfb
 - **Lineage і serial.** Terraform 1.16.6 під час перенесення в порожній S3 backend записує state з **новим lineage і serial 1**. Вміст ресурсів не змінюється; так поводиться сам Terraform (`internal/states/remote/state.go`, `PersistState`). Через це резервна копія локального state має інший lineage, і повернути її через `terraform state push` можна лише з `-force`, тобто з перезаписом віддаленого state. Робіть це тільки свідомо.
 - **Локальні копії.** Після перенесення в `infra/bootstrap` лишаються порожній `terraform.tfstate` і `terraform.tfstate.backup` з попереднім state. Обидва ігноруються Git; тримайте їх із правами `600` і видаляйте лише окремим рішенням.
 
+## GitHub Actions → AWS через OIDC
+
+`github_oidc.tf` описує:
+- `aws_iam_openid_connect_provider.github` — провайдер `https://token.actions.githubusercontent.com` з audience `sts.amazonaws.com`. `thumbprint_list` не задано: для GitHub IAM перевіряє сертифікат за власним списком довірених CA. Перед додаванням провайдера read-only запитом перевірено, що в акаунті OIDC-провайдерів ще немає.
+- `aws_iam_role.github_oidc_check` (`massage-backend-github-oidc-check`) — **роль перевірки входу, а не роль деплою**.
+
+**Trust policy і permissions policy — різні речі.**
+- **Trust policy** вирішує, *хто може взяти роль*. Тут це лише токен GitHub Actions з точними значеннями `aud` і `sub` (`StringEquals`, без wildcard), дія `sts:AssumeRoleWithWebIdentity`.
+- **Permissions policies** вирішують, *що можна робити з роллю*. У цієї ролі їх немає взагалі: ні inline, ні managed. `aws_iam_role_policies_exclusive` і `aws_iam_role_policy_attachments_exclusive` з порожніми списками фіксують це в Terraform: будь-яку політику, додану вручну, наступний `plan` покаже, а `apply` прибере.
+
+Отже, сесія не має доступу до S3 state, ECR, ECS, IAM і не може нічого створювати. Працює лише `sts get-caller-identity`, якому дозволи не потрібні. Максимальна тривалість сесії ролі — 1 година; workflow просить 15 хвилин.
+
+**Точний `sub`.** У репозиторії ввімкнено immutable subject claims. GitHub REST API `GET /repos/OlehDribko/Massage-backend/actions/oidc/customization/sub` повертає:
+- `use_immutable_subject: true`;
+- `use_default: true` (власного шаблону немає);
+- `sub_claim_prefix: repo:OlehDribko@131261254/Massage-backend@1318544830`.
+
+За документацією GitHub (OIDC reference, «Immutable subject claims») для гілки формат такий: `repo:OWNER@OWNER-ID/REPO@REPO-ID:ref:refs/heads/BRANCH`. Роль довіряє рівно одному значенню:
+
+```
+repo:OlehDribko@131261254/Massage-backend@1318544830:ref:refs/heads/develop
+```
+
+Наслідки:
+- запуски з інших гілок, тегів і PR, а також job з `environment:` (тоді `sub` має вигляд `...:environment:NAME`) роль не отримають;
+- якщо репозиторій буде перестворено (нові ID) або змінено шаблон `sub`, trust policy треба оновити (змінні `github_owner_id`, `github_repository_id`).
+
+**Workflow `.github/workflows/aws-oidc-check.yml`:**
+- лише `workflow_dispatch`;
+- job виконується тільки для `refs/heads/develop`;
+- права `contents: read` і `id-token: write` лише в цього job (на рівні workflow — `permissions: {}`);
+- `aws-actions/configure-aws-credentials` v6.3.0 закріплено за SHA;
+- сесія 15 хвилин, `allowed-account-ids`;
+- далі `sts get-caller-identity` і точне порівняння акаунта та ARN `assumed-role/<role>/gha-oidc-check-<run_id>`.
+
+Токени й облікові дані не виводяться. Workflow не входить у `CI / required`; звичайний CI і далі працює без облікових даних AWS.
+
+**Змінні GitHub** (repository variables, не secrets; задаються після `apply`):
+
+| Змінна | Значення |
+|---|---|
+| `AWS_OIDC_CHECK_ROLE_ARN` | `terraform output -raw github_oidc_check_role_arn` |
+| `AWS_ACCOUNT_ID` | ID акаунта (12 цифр) |
+
+**Порядок застосування:**
+1. **Merge** цього PR у `develop`, а потім у `main`. `workflow_dispatch` можна запустити лише тоді, коли файл workflow є в default branch (`main`). Сам запуск — на гілці `develop` (`gh workflow run aws-oidc-check.yml --ref develop`).
+2. **Локальний plan** в `infra/bootstrap`: `terraform plan -out=oidc.tfplan`. Очікується лише додавання OIDC provider, ролі та двох exclusive-ресурсів; змін і видалень S3-ресурсів бути не повинно.
+3. **Погоджений apply** цього plan.
+4. **Налаштування variables** `AWS_OIDC_CHECK_ROLE_ARN` і `AWS_ACCOUNT_ID` у GitHub (Settings → Secrets and variables → Actions → Variables).
+5. **Ручна перевірка OIDC:** запуск `AWS OIDC check` на `develop`. Очікуваний результат: `OIDC sign-in OK: arn:aws:sts::<ACCOUNT_ID>:assumed-role/massage-backend-github-oidc-check/gha-oidc-check-<run_id>`.
+
 ## Резервні копії state
 
 - **Копії до міграції** (`terraform.tfstate.backup` і копія, зроблена перед `init -migrate-state`) містять state з **попереднім lineage**. Вони фіксують стан на момент міграції й не збігаються з lineage state у S3.
@@ -207,5 +260,6 @@ terraform providers lock -platform=darwin_arm64 -platform=linux_amd64
 
 - Політика зберігання старих версій state (lifecycle rule для noncurrent versions) і хто матиме доступ до bucket.
 - IAM-розмежування staging і production state (разом із появою цих конфігурацій).
+- Чи обмежувати роль додатково за workflow (`job_workflow_ref`), коли з'являться ролі з реальними правами (staging/production).
 - Коли видаляти локальні копії state, що лишилися після перенесення (`terraform.tfstate.backup`, резервна копія поза репозиторієм).
 - Чи комітити `bootstrap.s3.tfbackend` (ім'я bucket не секрет), коли знадобиться запуск Terraform з бекендом у CI.
