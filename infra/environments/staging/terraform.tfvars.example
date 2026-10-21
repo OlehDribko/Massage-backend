@@ -1,0 +1,13 @@
+# Copy to terraform.tfvars (ignored by Git) and set the real account ID.
+# The value below is a placeholder, not a real account.
+aws_account_id = "000000000000"
+
+# Defaults, change only if needed:
+# region                   = "eu-west-3"
+# name_prefix              = "massage-staging"
+# vpc_cidr                 = "10.20.0.0/16"
+# availability_zones       = ["eu-west-3a", "eu-west-3b"]
+# app_port                 = 3001
+# alb_ingress_cidrs        = ["0.0.0.0/0"]
+# ecr_namespace            = "massage"   # shared with production, independent of name_prefix
+# ecr_untagged_expiry_days = 30
