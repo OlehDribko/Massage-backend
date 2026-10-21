@@ -4,7 +4,7 @@
 
 ```
 infra/
-  bootstrap/                      # S3 bucket для state (спочатку локальний state)
+  bootstrap/                      # S3 bucket для state; власний state — у цьому ж bucket
     versions.tf                   # Terraform ~> 1.16, hashicorp/aws ~> 6.69
     providers.tf                  # регіон, allowed_account_ids, default_tags; без профілю
     variables.tf                  # aws_account_id, region (eu-west-3), state_bucket_prefix
@@ -12,7 +12,7 @@ infra/
     outputs.tf                    # ім'я/ARN bucket, ключі state
     .terraform.lock.hcl           # точні версії й хеші провайдера (darwin_arm64, linux_amd64)
     terraform.tfvars.example      # шаблон значень змінних
-    backend.tf.example            # блок backend "s3" для перенесення state
+    backend.tf                    # backend "s3" (часткова конфігурація)
   backend-config/
     bootstrap.s3.tfbackend.example
     staging.s3.tfbackend.example
@@ -62,32 +62,37 @@ infra/
 
 Terraform зберігає в state атрибути ресурсів відкритим текстом, зокрема значення, позначені `sensitive`. Також у state можуть потрапити паролі, рядки підключення й ключі майбутніх ресурсів. Тому:
 - доступ до bucket — лише через IAM, і лише тим, кому він потрібен;
-- локальний `terraform.tfstate` (до перенесення) не комітиться, не пересилається й не кладеться в Docker build context (`infra` виключено в `.dockerignore`);
+- локальні файли state (зокрема `terraform.tfstate.backup`, що лишився після перенесення) не комітяться, не пересилаються й не потрапляють у Docker build context (`infra` виключено в `.dockerignore`); тримайте їх із правами `600`;
 - plan-файли (`*.tfplan`) теж можуть містити чутливі значення й не комітяться.
 
 ## Витрати
 
 S3 тарифікується за обсяг збережених даних (з versioning — разом зі старими версіями state), за кількість запитів і за вихідний трафік. Для одного невеликого state суми зазвичай малі, але не нульові. Актуальні ціни для `eu-west-3` дивіться на сторінці тарифів Amazon S3. Очищення старих версій (lifecycle rule для noncurrent versions) поки не налаштоване — це окреме рішення: воно зменшує витрати, але скорочує історію для відновлення.
 
-## Запуск (лише для майбутнього узгодженого запуску)
+## Поточний стан
 
-> Команди нижче змінюють AWS-акаунт. Виконуйте їх лише після окремого рішення. Поки що `plan` і `apply` не запускалися.
+- Bucket `massage-backend-tfstate-<ACCOUNT_ID>-eu-west-3` створено через `terraform apply` (6 ресурсів).
+- State самого bootstrap перенесено в цей bucket: ключ `bootstrap/terraform.tfstate`, блокування `use_lockfile`. Backend описано в `backend.tf`.
+- Контрольний `terraform plan` після перенесення показує `No changes`.
+- Конфігурацій staging і production ще немає.
 
-### 1. Облікові дані та перевірка акаунта
+> Команди, що змінюють AWS (`apply`, перенесення state), виконуються лише після окремого рішення.
+
+## Облікові дані та перевірка акаунта
 
 Конфігурація не містить профілю, він задається змінною середовища:
 
 ```sh
 aws login --profile massage                      # тимчасова сесія
 export AWS_PROFILE=massage
-aws sts get-caller-identity --query Account --output text
+aws sts get-caller-identity --query '[Account, Arn]' --output text
 ```
 
-Переконайтеся, що виведений ID — саме очікуваний акаунт. Той самий ID вкажіть у `terraform.tfvars`. Якщо акаунт інший, `allowed_account_ids` зупинить `plan`.
+Переконайтеся, що ID — очікуваний акаунт, а ARN належить IAM-користувачу, а не Root (`...:root`). Той самий ID має бути в `terraform.tfvars`. Якщо акаунт інший, `allowed_account_ids` зупинить `plan`.
 
-Підтримку сесій `aws login` у Terraform AWS provider і в S3 backend поки не перевірено. Якщо Terraform не бачить облікових даних профілю `massage`, створіть окремий профіль, який отримує тимчасові облікові дані через `credential_process` з активної сесії `aws login`. Ключі при цьому ніде не зберігаються.
+Terraform 1.16.6 (провайдер hashicorp/aws 6.69.1 і S3 backend) працює з профілем `aws login` напряму: `AWS_PROFILE=massage` достатньо. Якщо сесія спливла, команди падають з помилкою про облікові дані; тоді знову виконайте `aws login`.
 
-Запис у `~/.aws/config` (локальний файл користувача, не репозиторій):
+Запасний варіант на випадок, якщо інший інструмент не підтримує профіль `aws login`: окремий профіль із `credential_process` у `~/.aws/config` (локальний файл користувача, не репозиторій):
 
 ```ini
 [profile massage-terraform]
@@ -95,22 +100,49 @@ region = eu-west-3
 credential_process = aws configure export-credentials --profile massage --format process
 ```
 
-Далі `aws login --profile massage`, `export AWS_PROFILE=massage-terraform` і та сама перевірка акаунта. Коли сесія `aws login` спливає, `credential_process` перестає видавати облікові дані: треба знову виконати `aws login`.
-
 Не запускайте `export-credentials` з виводом у термінал. Не копіюйте ключі в `*.tfvars`, `*.tfbackend`, змінні в репозиторії чи будь-які інші файли.
 
-### 2. init → validate → plan → перегляд → apply
+## Робота з bootstrap (state у S3)
+
+Одноразово в робочій копії:
 
 ```sh
 cd infra/bootstrap
-cp terraform.tfvars.example terraform.tfvars    # вказати aws_account_id
-terraform init                                   # локальний state, backend не налаштований
-terraform fmt -check -recursive ..
+cp terraform.tfvars.example terraform.tfvars                       # aws_account_id
+cp ../backend-config/bootstrap.s3.tfbackend.example ../backend-config/bootstrap.s3.tfbackend
+# у bootstrap.s3.tfbackend: bucket = "massage-backend-tfstate-<ACCOUNT_ID>-eu-west-3"
+terraform init -backend-config=../backend-config/bootstrap.s3.tfbackend
+```
+
+Далі звичайний цикл: `terraform validate` → `terraform plan -out=bootstrap.tfplan` → перегляд → `terraform apply bootstrap.tfplan` (лише після погодження).
+
+Основним записом інфраструктури є **state у S3** (`bootstrap/terraform.tfstate`); локальні файли state в `infra/bootstrap` більше не використовуються.
+
+`plan` читає state з S3 і бере блокування: створює `bootstrap/terraform.tfstate.tflock` і після завершення видаляє його. Нову версію state `plan` не записує обов'язково; записує її `apply`, а також команди, що змінюють state (`state mv`, `import` тощо). Оскільки bucket версіонований, після кожного блокування лишаються старі версії й delete markers об'єкта `.tflock`. Це очікувано, але вони теж займають місце й рахуються в запитах. Не вимикайте блокування (`-lock=false`).
+
+Перевірка, що state читається з S3:
+
+```sh
+terraform state list        # 6 керованих ресурсів + data source
+terraform plan -detailed-exitcode   # код 0 = No changes
+aws s3api head-object --bucket <bucket> --key bootstrap/terraform.tfstate \
+  --query '{VersionId:VersionId,SSE:ServerSideEncryption}'
+```
+
+## Початковий bootstrap з нуля
+
+Потрібен лише для нового акаунта або якщо bucket ще не існує. Backend у `backend.tf` посилається на bucket, якого тоді ще немає, тому перший запуск іде з локальним state, а `backend.tf` тимчасово відкладається:
+
+```sh
+cd infra/bootstrap
+mv backend.tf backend.tf.off                     # тимчасово, не комітити
+cp terraform.tfvars.example terraform.tfvars    # aws_account_id
+terraform init
 terraform validate
 terraform plan -out=bootstrap.tfplan
 ```
 
-Перегляньте plan. Очікується створення 6 ресурсів:
+Перегляньте plan. Очікується створення 6 ресурсів і жодних змін чи видалень:
 - `aws_s3_bucket`;
 - `aws_s3_bucket_ownership_controls`;
 - `aws_s3_bucket_public_access_block`;
@@ -118,39 +150,39 @@ terraform plan -out=bootstrap.tfplan
 - `aws_s3_bucket_server_side_encryption_configuration`;
 - `aws_s3_bucket_policy`.
 
-Змін чи видалень бути не повинно. Перевірте ім'я bucket і регіон. Лише тоді:
+Перевірте ім'я bucket і регіон. Далі, після погодження:
 
 ```sh
 terraform apply bootstrap.tfplan
-terraform output
+chmod 600 terraform.tfstate
 ```
 
-Після цього в `infra/bootstrap` лежить **локальний** `terraform.tfstate`. Не видаляйте його до перенесення.
-
-### 3. Перенесення bootstrap state у S3 (окремий крок)
+Перед перенесенням зробіть резервну копію state поза репозиторієм із правами `600`. Перевірте, що об'єкта `bootstrap/terraform.tfstate` у bucket ще немає: потрібен саме `404`, а `403` (AccessDenied) не означає, що його немає. Потім:
 
 ```sh
-cd infra/bootstrap
-cp backend.tf.example backend.tf
+mv backend.tf.off backend.tf
 cp ../backend-config/bootstrap.s3.tfbackend.example ../backend-config/bootstrap.s3.tfbackend
-# у bootstrap.s3.tfbackend вкажіть bucket = значення `terraform output -raw state_bucket_name`
+# bucket = значення `terraform output -raw state_bucket_name`
 terraform init -migrate-state -backend-config=../backend-config/bootstrap.s3.tfbackend
 ```
 
-Terraform запитає підтвердження копіювання наявного state у backend `s3`.
+На запит «copy existing state to the new backend» відповідайте `yes`; `-force-copy` і `-reconfigure` не використовуйте. Після цього перевірка — як у розділі вище: `state list`, `plan -detailed-exitcode`, `head-object`.
 
-Перевірка перенесення:
+Особливості:
+- **Lineage і serial.** Terraform 1.16.6 під час перенесення в порожній S3 backend записує state з **новим lineage і serial 1**. Вміст ресурсів не змінюється; так поводиться сам Terraform (`internal/states/remote/state.go`, `PersistState`). Через це резервна копія локального state має інший lineage, і повернути її через `terraform state push` можна лише з `-force`, тобто з перезаписом віддаленого state. Робіть це тільки свідомо.
+- **Локальні копії.** Після перенесення в `infra/bootstrap` лишаються порожній `terraform.tfstate` і `terraform.tfstate.backup` з попереднім state. Обидва ігноруються Git; тримайте їх із правами `600` і видаляйте лише окремим рішенням.
 
-```sh
-terraform state list        # ті самі 6 ресурсів, тепер читаються з S3
-terraform plan              # "No changes"
-aws s3api head-object --bucket <bucket> --key bootstrap/terraform.tfstate
-```
+## Резервні копії state
 
-Після успішної перевірки:
-- закомітьте `backend.tf` окремим PR;
-- `bootstrap.s3.tfbackend` лишається локальним, бо `*.tfbackend` ігнорується; ім'я bucket не секрет, і його можна буде комітити, коли з'явиться CI для Terraform;
-- локальні `terraform.tfstate` і `terraform.tfstate.backup` можна видалити лише після цього, бо вони дублюють state із чутливими даними.
+- **Копії до міграції** (`terraform.tfstate.backup` і копія, зроблена перед `init -migrate-state`) містять state з **попереднім lineage**. Вони фіксують стан на момент міграції й не збігаються з lineage state у S3.
+- **Після міграції** основним є state у S3. Його історію зберігає versioning bucket. Окрему копію поточного state робіть так (поза репозиторієм, без виводу в термінал):
+
+  ```sh
+  (umask 077; terraform state pull > "$HOME/terraform-state-backups/massage-backend/bootstrap-remote-$(date -u +%Y%m%dT%H%M%SZ).tfstate")
+  ```
+
+  Копія через `state pull` може відрізнятися від об'єкта в S3 форматуванням і порядком записів `check_results`, але lineage, serial і ресурси збігаються.
+- **Відновлення — не звичайний крок.** Перед будь-яким відновленням з'ясуйте, що саме пошкоджено, порівняйте lineage, serial і ресурси копії з поточним state і реальною інфраструктурою, і лише тоді погодьте дію окремо. Спершу варто розглянути відновлення попередньої версії об'єкта в S3 (versioning). `terraform state push -force` перезаписує віддалений state, обходячи перевірки lineage і serial. Це крайній захід, а не стандартна процедура.
 
 ## Перевірки без AWS
 
@@ -171,10 +203,9 @@ Lock-файл оновлюється для обох платформ:
 terraform providers lock -platform=darwin_arm64 -platform=linux_amd64
 ```
 
-## Що визначити перед першим `plan`
+## Відкриті рішення
 
-- ID акаунта, з яким звіряється `allowed_account_ids`.
-- Чи влаштовує ім'я bucket за замовчуванням (`state_bucket_prefix`); чи воно вільне, покаже лише `apply`.
-- Чи працює сесія `aws login` з Terraform; інакше — профіль із `credential_process` (див. вище).
-- Політику зберігання старих версій state (lifecycle) і хто матиме доступ до bucket.
+- Політика зберігання старих версій state (lifecycle rule для noncurrent versions) і хто матиме доступ до bucket.
 - IAM-розмежування staging і production state (разом із появою цих конфігурацій).
+- Коли видаляти локальні копії state, що лишилися після перенесення (`terraform.tfstate.backup`, резервна копія поза репозиторієм).
+- Чи комітити `bootstrap.s3.tfbackend` (ім'я bucket не секрет), коли знадобиться запуск Terraform з бекендом у CI.
