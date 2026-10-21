@@ -1,0 +1,7 @@
+# Copy to terraform.tfvars (ignored by Git) and set the real account ID.
+# The value below is a placeholder, not a real account.
+aws_account_id = "000000000000"
+
+# Defaults, change only if needed:
+# region              = "eu-west-3"
+# state_bucket_prefix = "massage-backend-tfstate"

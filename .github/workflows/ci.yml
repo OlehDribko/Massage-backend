@@ -1,6 +1,7 @@
 # CI for the booking service: code checks, migration/privilege integration
-# tests and a smoke test of the built Docker images. No secrets, no external
-# services (Neon, Brevo, Firebase, AWS), no image publishing, no deploy.
+# tests, a smoke test of the built Docker images and static Terraform checks.
+# No secrets, no external services (Neon, Brevo, Firebase, AWS), no image
+# publishing, no terraform plan/apply, no deploy.
 name: CI
 
 on:
@@ -121,11 +122,37 @@ jobs:
           docker network ls -q --filter label=massage-booking.smoke-test=1 | xargs -r docker network rm
           docker image rm "$BOOKING_RUNTIME_IMAGE" "$BOOKING_MIGRATE_IMAGE" || echo "images already removed"
 
+  # Static Terraform checks only: no AWS credentials, no backend, no plan/apply.
+  terraform:
+    name: terraform (fmt, validate)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      TF_IN_AUTOMATION: "1"
+      TF_INPUT: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.16.6
+          terraform_wrapper: false
+      - run: terraform version
+      - name: terraform fmt
+        run: terraform fmt -check -recursive infra
+      - name: terraform init (no backend, lock file must match)
+        working-directory: infra/bootstrap
+        run: terraform init -backend=false -input=false -lockfile=readonly
+      - name: terraform validate
+        working-directory: infra/bootstrap
+        run: terraform validate
+
   # Single stable status for branch protection: "CI / required".
   required:
     name: required
     if: always()
-    needs: [code, integration, docker]
+    needs: [code, integration, docker, terraform]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -134,9 +161,10 @@ jobs:
           CODE: ${{ needs.code.result }}
           INTEGRATION: ${{ needs.integration.result }}
           DOCKER: ${{ needs.docker.result }}
+          TERRAFORM: ${{ needs.terraform.result }}
         run: |
-          echo "code=$CODE integration=$INTEGRATION docker=$DOCKER"
-          for result in "$CODE" "$INTEGRATION" "$DOCKER"; do
+          echo "code=$CODE integration=$INTEGRATION docker=$DOCKER terraform=$TERRAFORM"
+          for result in "$CODE" "$INTEGRATION" "$DOCKER" "$TERRAFORM"; do
             if [ "$result" != "success" ]; then
               echo "::error::A required job did not succeed ($result)"
               exit 1
