@@ -229,14 +229,15 @@ docker compose --env-file /dev/null down
 
 Workflow `.github/workflows/ci.yml` запускається на pull request і push у `main` та `develop`, а також вручну (`workflow_dispatch`). Фільтрів шляхів немає, тож перевірки йдуть на кожну зміну.
 
-Не використовує секретів, не звертається до Neon, Brevo, Firebase чи AWS, не публікує образи й **не виконує деплой в AWS** (CD ще не налаштовано). Права — лише `contents: read`; застарілий запуск для того самого PR чи гілки скасовується.
+Не використовує секретів, не звертається до Neon, Brevo, Firebase чи AWS, не публікує образи, не запускає `terraform plan`/`apply` і **не виконує деплой в AWS** (CD ще не налаштовано). Права — лише `contents: read`; застарілий запуск для того самого PR чи гілки скасовується.
 
 | Job | Що перевіряє |
 |---|---|
 | `code` | `npm ci`, `prisma generate` без БД, lint, typecheck, `npm test` (unit, процесні, TLS через `openssl`), build |
 | `integration` | `npm run test:integration` на `postgres:17.11-bookworm`: перші й повторні міграції, невдала міграція, перехід зі старих прав, відсутність доступу до `_prisma_migrations`, DML на бізнес-таблицях, відмова з неправильним паролем |
 | `docker` | Збірка `runtime` і `migrate` для **linux/amd64**, перевірка платформи, `npm run test:smoke` |
-| `required` | Підсумковий статус: успішний лише тоді, коли всі три jobs вище мають результат `success` (failure, cancelled або skipped дають помилку) |
+| `terraform` | Terraform 1.16.6: `terraform fmt -check -recursive infra`; в `infra/bootstrap` — `init -backend=false -input=false -lockfile=readonly` і `validate`. Без облікових даних AWS, backend і `plan`/`apply` |
+| `required` | Підсумковий статус: успішний лише тоді, коли всі чотири jobs вище мають результат `success` (failure, cancelled або skipped дають помилку) |
 
 Runner — `ubuntu-24.04` (x64), Node 24. Actions закріплено за повними SHA комітів.
 
@@ -261,6 +262,10 @@ docker build --platform linux/amd64 -f services/booking/Dockerfile --target runt
 docker build --platform linux/amd64 -f services/booking/Dockerfile --target migrate -t massage-booking-migrate:smoke .
 BOOKING_RUNTIME_IMAGE=massage-booking-api:smoke BOOKING_MIGRATE_IMAGE=massage-booking-migrate:smoke npm run test:smoke
 docker image rm massage-booking-api:smoke massage-booking-migrate:smoke
+
+# terraform (Terraform 1.16.x)
+terraform fmt -check -recursive infra
+(cd infra/bootstrap && terraform init -backend=false -input=false -lockfile=readonly && terraform validate)
 ```
 
 Синтаксис workflow перевіряється через [actionlint](https://github.com/rhysd/actionlint), наприклад так: `docker run --rm -v "$PWD/.github/workflows/ci.yml:/repo/ci.yml:ro" -w /repo rhysd/actionlint:1.7.12 ci.yml`.

@@ -28,7 +28,7 @@ infra/
 
 ## Що створює bootstrap
 
-Один S3 bucket у `eu-west-3`. Його ім'я має вигляд `<state_bucket_prefix>-<aws_account_id>-<region>`, наприклад `massage-backend-tfstate-<ACCOUNT_ID>-eu-west-3`. Імена S3 bucket глобальні для всіх акаунтів AWS, тож ID акаунта й регіон роблять ім'я унікальним.
+Один S3 bucket у `eu-west-3`. Його ім'я має вигляд `<state_bucket_prefix>-<aws_account_id>-<region>`, наприклад `massage-backend-tfstate-<ACCOUNT_ID>-eu-west-3`. Імена S3 bucket спільні для всіх акаунтів AWS. ID акаунта й регіон у назві роблять збіг малоймовірним, але не гарантують, що ім'я вільне: це AWS перевіряє лише під час створення bucket. Якщо ім'я зайняте, `apply` завершиться помилкою, і треба змінити `state_bucket_prefix`.
 
 Налаштування bucket:
 - **versioning** — кожен запис state зберігає попередню версію;
@@ -85,11 +85,19 @@ aws sts get-caller-identity --query Account --output text
 
 Переконайтеся, що виведений ID — саме очікуваний акаунт. Той самий ID вкажіть у `terraform.tfvars`. Якщо акаунт інший, `allowed_account_ids` зупинить `plan`.
 
-Підтримку сесій `aws login` у Terraform AWS provider і в S3 backend поки не перевірено. Якщо Terraform не бачить облікових даних, тимчасово експортуйте їх у поточну оболонку і не зберігайте у файлах:
+Підтримку сесій `aws login` у Terraform AWS provider і в S3 backend поки не перевірено. Якщо Terraform не бачить облікових даних профілю `massage`, створіть окремий профіль, який отримує тимчасові облікові дані через `credential_process` з активної сесії `aws login`. Ключі при цьому ніде не зберігаються.
 
-```sh
-eval "$(aws configure export-credentials --profile massage --format env)"
+Запис у `~/.aws/config` (локальний файл користувача, не репозиторій):
+
+```ini
+[profile massage-terraform]
+region = eu-west-3
+credential_process = aws configure export-credentials --profile massage --format process
 ```
+
+Далі `aws login --profile massage`, `export AWS_PROFILE=massage-terraform` і та сама перевірка акаунта. Коли сесія `aws login` спливає, `credential_process` перестає видавати облікові дані: треба знову виконати `aws login`.
+
+Не запускайте `export-credentials` з виводом у термінал. Не копіюйте ключі в `*.tfvars`, `*.tfbackend`, змінні в репозиторії чи будь-які інші файли.
 
 ### 2. init → validate → plan → перегляд → apply
 
@@ -146,10 +154,12 @@ aws s3api head-object --bucket <bucket> --key bootstrap/terraform.tfstate
 
 ## Перевірки без AWS
 
+Ті самі перевірки виконує job `terraform` у CI (`.github/workflows/ci.yml`). Він працює без облікових даних AWS і без backend і не запускає `plan`/`apply`. Lock-файл там лише читається (`-lockfile=readonly`), тож розбіжність версії провайдера з lock-файлом робить job червоним. Локально:
+
 ```sh
 cd infra/bootstrap
 terraform fmt -check -recursive ..
-terraform init -backend=false
+terraform init -backend=false -input=false -lockfile=readonly
 terraform validate
 ```
 
@@ -164,7 +174,7 @@ terraform providers lock -platform=darwin_arm64 -platform=linux_amd64
 ## Що визначити перед першим `plan`
 
 - ID акаунта, з яким звіряється `allowed_account_ids`.
-- Чи влаштовує ім'я bucket за замовчуванням (`state_bucket_prefix`).
-- Чи працює сесія `aws login` з Terraform; інакше використати export-credentials.
+- Чи влаштовує ім'я bucket за замовчуванням (`state_bucket_prefix`); чи воно вільне, покаже лише `apply`.
+- Чи працює сесія `aws login` з Terraform; інакше — профіль із `credential_process` (див. вище).
 - Політику зберігання старих версій state (lifecycle) і хто матиме доступ до bucket.
 - IAM-розмежування staging і production state (разом із появою цих конфігурацій).

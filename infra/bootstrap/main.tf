@@ -1,6 +1,7 @@
 locals {
-  # S3 bucket names are global across all AWS accounts; account ID + region
-  # make this one unique without guessing. Max length: 32 + 1 + 12 + 1 + 14 < 63.
+  # S3 bucket names share one global namespace. Account ID + region make a
+  # collision unlikely but do not guarantee the name is free: AWS checks that
+  # only when the bucket is created. Max length: 32 + 1 + 12 + 1 + 14 < 63.
   state_bucket_name = "${var.state_bucket_prefix}-${var.aws_account_id}-${var.region}"
 
   # One bucket, separate state objects. Different keys do NOT restrict access

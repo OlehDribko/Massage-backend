@@ -20,7 +20,7 @@ variable "region" {
 }
 
 variable "state_bucket_prefix" {
-  description = "Prefix of the state bucket name. The account ID and region are appended to make the name globally unique."
+  description = "Prefix of the state bucket name. The account ID and region are appended to make a name collision unlikely (availability is checked by AWS on creation)."
   type        = string
   default     = "massage-backend-tfstate"
 
