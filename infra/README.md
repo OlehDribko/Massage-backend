@@ -114,7 +114,11 @@ cp ../backend-config/bootstrap.s3.tfbackend.example ../backend-config/bootstrap.
 terraform init -backend-config=../backend-config/bootstrap.s3.tfbackend
 ```
 
-Далі звичайний цикл: `terraform validate` → `terraform plan -out=bootstrap.tfplan` → перегляд → `terraform apply bootstrap.tfplan` (лише після погодження). Під час `plan`/`apply` Terraform бере блокування: створює `bootstrap/terraform.tfstate.tflock` і після завершення видаляє. Не вимикайте блокування (`-lock=false`).
+Далі звичайний цикл: `terraform validate` → `terraform plan -out=bootstrap.tfplan` → перегляд → `terraform apply bootstrap.tfplan` (лише після погодження).
+
+Основним записом інфраструктури є **state у S3** (`bootstrap/terraform.tfstate`); локальні файли state в `infra/bootstrap` більше не використовуються.
+
+`plan` читає state з S3 і бере блокування: створює `bootstrap/terraform.tfstate.tflock` і після завершення видаляє його. Нову версію state `plan` не записує обов'язково; записує її `apply`, а також команди, що змінюють state (`state mv`, `import` тощо). Оскільки bucket версіонований, після кожного блокування лишаються старі версії й delete markers об'єкта `.tflock`. Це очікувано, але вони теж займають місце й рахуються в запитах. Не вимикайте блокування (`-lock=false`).
 
 Перевірка, що state читається з S3:
 
@@ -167,6 +171,18 @@ terraform init -migrate-state -backend-config=../backend-config/bootstrap.s3.tfb
 Особливості:
 - **Lineage і serial.** Terraform 1.16.6 під час перенесення в порожній S3 backend записує state з **новим lineage і serial 1**. Вміст ресурсів не змінюється; так поводиться сам Terraform (`internal/states/remote/state.go`, `PersistState`). Через це резервна копія локального state має інший lineage, і повернути її через `terraform state push` можна лише з `-force`, тобто з перезаписом віддаленого state. Робіть це тільки свідомо.
 - **Локальні копії.** Після перенесення в `infra/bootstrap` лишаються порожній `terraform.tfstate` і `terraform.tfstate.backup` з попереднім state. Обидва ігноруються Git; тримайте їх із правами `600` і видаляйте лише окремим рішенням.
+
+## Резервні копії state
+
+- **Копії до міграції** (`terraform.tfstate.backup` і копія, зроблена перед `init -migrate-state`) містять state з **попереднім lineage**. Вони фіксують стан на момент міграції й не збігаються з lineage state у S3.
+- **Після міграції** основним є state у S3. Його історію зберігає versioning bucket. Окрему копію поточного state робіть так (поза репозиторієм, без виводу в термінал):
+
+  ```sh
+  (umask 077; terraform state pull > "$HOME/terraform-state-backups/massage-backend/bootstrap-remote-$(date -u +%Y%m%dT%H%M%SZ).tfstate")
+  ```
+
+  Копія через `state pull` може відрізнятися від об'єкта в S3 форматуванням і порядком записів `check_results`, але lineage, serial і ресурси збігаються.
+- **Відновлення — не звичайний крок.** Перед будь-яким відновленням з'ясуйте, що саме пошкоджено, порівняйте lineage, serial і ресурси копії з поточним state і реальною інфраструктурою, і лише тоді погодьте дію окремо. Спершу варто розглянути відновлення попередньої версії об'єкта в S3 (versioning). `terraform state push -force` перезаписує віддалений state, обходячи перевірки lineage і serial. Це крайній захід, а не стандартна процедура.
 
 ## Перевірки без AWS
 
