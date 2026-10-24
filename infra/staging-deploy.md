@@ -7,10 +7,11 @@
 | Що | Стан |
 |---|---|
 | Образи коміту `0e93e68ff7f2418eefe8c762b55588973034b32a` у ECR | **опубліковано й перевірено** (run 39656783947) |
-| Terraform: ECS, API Gateway, Cloud Map, ролі, лог-групи, SG (`infra/environments/staging`) | **описано**; `plan`: 38 to add, 0 to change, 0 to destroy; **у AWS не створено** |
+| Terraform: ECS, API Gateway, Cloud Map, ролі, лог-групи, SG (`infra/environments/staging`) | **описано**; `plan` від 2026-10-24: 38 to add, 0 to change, 0 to destroy; **у AWS не створено** |
 | Workflow `.github/workflows/staging-deploy.yml` | **описано**, перевірено actionlint/shellcheck і тестами скриптів; **не запускався** |
-| SSM-параметри з рядками підключення | **не створено** (створює власник, див. нижче) |
-| Staging-БД у Neon | **не перевірено й не підготовлено** (див. «Neon») |
+| SSM-параметри з рядками підключення | **створено власником** 2026-10-24: обидва `SecureString`, `alias/aws/ssm`, Standard, версія 1 (перевірено лише метадані) |
+| Staging-БД у Neon | **підготовлено власником**: проєкт `massage-staging`, БД `neondb`, ролі `booking_migrator`/`booking_app`, таблиць і `_prisma_migrations` немає; міграції ще не запускались |
+| GitHub environment `staging` | **не створено** |
 
 ### Опубліковані образи
 
@@ -100,7 +101,7 @@ API-образ локально перевірено в режимі, близь
 | **Разом, API до 8 год/добу** | **≈ $0.20** | **≈ $1.07** | **≈ $0.83** |
 
 - Ліміт $1.30 на день стосується **усіх** сервісів акаунта. Поточні витрати, крім цього проєкту, мізерні (див. нижче).
-- **ALB тарифікується, навіть коли API зупинено** (`desired_count = 0`): у варіантах B і C від ~$0.65–0.90 на день не втекти. У варіанті A зупинка API зменшує вартість до ≈ $0.04 на день.
+- **ALB тарифікується, навіть коли API зупинено** (`desired_count = 0`): у варіантах B і C від ~$0.65–0.90 на день не втекти. У варіанті A зупинка API зменшує вартість до ≈ $0.02 на день без запитів (див. «Пауза staging»).
 - **Рекомендація: варіант A, API 24 год/добу**, ≈ $0.52 на день (40 % ліміту). Режим «до 8 годин» потребує розкладу (EventBridge Scheduler або ручної зупинки) і для A дає лише ~$0.32 економії на день, тож поки не реалізований.
 - **Найгірший випадок за запитами.** Throttling API Gateway (2 rps, burst 10) пропускає не більше 172 800 запитів на добу. Це до ≈ $0.20 на HTTP API і до ≈ $0.17 на виклики Cloud Map, якщо кожен запит робить discovery. Разом із базовими $0.52 — до ≈ $0.89 на день. При 10 rps лише HTTP API міг би коштувати ≈ $1 на день, тому ліміт знижено. Сам застосунок ліміт на кількість запитів не ставить.
 - **AWS Budgets — це сповіщення (та опційні дії), а не жорстка межа витрат.** Жорсткої межі в AWS немає. Витрати зупиняє `desired_count = 0` або видалення ресурсів.
@@ -311,10 +312,111 @@ aws ssm describe-parameters --region eu-west-3 \
    ```
 
    Для коміту, що містить цей workflow, спершу потрібні push-CI і `ECR publish`.
-8. **Зупинка API без видалення:**
+8. Після перевірок деплою — пауза, якщо staging не потрібен постійно (розділ «Пауза staging»).
 
-   ```sh
-   aws ecs update-service --cluster massage-staging --service booking-api --desired-count 0
-   ```
+## Пауза staging
 
-   Вартість падає до ≈ $0.04 на день. Наступний деплой знову ставить `desired-count 1`.
+Режим для перерв між перевірками: API не працює, а все потрібне для повторного запуску лишається на місці. Виконує **[власник]** зі своїм профілем (`AWS_PROFILE=massage`). Роль деплою для цього не потрібна, а workflow паузи немає.
+
+**Зберігається:**
+- **Neon** (поза AWS): БД, ролі, дані, історія міграцій. Під час паузи до неї ніхто не підключається.
+- **SSM-параметри.**
+- **Образи ECR.** Теги `IMMUTABLE`; lifecycle-правило видаляє лише untagged-образи, старші за 30 днів, а опубліковані образи мають тег SHA.
+- **Ревізії task definition, сервіс (з `desired_count = 0`), API Gateway, VPC link, Cloud Map, ролі, SG.**
+
+**Не зберігається:** логи CloudWatch старші за `log_retention_days` (14 днів) видаляються як завжди.
+
+### Зупинка
+
+```sh
+export AWS_PROFILE=massage AWS_REGION=eu-west-3
+aws ecs update-service --cluster massage-staging --service booking-api \
+  --desired-count 0 --query 'service.desiredCount'
+aws ecs wait services-stable --cluster massage-staging --services booking-api
+```
+
+Не запускайте зупинку, поки триває деплой (workflow `Staging deploy` у стані `in_progress`). Інакше крок rollout у workflow завершиться помилкою.
+
+### Перевірка паузи
+
+```sh
+# 1. Сервіс: desired 0, running 0, pending 0, одне розгортання
+aws ecs describe-services --cluster massage-staging --services booking-api \
+  --query 'services[0].{desired:desiredCount,running:runningCount,pending:pendingCount,deployments:length(deployments)}'
+
+# 2. Жодної задачі в кластері, зокрема задач міграцій: 0
+aws ecs list-tasks --cluster massage-staging --desired-status RUNNING --query 'length(taskArns)'
+
+# 3. Жодного екземпляра в Cloud Map: 0
+sid="$(aws servicediscovery list-services --query "Services[?Name=='booking-api'].Id" --output text)"
+aws servicediscovery list-instances --service-id "$sid" --query 'length(Instances)'
+
+# 4. Немає ENI задач, отже немає публічної IPv4 задачі: 0
+sg="$(aws ec2 describe-security-groups --filters Name=group-name,Values=massage-staging-api --query 'SecurityGroups[0].GroupId' --output text)"
+aws ec2 describe-network-interfaces --filters Name=group-id,Values="$sg" --query 'length(NetworkInterfaces)'
+
+# 5. Публічний URL відповідає помилкою від API Gateway (очікується 503)
+curl -s -o /dev/null -w '%{http_code}\n' "$(gh variable get STAGING_API_BASE_URL)/health/live"
+```
+
+ENI задачі звільняється через кілька хвилин після зупинки. Якщо в п. 4 ще `1`, повторіть пізніше.
+
+### Залишкові витрати під час паузи
+
+Тарифи — з розділу «Кошторис» (USD, on-demand, до кредитів).
+
+| Ресурс | За добу |
+|---|---|
+| Fargate, public IPv4 задачі | 0 (задач немає) |
+| Route 53 private hosted zone (namespace Cloud Map), $0.50/міс. | ≈ 0.017 |
+| Cloud Map: зареєстровані екземпляри | 0 (екземплярів немає) |
+| API Gateway HTTP API, VPC link V2 | 0 без запитів (погодинної плати немає) |
+| ECR: ≈ 0.33 GB (2 образи коміту `0e93e68`), $0.10/GB-міс. | ≈ 0.001; росте з кожною публікацією |
+| CloudWatch Logs, зберігання (< 0.1 GB) | < 0.001 |
+| ECS-кластер, task definitions, IAM, SG, VPC, subnets, IGW | 0 |
+| SSM Standard, ключ `aws/ssm` | 0 |
+| S3 state (кілька KB) | ≈ 0 |
+| **Разом без запитів** | **≈ $0.02 на добу (≈ $0.55 на місяць)** |
+
+- **URL API Gateway лишається публічним.** Запити до нього тарифікуються, навіть коли відповідь 503. Найгірший випадок при throttling 2 rps — до ≈ $0.20 (HTTP API) + ≈ $0.17 (виклики Cloud Map) + ≈ $0.04 (access logs) ≈ **$0.43 на добу**. Це в межах ліміту $1.30.
+- **Neon** — поза рахунком AWS.
+- **Пауза довша за 60 днів без запитів:** VPC link переходить у `INACTIVE`. Перші запити після повторного запуску падатимуть, доки API Gateway не відновить інтерфейси (хвилини). Workflow-перевірка readiness у такому разі може не вкластися в час, і її треба повторити.
+
+### Що може знову запустити сервіс
+
+Перевірено за кодом і в акаунті 2026-10-24.
+
+**Сам по собі сервіс не запускається:**
+
+| Механізм | Чому не запускає під час паузи |
+|---|---|
+| Terraform `apply` | `desired_count` у `ignore_changes`. Якщо сервіс буде перестворено, його створять з `desired_count = 0`. |
+| CI (`ci.yml`, push/PR) | AWS не використовує |
+| `ECR publish` | лише `workflow_dispatch`; роль публікації не має прав на ECS |
+| `AWS OIDC check` | лише `workflow_dispatch`; read-only |
+| Circuit breaker ECS | відкочує ревізію, `desired_count` не змінює |
+| App Auto Scaling, EventBridge Scheduler / Rules | у акаунті немає жодного scalable target, розкладу чи правила; Terraform їх не описує |
+
+**Запустити сервіс може лише людина:** `Staging deploy` (лише `workflow_dispatch`, job у environment `staging`, ставить `desired-count 1`) або ручний `update-service` з адмін-профілем.
+
+Щоб випадковий запуск workflow під час паузи не стартував задачі, увімкніть у environment `staging` **required reviewer**. Тоді job деплою чекатиме схвалення, перш ніж отримає AWS-доступ.
+
+### Повторний запуск
+
+**Той самий образ, без міграцій.** Схема БД під час паузи не змінювалась.
+
+```sh
+export AWS_PROFILE=massage AWS_REGION=eu-west-3
+aws ecs update-service --cluster massage-staging --service booking-api \
+  --desired-count 1 --query 'service.taskDefinition'
+aws ecs wait services-stable --cluster massage-staging --services booking-api
+base="$(gh variable get STAGING_API_BASE_URL)"
+curl -s "$base/health/ready"   # очікується 200 і version = SHA останнього деплою
+```
+
+- Сервіс стартує з тією ревізією, яка була задеплоєна до паузи. Ревізії, створені Terraform під час паузи, підхопить лише наступний деплой.
+- Compute Neon після простою прокидається за кілька секунд. Перший `/health/ready` може дати 503 `database_unavailable` (`READINESS_TIMEOUT_MS` = 2000): повторіть через 10–20 с.
+
+**Новий образ:** звичайний запуск `Staging deploy` (розділ «Workflow»). Він сам поставить `desired-count 1`; `run_migrations = true`, якщо в коміті є нові міграції.
+
+Після повторного запуску витрати повертаються до ≈ $0.52 на добу (розділ «Кошторис»).
