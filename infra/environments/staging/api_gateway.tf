@@ -31,6 +31,9 @@ resource "aws_service_discovery_private_dns_namespace" "main" {
 
 # API Gateway needs IP and port of each instance, hence SRV records.
 # Instance health comes from the ECS container health check.
+# failure_threshold is deprecated (AWS always uses 1), but an empty block is
+# not sent to AWS at all: the service is then created without a custom health
+# check and every later plan wants to replace it. Setting the value sends it.
 resource "aws_service_discovery_service" "api" {
   name = "booking-api"
 
@@ -44,7 +47,9 @@ resource "aws_service_discovery_service" "api" {
     }
   }
 
-  health_check_custom_config {}
+  health_check_custom_config {
+    failure_threshold = 1
+  }
 }
 
 resource "aws_apigatewayv2_vpc_link" "api" {
