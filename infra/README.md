@@ -2,9 +2,10 @@
 
 - **bootstrap** — S3 bucket для Terraform state, GitHub Actions OIDC provider і роль перевірки входу.
 - **staging foundation** — мережа (VPC, public subnets, security groups) і спільні ECR-репозиторії; **створено в AWS і перевірено**.
-- **публікація образів** — IAM-роль `massage-staging-github-ecr-publish` і workflow `ECR publish (booking)`; **поки лише описані**, у AWS не створені й не запускались.
+- **публікація образів** — IAM-роль `massage-staging-github-ecr-publish` і workflow `ECR publish (booking)`; **роль створено, перша публікація виконана** (коміт `0e93e68`).
+- **staging-деплой** — ECS Fargate, API Gateway HTTP API (технічна HTTPS-адреса), ролі, лог-групи й workflow `Staging deploy (booking)`; **лише описані** (`plan`: 38 to add), у AWS не створені. Деталі, кошторис і порядок запуску — [staging-deploy.md](staging-deploy.md).
 
-ECS, ALB, сертифікати, DNS, секрети, production і деплой ще не описані. Neon залишається зовнішньою БД і Terraform-ом не керується.
+ALB, власний домен, сертифікати, production ще не описані. Neon залишається зовнішньою БД і Terraform-ом не керується.
 
 ```
 infra/
@@ -31,7 +32,11 @@ infra/
       security_groups.tf          # SG для ALB і API
       ecr.tf                      # ECR booking-api і booking-migrate
       ecr_publish_role.tf         # IAM-роль публікації образів (GitHub OIDC, develop)
-      outputs.tf                  # ID для майбутніх ECS/ALB
+      ecs.tf                      # кластер, лог-групи, task definitions API і міграції, сервіс API
+      ecs_iam.tf                  # execution/task roles; секрети — імена SSM-параметрів, без значень
+      api_gateway.tf              # HTTP API, VPC link, Cloud Map (технічна HTTPS-адреса)
+      deploy_role.tf              # IAM-роль деплою (GitHub OIDC, environment staging)
+      outputs.tf                  # ID ресурсів, ARN ролей, значення змінних для workflow
       .terraform.lock.hcl         # власний lock-файл (darwin_arm64, linux_amd64)
       terraform.tfvars.example
 ```
@@ -96,10 +101,13 @@ S3 тарифікується за обсяг збережених даних (�
 | S3 bucket для state (`infra/bootstrap`) | так | так |
 | GitHub OIDC provider і роль `massage-backend-github-oidc-check` (`infra/bootstrap`) | так | так; вхід з `develop` перевірено workflow `AWS OIDC check` |
 | Staging: VPC, subnets, IGW, маршрути, security groups (`infra/environments/staging`) | так | так (21 ресурс разом з ECR); налаштування перевірено read-only API, контрольний `plan` — `No changes` |
-| ECR `massage/booking-api`, `massage/booking-migrate` (`infra/environments/staging`) | так | так; образів ще немає |
-| IAM-роль `massage-staging-github-ecr-publish` (`infra/environments/staging`) | так | **ні** |
-| Workflow `.github/workflows/ecr-publish.yml` | так | не запускався |
-| ALB, listeners, ECS, сертифікати, DNS, секрети, production | ні | ні |
+| ECR `massage/booking-api`, `massage/booking-migrate` (`infra/environments/staging`) | так | так; образи коміту `0e93e68` опубліковано |
+| IAM-роль `massage-staging-github-ecr-publish` (`infra/environments/staging`) | так | так; trust і права перевірено через IAM API |
+| Workflow `.github/workflows/ecr-publish.yml` | так | запущено успішно (run 39656783947) |
+| ECS, API Gateway, Cloud Map, ролі задач і деплою, лог-групи (`infra/environments/staging`) | так | **ні** (`plan`: 38 to add, 0 to change, 0 to destroy) |
+| Workflow `.github/workflows/staging-deploy.yml` | так | не запускався |
+| SSM-параметри з рядками підключення | лише імена | **ні** (створює власник поза Terraform) |
+| ALB, власний домен, сертифікати, production | ні | ні |
 
 > Команди, що змінюють AWS (`apply`, перенесення state), виконуються лише після окремого рішення.
 
@@ -250,7 +258,9 @@ repo:OlehDribko@131261254/Massage-backend@1318544830:ref:refs/heads/develop
 
 ## Staging: мережа та ECR
 
-`infra/environments/staging` — окрема root-конфігурація. Мережу й ECR із цього розділу **створено в AWS** (`apply` 21 ресурсу, state `envs/staging/terraform.tfstate`) і перевірено read-only API; контрольний `plan` показує `No changes`. API ще ніде не запускається. **ALB і listeners не створені й у цій конфігурації не описані**: є лише security group для майбутнього ALB.
+`infra/environments/staging` — окрема root-конфігурація. Мережу й ECR із цього розділу **створено в AWS** (`apply` 21 ресурсу, state `envs/staging/terraform.tfstate`) і перевірено read-only API; контрольний `plan` показував `No changes`. API ще ніде не запускається.
+
+> **Вхідна точка змінилась.** Для staging обрано API Gateway HTTP API з VPC link замість ALB (обґрунтування й кошторис — [staging-deploy.md](staging-deploy.md)). SG `alb` і його правила лишаються в AWS без використання (окремо не тарифікуються); їх можна прибрати окремим рішенням або використати, якщо власник обере ALB. Схема нижче описує початковий задум з ALB.
 
 ### Відокремлення від bootstrap
 - **Окремий state.** Об'єкт `envs/staging/terraform.tfstate` лежить у тому ж bucket, але це окремий state зі своїм блокуванням (`use_lockfile`). `plan`/`apply` staging не торкаються ресурсів bootstrap, і навпаки.
@@ -351,21 +361,17 @@ Lifecycle прибирає лише **untagged** образи, старші за
 
 VPC, subnets, route tables, Internet Gateway і security groups окремої плати зазвичай не мають, але передача даних тарифікується. Актуальні тарифи дивіться на сторінках цін AWS для `eu-west-3`.
 
-### Що лишається перед ECS/ALB
-- **Публікація образів у ECR:** роль і workflow описані (див. «Публікація образів у ECR»), але ще не застосовані й не запускались.
-- **ECS:** кластер, task definitions для API і міграцій (CPU/пам'ять, змінні, health check `/health/ready`), task execution role (pull з ECR, логи), task role, лог-групи CloudWatch.
-- **Секрети** (`DATABASE_URL`, `MIGRATION_DATABASE_URL` для Neon, ключі Brevo/Firebase): Secrets Manager або SSM Parameter Store і доступ execution role до них.
-- **ALB:** сам балансувальник, listeners (443 з сертифікатом ACM; 80 лише з redirect на HTTPS), target group (`ip`, порт 3001, health check). Потрібні домен і DNS. До появи сертифіката публічні сценарії авторизації не вмикати.
-- **ECS-мережа:** `assign_public_ip = true` і public subnets з outputs у `network_configuration` сервісу та задачі міграцій.
+### Що лишалося перед ECS
+ECS, секрети, вхідна точка й деплой тепер описані в [staging-deploy.md](staging-deploy.md) (ще не створені). Відкритими лишаються:
 - **Невідомі дані:**
   - чи потрібен Neon саме на порту 5432, чи лише HTTPS (serverless driver), і чи дозволяє Neon доступ з будь-яких IP (allowlist Neon прив'язав би до мінливих public IP tasks);
-  - домен і сертифікат;
+  - власний домен і сертифікат (для staging не потрібні: технічна адреса `execute-api`);
   - чи потрібен IPv6 (зараз лише IPv4).
 - **Просування образів у production:** вирішено використовувати спільні репозиторії `massage/*` і передавати образ за digest. Відкрито, чи переносити ECR в окремий спільний root, коли з'явиться production.
 
 ## Публікація образів у ECR
 
-Описано, але **ще не створено й не запускалось**: IAM-роль у `infra/environments/staging/ecr_publish_role.tf` і workflow `.github/workflows/ecr-publish.yml`.
+IAM-роль у `infra/environments/staging/ecr_publish_role.tf` **створено в AWS**, workflow `.github/workflows/ecr-publish.yml` **запущено успішно**: run 39656783947, коміт `0e93e68ff7f2418eefe8c762b55588973034b32a`, обидва образи `linux/amd64` (single-platform manifest), digest — у [staging-deploy.md](staging-deploy.md).
 
 ### Роль `massage-staging-github-ecr-publish`
 - **Federated principal:** наявний GitHub OIDC provider з bootstrap, дублікат не створюється. Його ARN передається явно змінною `github_oidc_provider_arn`; валідація вимагає, щоб це був провайдер `token.actions.githubusercontent.com` в акаунті `aws_account_id`. State bootstrap цей root не читає.
@@ -423,8 +429,8 @@ VPC, subnets, route tables, Internet Gateway і security groups окремої �
 | Змінна | Значення | Стан |
 |---|---|---|
 | `AWS_ACCOUNT_ID` | `849110175854` | уже існує |
-| `AWS_REGION` | `eu-west-3` | потрібно додати |
-| `AWS_ECR_PUBLISH_ROLE_ARN` | `terraform output -raw ecr_publish_role_arn` (staging) | потрібно додати після `apply` |
+| `AWS_REGION` | `eu-west-3` | задано |
+| `AWS_ECR_PUBLISH_ROLE_ARN` | `terraform output -raw ecr_publish_role_arn` (staging) | задано |
 
 **Порядок застосування і першої публікації:**
 1. Merge PR у `develop`, потім `develop` → `main`: `workflow_dispatch` має бути в default branch.
@@ -475,6 +481,6 @@ terraform providers lock -platform=darwin_arm64 -platform=linux_amd64
 
 - Політика зберігання старих версій state (lifecycle rule для noncurrent versions) і хто матиме доступ до bucket.
 - IAM-розмежування staging і production state (разом із появою цих конфігурацій).
-- Чи обмежувати роль додатково за workflow (`job_workflow_ref`), коли з'являться ролі з реальними правами (staging/production).
+- Чи обмежувати роль публікації додатково за workflow. Роль деплою вже відокремлена: вона довіряє лише `sub` GitHub environment `staging`.
 - Коли видаляти локальні копії state, що лишилися після перенесення (`terraform.tfstate.backup`, резервна копія поза репозиторієм).
 - Чи комітити `bootstrap.s3.tfbackend` (ім'я bucket не секрет), коли знадобиться запуск Terraform з бекендом у CI.
