@@ -142,3 +142,108 @@ variable "github_repository_id" {
     error_message = "github_repository_id must be numeric."
   }
 }
+
+# --- Booking deployment (ECS Fargate, API Gateway) ---
+
+variable "booking_api_image" {
+  description = "Initial booking API image, by digest (<registry>/<ecr_namespace>/booking-api@sha256:...). Later deployments register new task definition revisions from the deploy workflow; Terraform does not roll them back."
+  type        = string
+
+  validation {
+    condition     = can(regex("^${var.aws_account_id}\\.dkr\\.ecr\\.${var.region}\\.amazonaws\\.com/${var.ecr_namespace}/booking-api@sha256:[0-9a-f]{64}$", var.booking_api_image))
+    error_message = "booking_api_image must be <account>.dkr.ecr.<region>.amazonaws.com/<ecr_namespace>/booking-api@sha256:<64 hex>."
+  }
+}
+
+variable "booking_migrate_image" {
+  description = "Initial booking migration image, by digest (<registry>/<ecr_namespace>/booking-migrate@sha256:...)."
+  type        = string
+
+  validation {
+    condition     = can(regex("^${var.aws_account_id}\\.dkr\\.ecr\\.${var.region}\\.amazonaws\\.com/${var.ecr_namespace}/booking-migrate@sha256:[0-9a-f]{64}$", var.booking_migrate_image))
+    error_message = "booking_migrate_image must be <account>.dkr.ecr.<region>.amazonaws.com/<ecr_namespace>/booking-migrate@sha256:<64 hex>."
+  }
+}
+
+variable "booking_image_commit_sha" {
+  description = "Commit SHA of the initial images (APP_VERSION of the initial API task definition)."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{40}$", var.booking_image_commit_sha))
+    error_message = "booking_image_commit_sha must be a full 40-character commit SHA."
+  }
+}
+
+variable "booking_runtime_db_role" {
+  description = "PostgreSQL runtime role that the migration task grants DML to (BOOKING_RUNTIME_ROLE). Must already exist in the staging database."
+  type        = string
+  default     = "booking_app"
+
+  validation {
+    condition     = can(regex("^[a-z_][a-z0-9_]{0,62}$", var.booking_runtime_db_role))
+    error_message = "booking_runtime_db_role must be a lowercase PostgreSQL role name."
+  }
+}
+
+variable "api_cpu" {
+  description = "Fargate CPU units of the API task (256 = 0.25 vCPU)."
+  type        = number
+  default     = 256
+
+  validation {
+    condition     = contains([256, 512, 1024], var.api_cpu)
+    error_message = "api_cpu must be 256, 512 or 1024."
+  }
+}
+
+variable "api_memory" {
+  description = "Memory (MiB) of the API task; must be a valid Fargate combination with api_cpu."
+  type        = number
+  default     = 512
+
+  validation {
+    condition     = contains([512, 1024, 2048], var.api_memory)
+    error_message = "api_memory must be 512, 1024 or 2048."
+  }
+}
+
+variable "log_retention_days" {
+  description = "CloudWatch Logs retention for the API, migration and API Gateway access logs."
+  type        = number
+  default     = 14
+
+  validation {
+    condition     = contains([1, 3, 5, 7, 14, 30], var.log_retention_days)
+    error_message = "log_retention_days must be one of 1, 3, 5, 7, 14, 30."
+  }
+}
+
+variable "vpc_link_az_ids" {
+  description = "AZ IDs where API Gateway VPC links V2 are supported in the region (eu-west-3: euw3-az1, euw3-az3). The VPC link uses only the public subnets in these AZs."
+  type        = list(string)
+  default     = ["euw3-az1", "euw3-az3"]
+}
+
+variable "api_throttling_rate_limit" {
+  description = "Steady-state request rate limit (requests/second) of the HTTP API $default route. Also caps the request-driven cost: 2 rps is at most 172,800 requests/day."
+  type        = number
+  default     = 2
+}
+
+variable "api_throttling_burst_limit" {
+  description = "Burst limit of the HTTP API $default route."
+  type        = number
+  default     = 10
+}
+
+variable "github_deploy_environment" {
+  description = "GitHub environment of the staging deploy job; part of the deploy role's trusted `sub` claim."
+  type        = string
+  default     = "staging"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_-]{1,64}$", var.github_deploy_environment))
+    error_message = "github_deploy_environment must be 1-64 characters [A-Za-z0-9_-]."
+  }
+}

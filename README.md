@@ -237,11 +237,14 @@ Workflow `.github/workflows/ci.yml` запускається на pull request �
 | `integration` | `npm run test:integration` на `postgres:17.11-bookworm`: перші й повторні міграції, невдала міграція, перехід зі старих прав, відсутність доступу до `_prisma_migrations`, DML на бізнес-таблицях, відмова з неправильним паролем |
 | `docker` | Збірка `runtime` і `migrate` для **linux/amd64**, перевірка платформи, `npm run test:smoke` |
 | `terraform` | Terraform 1.16.6: `terraform fmt -check -recursive infra`; в `infra/bootstrap` і `infra/environments/staging` — `init -backend=false -input=false -lockfile=readonly` і `validate`. Без облікових даних AWS, backend і `plan`/`apply` |
-| `required` | Підсумковий статус: успішний лише тоді, коли всі чотири jobs вище мають результат `success` (failure, cancelled або skipped дають помилку) |
+| `deploy-scripts` | `shellcheck` і тести скриптів staging-деплою (`.github/scripts/staging-deploy/test.sh`) на фікстурах, без AWS |
+| `required` | Підсумковий статус: успішний лише тоді, коли всі п'ять jobs вище мають результат `success` (failure, cancelled або skipped дають помилку) |
 
 Runner — `ubuntu-24.04` (x64), Node 24. Actions закріплено за повними SHA комітів.
 
-Ручний workflow `.github/workflows/ecr-publish.yml` (`ECR publish (booking)`, лише `workflow_dispatch` на `develop`) після перевірки успішного CI для того самого коміту публікує образи `runtime` і `migrate` у ECR з тегом-SHA і записує їхні digest. Він теж не входить у `CI / required`, а його роль ще не створена (див. [infra/README.md](infra/README.md)).
+Ручний workflow `.github/workflows/ecr-publish.yml` (`ECR publish (booking)`, лише `workflow_dispatch` на `develop`) після перевірки успішного CI для того самого коміту публікує образи `runtime` і `migrate` у ECR з тегом-SHA і записує їхні digest. Він теж не входить у `CI / required`; роль створено, перша публікація виконана (див. [infra/README.md](infra/README.md)).
+
+Ручний workflow `.github/workflows/staging-deploy.yml` (`Staging deploy (booking)`, лише `workflow_dispatch` на `develop`, environment `staging`) перевіряє походження образів, запускає задачу міграцій, оновлює ECS-сервіс і перевіряє `/health/ready` за HTTPS. Він не входить у `CI / required` і ще не запускався: інфраструктуру staging описано, але не створено (див. [infra/staging-deploy.md](infra/staging-deploy.md)).
 
 Окремий ручний workflow `.github/workflows/aws-oidc-check.yml` (`AWS OIDC check`, лише `workflow_dispatch` на `develop`) перевіряє вхід GitHub Actions в AWS через OIDC роллю без прав. Він не входить у `CI / required` і потребує repository variables `AWS_OIDC_CHECK_ROLE_ARN` і `AWS_ACCOUNT_ID` (див. [infra/README.md](infra/README.md)).
 
@@ -282,4 +285,4 @@ for dir in infra/bootstrap infra/environments/staging; do (cd "$dir" && terrafor
 
 ## Ще не налаштовано
 
-CD (публікація образів і деплой), інфраструктура AWS (є лише bootstrap: S3 bucket для Terraform state створено, state bootstrap зберігається в ньому — див. [infra/README.md](infra/README.md)), branch protection у GitHub, `trust proxy` для роботи за балансувальником, повне мапування помилок Prisma. Бізнес-функціонал користувачів буде перебудований (Firebase, Notifications).
+Автоматичний CD (публікація й деплой staging поки запускаються вручну; ECS/API Gateway описані в Terraform, але не створені — див. [infra/staging-deploy.md](infra/staging-deploy.md)), production, branch protection у GitHub, `trust proxy` для роботи за балансувальником, повне мапування помилок Prisma. Бізнес-функціонал користувачів буде перебудований (Firebase, Notifications).

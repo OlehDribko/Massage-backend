@@ -1,5 +1,6 @@
 # CI for the booking service: code checks, migration/privilege integration
-# tests, a smoke test of the built Docker images and static Terraform checks.
+# tests, a smoke test of the built Docker images, static Terraform checks and
+# tests of the staging deploy scripts.
 # No secrets, no external services (Neon, Brevo, Firebase, AWS), no image
 # publishing, no terraform plan/apply, no deploy.
 name: CI
@@ -154,11 +155,27 @@ jobs:
         working-directory: infra/environments/staging
         run: terraform validate
 
+  # Staging deploy scripts: static analysis and tests with fixtures (no AWS).
+  deploy-scripts:
+    name: deploy scripts (shellcheck, tests)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: shellcheck
+        run: |
+          shellcheck --version
+          shellcheck -x -P SCRIPTDIR .github/scripts/staging-deploy/*.sh
+      - name: Tests
+        run: bash .github/scripts/staging-deploy/test.sh
+
   # Single stable status for branch protection: "CI / required".
   required:
     name: required
     if: always()
-    needs: [code, integration, docker, terraform]
+    needs: [code, integration, docker, terraform, deploy-scripts]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -168,9 +185,10 @@ jobs:
           INTEGRATION: ${{ needs.integration.result }}
           DOCKER: ${{ needs.docker.result }}
           TERRAFORM: ${{ needs.terraform.result }}
+          DEPLOY_SCRIPTS: ${{ needs.deploy-scripts.result }}
         run: |
-          echo "code=$CODE integration=$INTEGRATION docker=$DOCKER terraform=$TERRAFORM"
-          for result in "$CODE" "$INTEGRATION" "$DOCKER" "$TERRAFORM"; do
+          echo "code=$CODE integration=$INTEGRATION docker=$DOCKER terraform=$TERRAFORM deploy-scripts=$DEPLOY_SCRIPTS"
+          for result in "$CODE" "$INTEGRATION" "$DOCKER" "$TERRAFORM" "$DEPLOY_SCRIPTS"; do
             if [ "$result" != "success" ]; then
               echo "::error::A required job did not succeed ($result)"
               exit 1
