@@ -7,13 +7,13 @@
 | Що | Стан |
 |---|---|
 | Образи коміту `0e93e68ff7f2418eefe8c762b55588973034b32a` у ECR | **опубліковано й перевірено** (run 39656783947) |
-| Terraform: ECS, API Gateway, Cloud Map, ролі, лог-групи, SG (`infra/environments/staging`) | **створено** 2026-10-26 (`apply`: 38 added). Контрольний `plan` не порожній через Cloud Map (див. «Cloud Map: health check») |
+| Terraform: ECS, API Gateway, Cloud Map, ролі, лог-групи, SG (`infra/environments/staging`) | **створено** 2026-10-26 (`apply`: 38 added); виправлення Cloud Map застосовано 2026-10-27, контрольний `plan` — `No changes` (див. «Cloud Map: health check») |
 | Workflow `.github/workflows/staging-deploy.yml` | **перший запуск успішний** 2026-10-26 (run 40400135052): 4 міграції, ревізія API `massage-staging-booking-api:2`, readiness через HTTPS з версією `0e93e68` |
 | SSM-параметри з рядками підключення | **створено власником** 2026-10-24: обидва `SecureString`, `alias/aws/ssm`, Standard, версія 1 (перевірено лише метадані) |
 | Staging-БД у Neon | **підготовлено власником**: проєкт `massage-staging`, БД `neondb`, ролі `booking_migrator`/`booking_app`, таблиць і `_prisma_migrations` немає; міграції ще не запускались |
 | GitHub environment `staging` | **створено**: лише гілка `develop`, без тегів і reviewer |
 | Repository variables деплою (9) | **задано** з `terraform output deploy_workflow_variables` |
-| Staging | **на паузі** з 2026-10-26: `desired_count = 0`, задач немає |
+| Staging | **на паузі** з 2026-10-27 (після короткої перевірки): `desired_count = 0`, running/pending 0, задач і екземплярів Cloud Map немає |
 
 ### Опубліковані образи
 
@@ -246,9 +246,17 @@ aws ssm describe-parameters --region eu-west-3 \
 
 Виправлення — `failure_threshold = 1` у блоці (атрибут застарілий, але AWS і так завжди використовує 1).
 
-**Застосовувати лише під час паузи** (`desired_count = 0`, екземплярів у Cloud Map немає). Plan з виправленням (перевірено 2026-10-26, без apply): 1 to add і 1 to destroy (сервіс Cloud Map), 3 to change (сервіс ECS, інтеграція, політика деплою) і попередження про застарілий `failure_threshold`. Після `apply` контрольний `plan` має показати `No changes`; доки цього не перевірено, виправлення вважається непідтвердженим.
+**Застосовано 2026-10-27 під час паузи** (`desired_count = 0`, екземплярів у Cloud Map немає):
+- `plan` показував 1 to add, 3 to change, 1 to destroy; фактичний `apply` — **1 added, 0 changed, 1 destroyed**. Cloud Map перестворив сервіс з тим самим ID (`srv-qx53trey2blbnlxo`), тож ARN не змінився, і сервіс ECS, інтеграція та політика деплою оновлення не потребували.
+- `aws servicediscovery get-service` → `HealthCheckCustomConfig: {"FailureThreshold": 1}`.
+- Контрольний `plan` — **`No changes`** (лише попередження про застарілий `failure_threshold`).
 
-Без виправлення API працює: інстанси без health check Cloud Map вважає здоровими, а ECS знімає їх із реєстрації при зупинці задачі.
+**Перевірка після виправлення** (той самий день, ревізія `massage-staging-booking-api:2`, без міграцій):
+- задача `HEALTHY` в ECS; Cloud Map перші ~30 с після реєстрації показував `UNHEALTHY`, потім ECS передав `HEALTHY`. API Gateway відповідав 200 вже в цей проміжок;
+- через HTTPS `/health/live` → 200, `/health/ready` → 200 з версією `0e93e68ff7f2418eefe8c762b55588973034b32a`;
+- після перевірки staging повернуто на паузу: `desired_count = 0`, running/pending 0, задач, екземплярів Cloud Map, ENI задачі й публічних IPv4 немає; URL відповідає 500.
+
+Повторно застосовувати виправлення не потрібно.
 
 ## Workflow `Staging deploy (booking)`
 
