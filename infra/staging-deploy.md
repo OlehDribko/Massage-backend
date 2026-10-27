@@ -7,11 +7,13 @@
 | Що | Стан |
 |---|---|
 | Образи коміту `0e93e68ff7f2418eefe8c762b55588973034b32a` у ECR | **опубліковано й перевірено** (run 39656783947) |
-| Terraform: ECS, API Gateway, Cloud Map, ролі, лог-групи, SG (`infra/environments/staging`) | **описано**; `plan` від 2026-10-24: 38 to add, 0 to change, 0 to destroy; **у AWS не створено** |
-| Workflow `.github/workflows/staging-deploy.yml` | **описано**, перевірено actionlint/shellcheck і тестами скриптів; **не запускався** |
+| Terraform: ECS, API Gateway, Cloud Map, ролі, лог-групи, SG (`infra/environments/staging`) | **створено** 2026-10-26 (`apply`: 38 added); виправлення Cloud Map застосовано 2026-10-27, контрольний `plan` — `No changes` (див. «Cloud Map: health check») |
+| Workflow `.github/workflows/staging-deploy.yml` | **перший запуск успішний** 2026-10-26 (run 40400135052): 4 міграції, ревізія API `massage-staging-booking-api:2`, readiness через HTTPS з версією `0e93e68` |
 | SSM-параметри з рядками підключення | **створено власником** 2026-10-24: обидва `SecureString`, `alias/aws/ssm`, Standard, версія 1 (перевірено лише метадані) |
 | Staging-БД у Neon | **підготовлено власником**: проєкт `massage-staging`, БД `neondb`, ролі `booking_migrator`/`booking_app`, таблиць і `_prisma_migrations` немає; міграції ще не запускались |
-| GitHub environment `staging` | **не створено** |
+| GitHub environment `staging` | **створено**: лише гілка `develop`, без тегів і reviewer |
+| Repository variables деплою (9) | **задано** з `terraform output deploy_workflow_variables` |
+| Staging | **на паузі** з 2026-10-27 (після короткої перевірки): `desired_count = 0`, running/pending 0, задач і екземплярів Cloud Map немає |
 
 ### Опубліковані образи
 
@@ -80,7 +82,7 @@ API-образ локально перевірено в режимі, близь
 
 ### Припущення
 - API: 1 task 0.25 vCPU / 0.5 GB x86, `desired_count = 1`. Образи зібрано для `linux/amd64`; ARM на 20 % дешевший, але потребує окремої збірки.
-- Трафік: до 30 000 запитів і 0.5 GB вихідного трафіку на місяць, з запасом на «десятки користувачів». Сюди входить міжрегіональний трафік до Neon (`eu-west-2`), який для AWS є трафіком в інтернет.
+- Трафік: до 30 000 запитів і 0.5 GB вихідного трафіку на місяць, з запасом на «десятки користувачів». Сюди входить міжрегіональний трафік до Neon (`eu-central-1`), який для AWS є трафіком в інтернет.
 - 1 деплой на день: задача міграцій ~3 хв і другий API-task ~5 хв під час rolling update. Fargate тарифікується посекундно, мінімум 1 хв.
 - Логи до 0.1 GB на місяць; ECR ~3 GB після 10–15 публікацій. Tagged образи не видаляються, тож обсяг росте приблизно на 0.3 GB за публікацію без урахування спільних шарів.
 - Секрети в SSM Parameter Store (standard, ключ `aws/ssm`) — $0. У Secrets Manager два секрети коштували б ≈ $0.027 на день.
@@ -214,7 +216,7 @@ aws ssm describe-parameters --region eu-west-3 \
 
 З коду, міграцій і документації репозиторію відомо:
 - **4 міграції Prisma** у схемі `public`: `init`, `add_marketing_consent_pending`, `rename_pending_to_email_verified`, `add_email_verification_sent_at`. Це одна таблиця `User`, enum `UserStatus` і `_prisma_migrations`.
-- **Регіон Neon — `aws eu-west-2` (Лондон), pooler-endpoint.** Це визначено раніше за ім'ям хоста, без мережевих запитів (`ARCHITECTURE_READINESS.md`). Отже, міжрегіональна затримка Париж → Лондон.
+- **Регіон staging-БД Neon (`massage-staging`) — `aws eu-central-1` (Франкфурт)**, за ім'ям хоста в лозі задачі міграцій 2026-10-26. Отже, міжрегіональна затримка Париж → Франкфурт. Раніше за ім'ям хоста з `.env` визначено `eu-west-2` (`ARCHITECTURE_READINESS.md`), але це інша БД.
 - **У наявній БД, імовірно, є таблиці й історія міграцій.** У `BACKEND_HANDOFF.md` записано, що `prisma migrate status` працював, а міграції застосовувались до появи окремих ролей migrator/app. Відсутність клієнтів не означає порожньої БД.
 
 **Ризик для наявної БД.** Раннер міграцій видає `booking_app` права лише на таблиці, **власником яких є роль migrator** (`relowner = current_user`). Якщо таблиці створено іншою роллю (наприклад, власником Neon за замовчуванням):
@@ -235,6 +237,26 @@ aws ssm describe-parameters --region eu-west-3 \
 - `_prisma_migrations` (назви, `finished_at`, `rolled_back_at`);
 - ролі `booking_migrator` і `booking_app` (`rolsuper`, `rolbypassrls`) та їхні гранти;
 - `pg_stat_ssl` для свого з'єднання.
+
+## Cloud Map: health check
+
+Після першого `apply` контрольний `plan` показав `1 to add, 3 to change, 1 to destroy`. Причина:
+- порожній блок `health_check_custom_config {}` провайдер AWS (v6.69.1) не передає в API, тож сервіс Cloud Map створено **без** custom health check;
+- через це кожен `plan` хоче перестворити сервіс Cloud Map, а слідом — оновити `service_registries` сервісу ECS, `integration_uri` інтеграції та політику ролі деплою (вміст політики той самий, змінюється лише порядок обчислення).
+
+Виправлення — `failure_threshold = 1` у блоці (атрибут застарілий, але AWS і так завжди використовує 1).
+
+**Застосовано 2026-10-27 під час паузи** (`desired_count = 0`, екземплярів у Cloud Map немає):
+- `plan` показував 1 to add, 3 to change, 1 to destroy; фактичний `apply` — **1 added, 0 changed, 1 destroyed**. Cloud Map перестворив сервіс з тим самим ID (`srv-qx53trey2blbnlxo`), тож ARN не змінився, і сервіс ECS, інтеграція та політика деплою оновлення не потребували.
+- `aws servicediscovery get-service` → `HealthCheckCustomConfig: {"FailureThreshold": 1}`.
+- Контрольний `plan` — **`No changes`** (лише попередження про застарілий `failure_threshold`).
+
+**Перевірка після виправлення** (той самий день, ревізія `massage-staging-booking-api:2`, без міграцій):
+- задача `HEALTHY` в ECS; Cloud Map перші ~30 с після реєстрації показував `UNHEALTHY`, потім ECS передав `HEALTHY`. API Gateway відповідав 200 вже в цей проміжок;
+- через HTTPS `/health/live` → 200, `/health/ready` → 200 з версією `0e93e68ff7f2418eefe8c762b55588973034b32a`;
+- після перевірки staging повернуто на паузу: `desired_count = 0`, running/pending 0, задач, екземплярів Cloud Map, ENI задачі й публічних IPv4 немає; URL відповідає 500.
+
+Повторно застосовувати виправлення не потрібно.
 
 ## Workflow `Staging deploy (booking)`
 
@@ -361,7 +383,7 @@ aws servicediscovery list-instances --service-id "$sid" --query 'length(Instance
 sg="$(aws ec2 describe-security-groups --filters Name=group-name,Values=massage-staging-api --query 'SecurityGroups[0].GroupId' --output text)"
 aws ec2 describe-network-interfaces --filters Name=group-id,Values="$sg" --query 'length(NetworkInterfaces)'
 
-# 5. Публічний URL відповідає помилкою від API Gateway (очікується 503)
+# 5. Публічний URL відповідає помилкою від API Gateway (перевірено: 500 {"message":"Internal Server Error"})
 curl -s -o /dev/null -w '%{http_code}\n' "$(gh variable get STAGING_API_BASE_URL)/health/live"
 ```
 
@@ -386,7 +408,7 @@ ENI задачі звільняється через кілька хвилин �
 | S3 state (кілька KB) | ≈ 0 |
 | **Разом без запитів** | **≈ $0.02 на добу (≈ $0.55 на місяць)** |
 
-- **URL API Gateway лишається публічним.** Запити до нього можуть тарифікуватися, навіть коли відповідь 503: виходимо з того, що тарифікуються.
+- **URL API Gateway лишається публічним.** Запити до нього можуть тарифікуватися, навіть коли відповідь помилкова (під час паузи — 500): виходимо з того, що тарифікуються.
 - **Оцінка під постійним потоком запитів — ≈ $0.43 на добу.** Це розрахунок за припущеннями, а не гарантована верхня межа: throttling працює за принципом best effort, і жорсткого ліміту витрат немає (див. «Кошторис»).
 
   Склад:
@@ -397,7 +419,7 @@ ENI задачі звільняється через кілька хвилин �
   | HTTP API | 172 800 запитів (2 rps цілодобово) × $1.17/млн | ≈ 0.20 |
   | Виклики Cloud Map | один discovery на запит × $1/млн | ≈ 0.17 |
   | Access logs | ≈ 350 B на запис → ≈ 0.06 GB × $0.5985/GB | ≈ 0.04 |
-  | Вихідний трафік | відповіді 503 ≈ 300 B → ≈ 0.05 GB × $0.09/GB | ≈ 0.005 |
+  | Вихідний трафік | відповіді 500 ≈ 300 B → ≈ 0.05 GB × $0.09/GB | ≈ 0.005 |
   | **Разом** | | **≈ $0.43** |
 
   Швидкість понад 2 rps, більші записи логів або відповіді збільшать суму. Якщо потік запитів під час паузи реальний (видно в лог-групі `/apigateway/massage-staging/booking-api`), рішення — окремо: тимчасово знизити throttling або видалити stage.
