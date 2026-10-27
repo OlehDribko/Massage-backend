@@ -3,14 +3,28 @@ import { loadConfig, type AppConfig } from "../src/config/config.js";
 
 const DB_URL = "postgresql://user:db-secret-value@127.0.0.1:5432/booking";
 
-const legacyEnv = {
-  ENABLE_LEGACY_USER_ROUTES: "true",
+const ACTION_SECRET = "action-secret-value-0123456789abcdef";
+
+const marketingEnv = {
+  ENABLE_MARKETING_SUBSCRIPTION: "true",
   BREVO_API_KEY: "brevo-secret-value",
   EMAIL_FROM_NAME: "Test Sender",
   EMAIL_FROM_EMAIL: "sender@example.invalid",
-  ACTION_TOKEN_SECRET: "action-secret-value",
+  ACTION_TOKEN_SECRET: ACTION_SECRET,
   FRONTEND_URL: "http://localhost:5173",
 };
+
+const PRIVATE_KEY_SENTINEL = "PRIVATE_KEY_SENTINEL";
+
+const serviceAccountJson = (projectId: string, overrides: Record<string, string> = {}) =>
+  JSON.stringify({
+    type: "service_account",
+    project_id: projectId,
+    private_key_id: "kid",
+    private_key: `-----BEGIN PRIVATE KEY-----\n${PRIVATE_KEY_SENTINEL}\n-----END PRIVATE KEY-----\n`,
+    client_email: `api@${projectId}.iam.gserviceaccount.com`,
+    ...overrides,
+  });
 
 const expectConfig = (env: Record<string, string | undefined>): AppConfig => {
   const result = loadConfig(env);
@@ -45,7 +59,8 @@ describe("loadConfig", () => {
       corsOrigin: undefined,
       shutdownTimeoutMs: 10_000,
       readinessTimeoutMs: 2_000,
-      legacyUserRoutes: { enabled: false },
+      firebase: undefined,
+      marketing: undefined,
     });
   });
 
@@ -73,64 +88,189 @@ describe("loadConfig", () => {
     expect(errors.join(" ")).not.toContain("mysql-secret");
   });
 
-  it.each([
-    [undefined, false],
-    ["", false],
-    ["false", false],
-    ["FALSE", false],
-    [" false ", false],
-    ["true", true],
-    ["True", true],
-  ])("parses ENABLE_LEGACY_USER_ROUTES=%j as %s", (value, expected) => {
-    const config = expectConfig({
-      ...legacyEnv,
-      DATABASE_URL: DB_URL,
-      ENABLE_LEGACY_USER_ROUTES: value,
-    });
-    expect(config.legacyUserRoutes.enabled).toBe(expected);
-  });
-
-  it.each(["1", "0", "yes", "no", "on"])(
-    "rejects ambiguous ENABLE_LEGACY_USER_ROUTES=%j",
+  it.each([undefined, "", "false", "FALSE", " false "])(
+    "accepts the removed ENABLE_LEGACY_USER_ROUTES only as unset or false (%j)",
     (value) => {
-      const errors = expectErrors({ DATABASE_URL: DB_URL, ENABLE_LEGACY_USER_ROUTES: value });
-      expect(errors).toHaveLength(1);
-      expect(errors[0]).toMatch(/^ENABLE_LEGACY_USER_ROUTES:/);
+      expectConfig({ DATABASE_URL: DB_URL, ENABLE_LEGACY_USER_ROUTES: value });
     },
   );
 
-  it("does not require Brevo, token secret or FRONTEND_URL when legacy routes are disabled", () => {
-    const config = expectConfig({ DATABASE_URL: DB_URL, ENABLE_LEGACY_USER_ROUTES: "false" });
-    expect(config.legacyUserRoutes).toEqual({ enabled: false });
+  it.each(["true", "True", "1", "yes"])(
+    "refuses ENABLE_LEGACY_USER_ROUTES=%j: the legacy routes no longer exist",
+    (value) => {
+      const errors = expectErrors({ DATABASE_URL: DB_URL, ENABLE_LEGACY_USER_ROUTES: value });
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toMatch(/^ENABLE_LEGACY_USER_ROUTES: legacy \/api\/users routes were removed/);
+    },
+  );
+
+  it.each([
+    [undefined, false],
+    ["false", false],
+    ["TRUE", true],
+  ])("parses ENABLE_MARKETING_SUBSCRIPTION=%j", (value, enabled) => {
+    const config = expectConfig({ ...marketingEnv, DATABASE_URL: DB_URL, ENABLE_MARKETING_SUBSCRIPTION: value });
+    expect(config.marketing !== undefined).toBe(enabled);
   });
 
-  it("requires legacy settings when enabled and never prints their values", () => {
+  it("requires marketing settings when enabled and never prints their values", () => {
     const errors = expectErrors({
       DATABASE_URL: DB_URL,
-      ENABLE_LEGACY_USER_ROUTES: "true",
-      ACTION_TOKEN_SECRET: "action-secret-value",
+      ENABLE_MARKETING_SUBSCRIPTION: "true",
+      ACTION_TOKEN_SECRET: "short-secret-value",
     });
     const text = errors.join("\n");
 
     for (const name of ["BREVO_API_KEY", "EMAIL_FROM_NAME", "EMAIL_FROM_EMAIL", "FRONTEND_URL"]) {
       expect(text).toContain(name);
     }
-    expect(text).not.toContain("ACTION_TOKEN_SECRET:");
-    expect(text).not.toContain("action-secret-value");
+    expect(text).toContain("ACTION_TOKEN_SECRET: must be at least 32 characters");
+    expect(text).not.toContain("short-secret-value");
     expect(text).not.toContain("db-secret-value");
   });
 
-  it("builds the legacy config when everything is present", () => {
-    const config = expectConfig({ ...legacyEnv, DATABASE_URL: DB_URL });
-    expect(config.legacyUserRoutes).toEqual({
-      enabled: true,
+  it("builds the marketing config when everything is present", () => {
+    const config = expectConfig({ ...marketingEnv, DATABASE_URL: DB_URL });
+    expect(config.marketing).toEqual({
       brevoApiKey: "brevo-secret-value",
       emailFromName: "Test Sender",
       emailFromEmail: "sender@example.invalid",
-      actionTokenSecret: "action-secret-value",
+      actionTokenSecret: ACTION_SECRET,
       frontendUrl: "http://localhost:5173",
     });
     expect(config.corsOrigin).toBe("http://localhost:5173");
+  });
+
+  describe("Firebase", () => {
+    it("leaves authentication off (no /api/me) without FIREBASE_PROJECT_ID", () => {
+      expect(expectConfig({ DATABASE_URL: DB_URL }).firebase).toBeUndefined();
+    });
+
+    it("requires FIREBASE_PROJECT_ID when other FIREBASE_* variables are set", () => {
+      const errors = expectErrors({ DATABASE_URL: DB_URL, FIREBASE_CREDENTIALS: "application-default" });
+      expect(errors).toEqual(["FIREBASE_PROJECT_ID: required when other FIREBASE_* variables are set"]);
+    });
+
+    it.each(["Massage", "ab", "-massage-staging", "massage_staging", "a".repeat(31)])(
+      "rejects the project id %j",
+      (projectId) => {
+        const errors = expectErrors({ DATABASE_URL: DB_URL, FIREBASE_PROJECT_ID: projectId });
+        expect(errors[0]).toMatch(/^FIREBASE_PROJECT_ID:/);
+      },
+    );
+
+    it("uses application default credentials", () => {
+      const config = expectConfig({
+        DATABASE_URL: DB_URL,
+        FIREBASE_PROJECT_ID: "massage-staging",
+        FIREBASE_CREDENTIALS: "application-default",
+      });
+      expect(config.firebase).toEqual({
+        projectId: "massage-staging",
+        credentials: { kind: "application-default" },
+      });
+    });
+
+    it("requires explicit credentials outside the emulator", () => {
+      for (const credentials of [undefined, "none"]) {
+        const errors = expectErrors({
+          DATABASE_URL: DB_URL,
+          FIREBASE_PROJECT_ID: "massage-staging",
+          FIREBASE_CREDENTIALS: credentials,
+        });
+        expect(errors[0]).toMatch(/^FIREBASE_CREDENTIALS: must be application-default or service-account-json/);
+      }
+    });
+
+    it("parses a service account key of the same project", () => {
+      const config = expectConfig({
+        DATABASE_URL: DB_URL,
+        FIREBASE_PROJECT_ID: "massage-staging",
+        FIREBASE_CREDENTIALS: "service-account-json",
+        FIREBASE_SERVICE_ACCOUNT_JSON: serviceAccountJson("massage-staging"),
+      });
+      expect(config.firebase?.credentials.kind).toBe("service-account");
+    });
+
+    it.each([
+      ["missing", undefined, /required when FIREBASE_CREDENTIALS=service-account-json/],
+      ["not JSON", `{${PRIVATE_KEY_SENTINEL}`, /must be the JSON key file of a service account/],
+      ["another project", serviceAccountJson("massage-production"), /project_id does not match FIREBASE_PROJECT_ID/],
+      ["not a service account", serviceAccountJson("massage-staging", { type: "authorized_user" }), /type service_account/],
+      ["no PEM key", serviceAccountJson("massage-staging", { private_key: PRIVATE_KEY_SENTINEL }), /PEM private key/],
+    ])("rejects a service account key (%s) without printing it", (_label, json, expected) => {
+      const errors = expectErrors({
+        DATABASE_URL: DB_URL,
+        FIREBASE_PROJECT_ID: "massage-staging",
+        FIREBASE_CREDENTIALS: "service-account-json",
+        FIREBASE_SERVICE_ACCOUNT_JSON: json,
+      });
+      const text = errors.join("\n");
+      expect(text).toMatch(expected);
+      expect(text).not.toContain(PRIVATE_KEY_SENTINEL);
+      expect(text).not.toContain("iam.gserviceaccount.com");
+    });
+
+    it("rejects a service account key next to application default credentials", () => {
+      const errors = expectErrors({
+        DATABASE_URL: DB_URL,
+        FIREBASE_PROJECT_ID: "massage-staging",
+        FIREBASE_CREDENTIALS: "application-default",
+        FIREBASE_SERVICE_ACCOUNT_JSON: serviceAccountJson("massage-staging"),
+      });
+      expect(errors[0]).toMatch(/^FIREBASE_SERVICE_ACCOUNT_JSON: set only with/);
+    });
+
+    it("refuses the Auth Emulator in production, even without a project id", () => {
+      for (const extra of [{}, { FIREBASE_PROJECT_ID: "demo-massage" }]) {
+        const errors = expectErrors({
+          DATABASE_URL: DB_URL,
+          NODE_ENV: "production",
+          FIREBASE_AUTH_EMULATOR_HOST: "127.0.0.1:9099",
+          ...extra,
+        });
+        expect(errors[0]).toMatch(/^FIREBASE_AUTH_EMULATOR_HOST: must not be set when NODE_ENV=production/);
+      }
+    });
+
+    it("allows the emulator outside production only with a demo- project and no credentials", () => {
+      const config = expectConfig({
+        DATABASE_URL: DB_URL,
+        NODE_ENV: "development",
+        FIREBASE_PROJECT_ID: "demo-massage",
+        FIREBASE_AUTH_EMULATOR_HOST: "127.0.0.1:9099",
+      });
+      expect(config.firebase).toEqual({
+        projectId: "demo-massage",
+        credentials: { kind: "emulator", host: "127.0.0.1:9099" },
+      });
+
+      const realProject = expectErrors({
+        DATABASE_URL: DB_URL,
+        NODE_ENV: "test",
+        FIREBASE_PROJECT_ID: "massage-staging",
+        FIREBASE_AUTH_EMULATOR_HOST: "127.0.0.1:9099",
+      });
+      expect(realProject[0]).toMatch(/must start with "demo-"/);
+
+      const withCredentials = expectErrors({
+        DATABASE_URL: DB_URL,
+        NODE_ENV: "test",
+        FIREBASE_PROJECT_ID: "demo-massage",
+        FIREBASE_CREDENTIALS: "application-default",
+        FIREBASE_AUTH_EMULATOR_HOST: "127.0.0.1:9099",
+      });
+      expect(withCredentials[0]).toMatch(/^FIREBASE_CREDENTIALS: must be none/);
+    });
+
+    it("rejects demo- projects without the emulator", () => {
+      const errors = expectErrors({
+        DATABASE_URL: DB_URL,
+        FIREBASE_PROJECT_ID: "demo-massage",
+        FIREBASE_CREDENTIALS: "application-default",
+      });
+      expect(errors[0]).toMatch(/exist only in the Auth Emulator/);
+    });
   });
 
   it("validates LOG_LEVEL, APP_VERSION and timeouts", () => {

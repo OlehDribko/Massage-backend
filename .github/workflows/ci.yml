@@ -1,7 +1,8 @@
-# CI for the booking service: code checks, migration/privilege integration
-# tests, a smoke test of the built Docker images, static Terraform checks and
-# tests of the staging deploy scripts.
-# No secrets, no external services (Neon, Brevo, Firebase, AWS), no image
+# CI for the booking service: code checks, integration tests (migrations,
+# privileges, Firebase auth and profiles), a smoke test of the built Docker
+# images, static Terraform checks and tests of the staging deploy scripts.
+# No secrets, no external services (Neon, Brevo, real Firebase projects, AWS):
+# Firebase is only the local Auth Emulator with a demo- project. No image
 # publishing, no terraform plan/apply, no deploy.
 name: CI
 
@@ -57,7 +58,7 @@ jobs:
       - run: npm run build
 
   integration:
-    name: integration (migrations and privileges, PostgreSQL)
+    name: integration (migrations, privileges, auth emulator, PostgreSQL)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -74,9 +75,21 @@ jobs:
         run: npm run prisma -- generate
       - name: Pull PostgreSQL image
         run: docker pull "$POSTGRES_IMAGE"
-      - name: Integration tests (fresh, repeated, failing and legacy migrations; wrong password)
+      # firebase-tools pinned in the emulator:auth script; demo- project ids
+      # never reach a real Firebase project and need no credentials.
+      - name: Start Firebase Auth Emulator
+        run: |
+          npm run emulator:auth -w @massage/booking > "$RUNNER_TEMP/auth-emulator.log" 2>&1 &
+          for _ in $(seq 1 90); do
+            if curl -sf http://127.0.0.1:9099/ > /dev/null; then exit 0; fi
+            sleep 2
+          done
+          cat "$RUNNER_TEMP/auth-emulator.log"
+          exit 1
+      - name: Integration tests (migrations, privileges, auth/profiles via emulator, marketing)
         env:
           INTEGRATION_POSTGRES_IMAGE: ${{ env.POSTGRES_IMAGE }}
+          FIREBASE_AUTH_EMULATOR_HOST: 127.0.0.1:9099
         run: npm run test:integration
       - name: Remove leftover test containers
         if: always()

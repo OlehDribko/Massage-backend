@@ -1,10 +1,11 @@
-import type { NextFunction, RequestHandler, Response } from "express";
+import type { NextFunction, Request, RequestHandler, Response } from "express";
 import type { z } from "zod";
 
 export type ValidatedBodyHandler<Body> = (
   body: Body,
   res: Response,
   next: NextFunction,
+  req: Request,
 ) => Promise<unknown>;
 
 /**
@@ -23,10 +24,12 @@ export const withValidatedBody = <Schema extends z.ZodType>(
         return { field: issue.path, message: issue.message };
       });
 
-      res.status(400).json({ message: "Validation failed", errors: errorMessages });
+      res
+        .status(400)
+        .json({ message: "Validation failed", code: "VALIDATION_FAILED", errors: errorMessages });
       return;
     }
 
-    await handler(result.data, res, next);
+    await handler(result.data, res, next, req);
   };
 };

@@ -27,3 +27,7 @@ skills-lock.json
 *.tfbackend
 crash.log
 crash.*.log
+
+# Firebase emulator (firebase-tools) debug logs
+firebase-debug.log
+firebase-debug.*.log

@@ -34,7 +34,7 @@ const buildApp = (overrides: Partial<AppDeps> = {}) => {
     probeReadiness: () => Promise.resolve("ready"),
     appVersion: undefined,
     corsOrigin: undefined,
-    legacyUserRouter: undefined,
+    apiRouter: undefined,
     ...overrides,
   });
   return { app, logs };
@@ -181,10 +181,10 @@ describe("HTTP errors", () => {
     });
   });
 
-  it("returns a JSON 404 for unknown routes, including legacy routes when disabled", async () => {
+  it("returns a JSON 404 for unknown routes, including removed legacy and disabled API routes", async () => {
     const { app } = buildApp();
 
-    for (const path of ["/nope", "/api/users", "/api/users/subscribe", "/api"]) {
+    for (const path of ["/nope", "/api/users", "/api/users/subscribe", "/api", "/api/me/sync", "/api/marketing/subscriptions"]) {
       const response = await request(app).post(path).send({ email: "a@example.invalid" });
       expect(response.status).toBe(404);
       expect(bodyOf(response)).toEqual({ message: "Not found", code: "NOT_FOUND" });
@@ -196,9 +196,9 @@ describe("HTTP errors", () => {
     router.post("/explode", () => {
       throw new Error("SENTINEL_INTERNAL postgresql://u:SENTINEL_DB_PASSWORD@db/x");
     });
-    const { app, logs } = buildApp({ legacyUserRouter: router });
+    const { app, logs } = buildApp({ apiRouter: router });
 
-    const response = await request(app).post("/api/users/explode").send({});
+    const response = await request(app).post("/api/explode").send({});
 
     expect(response.status).toBe(500);
     expect(bodyOf(response)).toEqual({ message: "internal server error" });
@@ -216,9 +216,9 @@ describe("HTTP errors", () => {
         details: { retryAfterSeconds: 30 },
       });
     });
-    const { app } = buildApp({ legacyUserRouter: router });
+    const { app } = buildApp({ apiRouter: router });
 
-    const response = await request(app).post("/api/users/conflict").send({});
+    const response = await request(app).post("/api/conflict").send({});
 
     expect(response.status).toBe(409);
     expect(response.get("Retry-After")).toBe("30");
@@ -234,9 +234,9 @@ describe("HTTP errors", () => {
     router.post("/fake-status", () => {
       throw Object.assign(new Error("SENTINEL_INTERNAL"), { status: 418, expose: true });
     });
-    const { app, logs } = buildApp({ legacyUserRouter: router });
+    const { app, logs } = buildApp({ apiRouter: router });
 
-    const response = await request(app).post("/api/users/fake-status").send({});
+    const response = await request(app).post("/api/fake-status").send({});
 
     expect(response.status).toBe(500);
     expectNoSensitive(response.text + logs.raw());

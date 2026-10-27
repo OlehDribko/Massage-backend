@@ -10,20 +10,71 @@ datasource db {
   provider = "postgresql"
 }
 
+// Legacy table from before Firebase Authentication: password accounts and
+// marketing subscribers. No application code reads or writes it any more; it
+// is kept (including passwordHash) until a separate decision on removal.
+// See docs/auth-and-profiles.md, "Legacy data".
 enum UserStatus {
   subscribed
   registered
 }
 
 model User {
-  id               String     @id @default(uuid())
+  id                      String     @id @default(uuid())
+  name                    String?
+  email                   String     @unique
+  passwordHash            String?
+  status                  UserStatus
+  marketingConsent        Boolean    @default(false)
+  emailVerified           Boolean    @default(false)
+  emailVerificationSentAt DateTime?
+  createdAt               DateTime   @default(now())
+  updatedAt               DateTime   @updatedAt
+}
+
+enum UserRole {
+  client
+  admin
+}
+
+// Our user: a stable own id (future bookings reference it), linked to exactly
+// one Firebase identity. Identity fields (email, emailVerified, isAnonymous,
+// signInProvider) are copied only from verified Firebase ID tokens; role only
+// by the owner-run assign-role command; name and phone by the user.
+model UserProfile {
+  id               String   @id @default(uuid()) @db.Uuid
+  firebaseUid      String   @unique
+  role             UserRole @default(client)
   name             String?
-  email            String     @unique
-  passwordHash     String?
-  status           UserStatus
-  marketingConsent          Boolean   @default(false)
-  emailVerified             Boolean   @default(false)
-  emailVerificationSentAt   DateTime?
-  createdAt                 DateTime  @default(now())
-  updatedAt                 DateTime  @updatedAt
+  email            String?
+  emailVerified    Boolean  @default(false)
+  isAnonymous      Boolean
+  signInProvider   String
+  // E.164, not verified (no SMS); never used for sign-in or recovery.
+  phoneE164        String?
+  // `iat` of the newest ID token applied; older tokens never overwrite newer data.
+  identityIssuedAt DateTime
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+enum MarketingSubscriptionStatus {
+  pending
+  subscribed
+  unsubscribed
+}
+
+// Marketing consent, separate from accounts: an address subscribes only after
+// confirming the emailed link (double opt-in).
+model MarketingSubscription {
+  id                 String                      @id @default(uuid()) @db.Uuid
+  email              String                      @unique
+  status             MarketingSubscriptionStatus @default(pending)
+  // Single-use value carried by the current confirmation link.
+  confirmationNonce  String?
+  confirmationSentAt DateTime?
+  subscribedAt       DateTime?
+  unsubscribedAt     DateTime?
+  createdAt          DateTime                    @default(now())
+  updatedAt          DateTime                    @updatedAt
 }
