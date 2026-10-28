@@ -30,7 +30,8 @@
 | Власні JWT для підтвердження email і скидання пароля (`/verify-email`, `/resend-verification`, `/forgot-password`, `/reset-password`) | **Видалено** | Не можна мати власні токени паралельно з Firebase |
 | `User.emailVerified`, `emailVerificationSentAt`, `status` | Код більше не використовує; дані збережено | Для переходу (див. нижче) |
 | Підписка / відписка на розсилку (`/subscribe`, `/unsubscribe`) | **Адаптовано** в окремий модуль `/api/marketing` | Див. розділ 7 |
-| JWT-сервіс дій (`jsonwebtoken`, `ACTION_TOKEN_SECRET`) | **Адаптовано**: лише для маркетингових посилань, лише HS256 | Посилання з листів уже надісланих розсилок мають і далі працювати |
+| JWT-сервіс дій (`jsonwebtoken`, `ACTION_TOKEN_SECRET`) | **Адаптовано**: лише для маркетингових посилань, лише HS256 | Посилання підтвердження й відписки в листах підписки |
+| `User.marketingConsent` | Код не читає; **не переноситься** | Не є доказом підтвердженої згоди (див. нижче) |
 | Brevo-клієнт, шаблони листів | **Адаптовано**: лише листи підписки | Службові листи акаунта шле Firebase |
 | `ENABLE_LEGACY_USER_ROUTES` | `false` або відсутність приймаються й ігноруються; `true` — помилка запуску | Staging task definition досі передає `false` |
 
@@ -39,6 +40,7 @@
 - **Підписка без згоди власника адреси:** для вже підтвердженого email будь-хто міг увімкнути розсилку одним запитом. Тепер згода з'являється лише після переходу за посиланням із листа (double opt-in).
 - **500 при відписці:** `unsubscribe` з токеном неіснуючого користувача падав на `P2025` і давав 500. Тепер відповідь та сама, що для існуючого.
 - **Повторне використання посилань:** legacy-токен `email_verify` діяв 7 днів і міг повторно підтверджувати. Тепер посилання підтвердження одноразове (nonce у БД), а після відписки старе посилання підтвердження не підпише адресу знову.
+- **Підтвердження email як згода:** у legacy-реєстрації `marketingConsent` з чекбокса ставав «підтвердженим» разом із підтвердженням email акаунта. Тепер підтвердження email у Firebase і підтвердження маркетингової підписки — різні дії.
 - **Підписка змішувалась з акаунтом:** запис підписника створював `User` зі статусом `subscribed`, а підтвердження підписки ставило `emailVerified` акаунта. Тепер підписка — окрема таблиця, яка не створює й не змінює профілів.
 
 **Що поза цим етапом (описано, не реалізовано):** масова розсилка запитів підписки на різні адреси (рядок на адресу й одна спроба на 10 хв на адресу; загальний ліміт — лише throttling API Gateway). Для захисту потрібен CAPTCHA або Firebase App Check — окреме завдання разом із frontend.
@@ -47,7 +49,7 @@
 
 - Таблиця `User` лишається без змін; код її не читає.
 - **Профілі не прив'язуються до Firebase за збігом email.** Людина з legacy-акаунтом реєструється у Firebase заново (Google або email + пароль); з'являється новий `UserProfile`, не пов'язаний з `User`.
-- Підтверджена маркетингова згода переноситься міграцією в `MarketingSubscription` (лише `marketingConsent AND emailVerified`, з тим самим id, тож legacy-посилання відписки працюють). Непідтверджені legacy-підписники не переносяться.
+- **Маркетингова згода не переноситься.** У legacy-даних немає доказу підтвердженої згоди: `marketingConsent` міг стати `true` без підтвердження (підписка вже перевіреної адреси), а `emailVerified` доводить лише робочу адресу. Legacy-підписники мають підписатися знову (форма або чекбокс). Старі посилання відписки з legacy-листів відповідають нейтрально `200 UNSUBSCRIBED` і нічого не змінюють. Перевірено інтеграційним тестом (legacy-рядки до міграції → `MarketingSubscription` порожня).
 - Видалення `User` (разом із `passwordHash`) — окреме рішення після переходу. Пропозиція: після запуску production і перевірки, що ніхто не потребує даних, очистити `passwordHash` окремою міграцією, а таблицю видалити пізніше.
 
 ## 3. Модулі коду
@@ -99,9 +101,21 @@ Authorization: Bearer <Firebase ID token>
 
 Викликати: після входу, після прив'язки анонімної сесії до Google / email, після підтвердження email (разом із `getIdToken(true)`), після зміни email.
 
+Тіло необов'язкове (`{}` або без тіла). Єдине, що в ньому можна передати, — чекбокс маркетингової підписки при завершенні реєстрації:
+
+| Поле | Значення |
+|---|---|
+| `marketingOptIn` | `true` — запустити підтвердження підписки (лист із посиланням); відсутнє або `false` — нічого не змінює (не створює згоди й **не відписує** чинного підписника) |
+| `marketingConsentTextVersion` | Обов'язкове при `marketingOptIn: true`: версія тексту згоди, показаного біля чекбокса (зараз `2026-10-28.fr.1`) |
+
+`marketingOptIn: true` діє **щонайбільше один раз на адресу**: повторні й паралельні синхронізації не надсилають нових листів, а після відписки (або вже наданої колись згоди) нічого не роблять — для повторної підписки є окрема явна дія. Статус підписки від самого параметра не стає `true`.
+
 ```http
 POST /api/me/sync
 Authorization: Bearer eyJhbGciOi...
+Content-Type: application/json
+
+{ "marketingOptIn": true, "marketingConsentTextVersion": "2026-10-28.fr.1" }
 ```
 
 ```json
@@ -121,7 +135,36 @@ Authorization: Bearer eyJhbGciOi...
   "bookingReadiness": {
     "ready": false,
     "blockers": ["email_not_verified", "phone_missing"]
+  },
+  "marketing": null,
+  "marketingOptIn": {
+    "outcome": "confirmation_sent",
+    "currentConsentTextVersion": "2026-10-28.fr.1"
   }
+}
+```
+
+`marketingOptIn` є у відповіді лише якщо його передали як `true`. Синхронізація профілю успішна за будь-якого `outcome`:
+
+| `outcome` | Значення |
+|---|---|
+| `confirmation_sent` | Лист підтвердження передано провайдеру (це не гарантія доставки в скриньку) |
+| `delivery_failed` | Лист не вдалося відправити; нічого не змінено, профіль створено; можна повторити (наступний `sync` з чекбоксом або явна дія) |
+| `no_action` | Нічого не потрібно або не дозволено: вже підписано, лист уже надсилали, або колись була відписка/згода. Навмисно не розрізняється |
+| `unavailable` | Маркетинг вимкнений, або сесія без email (гість — використовує публічну форму) |
+| `consent_text_outdated` | Показано іншу версію тексту; нічого не записано; актуальна — у `currentConsentTextVersion` |
+| `failed` | Неочікувана помилка сервера (у логах без секретів); нічого не обіцяно |
+
+**`marketing`** — статус підписки email профілю (джерело істини — `MarketingSubscription`). `null`, поки email відсутній або не підтверджений у Firebase (щоб ніхто не дізнався статус чужої адреси, вказавши її без підтвердження):
+
+```json
+"marketing": {
+  "subscribed": true,
+  "pendingConfirmation": false,
+  "consentGivenAt": "2026-10-28T10:12:00.000Z",
+  "consentSource": "signup_checkbox",
+  "consentTextVersion": "2026-10-28.fr.1",
+  "unsubscribedAt": null
 }
 ```
 
@@ -143,6 +186,24 @@ Authorization: Bearer eyJhbGciOi...
 - `phone`: міжнародний формат із `+`; зберігається в E.164 (`+33612345678`) після перевірки повними метаданими libphonenumber. Національний формат без `+` відхиляється (країна не вгадується). **Телефон не підтверджується** (SMS немає), не використовується для входу чи відновлення доступу.
 - Будь-яке інше поле (`email`, `role`, `emailVerified`, `id`, `firebaseUid`, `isAnonymous`, ...) → `400 VALIDATION_FAILED`, нічого не змінюється.
 - Email змінюється лише через Firebase (`verifyBeforeUpdateEmail`); новий email потрапить у профіль на наступному `sync` після підтвердження.
+
+### `POST /api/me/marketing/subscription` — явна (повторна) підписка
+
+Для зареєстрованого акаунта з email, зокрема **після відписки** (це нова явна дія користувача). Double opt-in: статус стане `true` лише після посилання з листа.
+
+```http
+POST /api/me/marketing/subscription
+Authorization: Bearer eyJhbGciOi...
+Content-Type: application/json
+
+{ "consentTextVersion": "2026-10-28.fr.1" }
+```
+
+→ `202 {"outcome":"confirmation_sent"}` або `202 {"outcome":"no_action"}` (вже підписано або лист надіслано менше 10 хв тому); `503 CONFIRMATION_EMAIL_NOT_SENT` — лист не відправлено, нічого не змінено; `409 CONSENT_TEXT_OUTDATED` (з `currentConsentTextVersion`); `403 REGISTERED_ACCOUNT_REQUIRED` для гостя. Маршрут існує лише при `ENABLE_MARKETING_SUBSCRIPTION=true`.
+
+### `DELETE /api/me/marketing/subscription` — відписка
+
+Лише для підтвердженого email (`403 EMAIL_NOT_VERIFIED` інакше). Ідемпотентно; працює й при вимкненій розсилці. → `200` з профілем, де `marketing.subscribed: false` і `unsubscribedAt`. Службові листи не зачіпає.
 
 ### `POST /api/me/sessions/revoke`
 
@@ -178,27 +239,47 @@ Authorization: Bearer eyJhbGciOi...
 
 | Запит | Відповідь |
 |---|---|
-| `POST /api/marketing/subscriptions` `{"email":"a@example.com"}` | Завжди `202 {"code":"SUBSCRIPTION_REQUESTED", ...}` — незалежно від того, чи адреса нова, очікує підтвердження або вже підписана |
+| `POST /api/marketing/subscriptions` `{"email":"a@example.com","consentTextVersion":"2026-10-28.fr.1"}` | `202 {"code":"SUBSCRIPTION_REQUESTED", ...}` — однаково для нової, очікуючої й уже підписаної адреси (повторна підписка після відписки — так само, це явна дія). `503 CONFIRMATION_EMAIL_NOT_SENT`, якщо лист не вдалося відправити (без неправдивого «надіслано»); `409 CONSENT_TEXT_OUTDATED` |
 | `POST /api/marketing/subscriptions/confirm` `{"token":"..."}` | `200 SUBSCRIBED` / `ALREADY_SUBSCRIBED`; використане, замінене, прострочене посилання чи посилання після відписки → `400 INVALID_ACTION_TOKEN` |
 | `POST /api/marketing/subscriptions/unsubscribe` `{"token":"..."}` | `200 UNSUBSCRIBED` (ідемпотентно, також для невідомої підписки); пошкоджений токен → `400 INVALID_ACTION_TOKEN` |
 
 Посилання в листах: `${FRONTEND_URL}/marketing/confirm?token=...` (7 днів, одноразове) і `${FRONTEND_URL}/unsubscribe?token=...` (1 рік). Frontend бере `token` з URL і надсилає його в тілі POST.
 
+### Модель маркетингової згоди
+
+Одне джерело істини — рядок `MarketingSubscription` на адресу email (не на профіль, тож підписка гостя переживає втрату анонімної сесії й з'являється в профілі після реєстрації з тією самою підтвердженою адресою).
+
+| Поле | Значення |
+|---|---|
+| `subscribed` | **Авторитетний статус.** `false` за замовчуванням; `true` лише після підтвердження посилання; `false` після відписки |
+| `consentGivenAt`, `consentSource`, `consentTextVersion` | Доказ останньої підтвердженої згоди: коли, звідки (`signup_checkbox`, `subscription_form`, `account_request`), яка версія тексту. Лишаються після відписки як історія |
+| `unsubscribedAt` | Дата останньої відписки; очищається при новій підтвердженій згоді |
+| `confirmationNonce`, `confirmationSentAt`, `confirmationSource`, `confirmationTextVersion` | Незавершений запит на підписку (одноразове посилання й те, на що погодилися) |
+
+Обмеження БД: `subscribed = true` неможливий без дати, джерела й версії згоди; незавершений запит завжди має джерело й версію; email у нижньому регістрі. Legacy `User.marketingConsent` — не статус підписки: код його не читає.
+
+Версія тексту згоди — константа `MARKETING_CONSENT_TEXT_VERSION` у `src/modules/marketing/consent.ts`. Зміна тексту = нова версія одночасно в backend і frontend.
+
 ## 5. Інструкція для frontend
 
 Firebase Web SDK **10.6.0 або новіший** (з увімкненим захистом від перелічення email старіші версії не можуть прив'язати email/пароль до анонімного користувача). Конфігурація Firebase для web (`apiKey`, `authDomain`, `projectId`, `appId`) не є секретом; для staging і production вона різна.
 
-1. **Ініціалізація й гість.** Публічні сторінки працюють без входу і не звертаються до `/api/me`. Анонімну сесію створюють автоматично, коли вона потрібна:
+1. **Сесія кожного відвідувача.** Анонімна сесія створюється лише тоді, коли сесії немає зовсім, і лише **після** відновлення збереженої сесії (інакше зареєстрований користувач на мить «немає» і отримає анонімну сесію замість своєї):
    ```ts
+   await auth.authStateReady();                 // Firebase відновив збережену сесію (Web SDK ≥ 10)
+   if (auth.currentUser === null) {
+     await signInAnonymously(auth);             // гість
+   }
    onAuthStateChanged(auth, async (user) => {
-     if (user === null) {
-       await signInAnonymously(auth);          // гість
-       return;
+     if (user !== null) {
+       await api("POST", "/api/me/sync");       // профіль гостя або клієнта; без тіла
      }
-     await api("POST", "/api/me/sync");        // профіль гостя або клієнта
    });
    ```
-   Гість бачить публічну інформацію й може підписатися на розсилку (окрема форма, не вимагає входу); бронювати не може (`anonymous_session`).
+   - Зареєстрований акаунт ніколи не замінюється анонімним: `signInAnonymously` викликається тільки при `currentUser === null`.
+   - Після `signOut()` створюється **новий** гість (інший UID, інший профіль).
+   - Публічні сторінки й `/health/*` не потребують токена; backend не перевіряє токен на публічних маршрутах навіть якщо він є. Токен потрібен лише для `/api/me*`.
+   - Гість бачить публічну інформацію, може підписатися на розсилку через публічну форму, але бронювати не може (`anonymous_session`).
 
 2. **Кожен запит до API:**
    ```ts
@@ -214,7 +295,17 @@ Firebase Web SDK **10.6.0 або новіший** (з увімкненим за�
 
    Якщо Firebase повертає `auth/credential-already-in-use` або `auth/email-already-in-use`, облікові дані належать іншому акаунту. Не зливати автоматично: запропонувати «Увійти в існуючий акаунт» (`signInWithCredential` / `signInWithPopup`) і потім `sync`. Дані гостьового профілю (ім'я, телефон) не переносяться в існуючий акаунт; backend ніколи не об'єднує профілі за email.
 
-4. **Реєстрація email + пароль без гостя:** `createUserWithEmailAndPassword`, потім `sendEmailVerification(user)` і `sync`.
+4. **Завершення реєстрації з чекбоксом розсилки.** Чекбокс необов'язковий і за замовчуванням вимкнений. Після першого входу (email + пароль: `createUserWithEmailAndPassword` або прив'язка гостя, потім `sendEmailVerification(user)`; Google: `signInWithPopup` / `linkWithPopup`) — один виклик:
+   ```ts
+   await api("POST", "/api/me/sync", marketingChecked
+     ? { marketingOptIn: true, marketingConsentTextVersion: "2026-10-28.fr.1" }
+     : {});
+   ```
+   - `outcome: "confirmation_sent"` → «Перевірте пошту, щоб підтвердити підписку» (не «ви підписані»);
+   - `delivery_failed` → «Не вдалося надіслати лист підтвердження підписки; спробуйте пізніше в профілі» (реєстрація при цьому успішна);
+   - `consent_text_outdated` → оновити текст і запропонувати знову.
+
+   Подальші `sync` надсилайте **без** `marketingOptIn`. Підписка стане активною лише після посилання з листа, а `profile.marketing` показується після підтвердження email у Firebase.
 
 5. **Підтвердження email** (стандартний лист Firebase): після переходу за посиланням — `await user.reload(); await user.getIdToken(true);` і `POST /api/me/sync`. До цього профіль показує `email_not_verified`.
 
@@ -229,7 +320,9 @@ Firebase Web SDK **10.6.0 або новіший** (з увімкненим за�
 
 9. **Заблокований користувач** (`403 ACCOUNT_DISABLED`): `signOut(auth)` і повідомлення «Акаунт заблоковано». Firebase також не видасть новий токен.
 
-10. **Готовність до бронювання:** показувати форму доповнення профілю за `bookingReadiness.blockers`; телефон просити в міжнародному форматі (`+33 …`). Рішення завжди за сервером.
+10. **Підписка в профілі:** показувати `profile.marketing.subscribed`. «Відписатися» — `DELETE /api/me/marketing/subscription`; «Підписатися знову» — `POST /api/me/marketing/subscription` з `consentTextVersion` (лише явна дія користувача).
+
+11. **Готовність до бронювання:** показувати форму доповнення профілю за `bookingReadiness.blockers`; телефон просити в міжнародному форматі (`+33 …`). Рішення завжди за сервером.
 
 ## 6. Листи
 
@@ -270,7 +363,8 @@ Brevo використовується лише для листів маркет
 
 | Змінна | Обов'язково | Опис |
 |---|---|---|
-| `FIREBASE_PROJECT_ID` | для `/api/me` | ID Firebase-проєкту середовища. Без неї маршрутів `/api/me` немає (fail closed) |
+| `REQUIRE_FIREBASE_AUTH` | ні (`false`) | Режим обов'язкової авторизації для функціонального деплою: при `true` відсутній `FIREBASE_PROJECT_ID` — помилка запуску (`FIREBASE_PROJECT_ID: required when REQUIRE_FIREBASE_AUTH=true`), а не мовчазний запуск без `/api/me`. Без мережевих викликів |
+| `FIREBASE_PROJECT_ID` | для `/api/me` | ID Firebase-проєкту середовища. Без неї (і без `REQUIRE_FIREBASE_AUTH`) маршрутів `/api/me` немає (fail closed) |
 | `FIREBASE_CREDENTIALS` | так, разом з project id | `service-account-json` (рекомендовано зараз), `application-default` (ADC / Workload Identity Federation), `none` — лише з емулятором |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | при `service-account-json` | **Секрет.** Вміст JSON-ключа; `project_id` має дорівнювати `FIREBASE_PROJECT_ID`. У логи й помилки не потрапляє |
 | `FIREBASE_AUTH_EMULATOR_HOST` | ні | Лише локально й у CI: тільки при `NODE_ENV≠production`, тільки з `demo-` проєктом і без облікових даних. При `NODE_ENV=production` — **помилка запуску** (емулятор приймає непідписані токени) |
@@ -281,7 +375,7 @@ Brevo використовується лише для листів маркет
 
 **Зараз (рекомендовано): JSON-ключ у SSM, як і рядки підключення до БД.**
 1. `aws ssm put-parameter --type SecureString --name /massage-staging/booking/firebase-service-account --value file://<тимчасовий файл>` (той самий безпечний спосіб, що для `database-url`; файл одразу видалити).
-2. Task definition API: `environment` — `FIREBASE_PROJECT_ID=<staging project>`, `FIREBASE_CREDENTIALS=service-account-json`; `secrets` — `FIREBASE_SERVICE_ACCOUNT_JSON` з ARN параметра.
+2. Task definition API: `environment` — `REQUIRE_FIREBASE_AUTH=true`, `FIREBASE_PROJECT_ID=<staging project>`, `FIREBASE_CREDENTIALS=service-account-json`; `secrets` — `FIREBASE_SERVICE_ACCOUNT_JSON` з ARN параметра.
 3. Execution role API: `ssm:GetParameters` і на цей параметр.
 4. Egress 443 у SG API вже дозволено (`api_https`).
 5. Ротація: новий ключ → `put-parameter --overwrite` → новий деплой → видалити старий ключ у Google Cloud.
@@ -321,7 +415,8 @@ HTTP-маршруту для зміни ролі немає; профіль не
 4. `ECR publish` для нового коміту.
 5. `Staging deploy` з `run_migrations=true`: міграція `20261027120000_firebase_profiles_and_marketing` створює `UserProfile`, `MarketingSubscription`, enum-и й обмеження; раннер видає `booking_app` DML на нові таблиці. Legacy `User` не змінюється.
 6. Перевірки через HTTPS:
-   - `GET /api/me` без токена → `401 AUTH_REQUIRED`;
+   - workflow `Staging deploy` сам перевіряє (крок «Check authentication over HTTPS», вхід `verify_auth`, за замовчуванням `true`), що `GET /api/me` без токена → `401 AUTH_REQUIRED` з `WWW-Authenticate: Bearer`: маршрути існують і вимагають токен. Запит без токена, тож Firebase не викликається; health checks теж ніколи не звертаються до Firebase. `verify_auth=false` — лише для відкату на образ без автентифікації;
+   - повна перевірка з токеном потребує тестового акаунта staging (вручну, нижче);
    - тестовий web-клієнт staging: анонімний вхід → `POST /api/me/sync` → `anonymous_session`;
    - реєстрація email + пароль, лист підтвердження Firebase, `getIdToken(true)` + `sync` → `emailVerified: true`;
    - вхід через Google (реальний), прив'язка гостя до Google;
@@ -344,12 +439,34 @@ HTTP-маршруту для зміни ролі немає; профіль не
 | Чужий профіль, призначення собі `admin`, привілейовані поля | так | так (і через `PATCH`) | — |
 | Ідемпотентність і конкурентне створення профілю | in-memory | 25 паралельних запитів, один рядок | — |
 | Команда призначення ролі | — | так (усі відмови й `--apply`) | — |
-| Підписка: double opt-in, нейтральні відповіді, одноразові посилання, перенесення legacy-згоди | так | так | реальні листи Brevo не перевірено |
+| Підписка: double opt-in, нейтральні відповіді, одноразові посилання, доказ згоди, обмеження БД | так | так | реальні листи Brevo не перевірено |
+| Чекбокс при реєстрації (email/пароль і Google), без чекбокса, повторні й паралельні `sync`, відписка й подальший `sync`, повторна підписка лише явною дією, помилка відправки | так | так (email/пароль, Google, паралельні) | — |
+| `emailVerified` не дає згоди; legacy-згоди не переносяться | так | так | — |
+| Публічні маршрути й health без токена, без викликів Firebase; `REQUIRE_FIREBASE_AUTH` | так | — | — |
+| Перевірка автентифікації в деплої (`check-auth.sh`) | тести скрипта | — | на staging — при наступному деплої |
 | Секрети й токени не потрапляють у відповіді й логи | так | так | — |
 
 Локально: `npm run emulator:auth -w @massage/booking` (firebase-tools 15.34.1 через `npx`, Java не потрібна), потім `FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099 npm run test:integration`. CI запускає емулятор у job `integration`.
 
-## 12. Відкладені рішення
+## 12. Вразливості залежностей (аудит 2026-10-28)
+
+`npm audit` показував 11 записів (1 critical, 9 high, 1 moderate). Усі були й до цього етапу; закрито сумісними оновленнями без `--force` і видаленням невикористаної залежності. Зараз `npm audit`: **0**.
+
+| Пакет | Звідки | У runtime-образі | Застосовність до наших маршрутів | Рішення |
+|---|---|---|---|---|
+| `axios` 1.19.0 (high) | пряма залежність, у коді **не використовувалась** | так | ні (код не робить запитів через axios) | видалено з залежностей |
+| `follow-redirects` (high) | через axios | так | ні | зник разом з axios |
+| `body-parser` 2.3.0 (high, DoS через стиснене тіло) | express | так | **так**: `express.json()` розпаковує gzip/deflate тіла на публічних маршрутах | 2.4.0, обов'язково до staging |
+| `zod` 4.4.3 (high, пам'ять на великих колекціях) | пряма | так | частково: схем-масивів з вводу немає, тіло ≤ 16 kB | 4.6.7 |
+| `proxy-addr` 2.0.7 (critical, IPv4-mapped IPv6 у trust subnet) | express | так | ні: `trust proxy` не налаштовано | 2.0.8 |
+| `qs` 6.15.3 (moderate, DoS) | express / body-parser | так | ні: query-парсер Express 5 «simple», urlencoded-тіл немає | 6.17.0 |
+| `prisma`, `@prisma/config`, `deepmerge-ts`, `fast-uri`, `mysql2` (high) | Prisma CLI (у migrate-образі й, як peer `@prisma/client`, у runtime-дереві) | так, але лише CLI | ні: CLI працює з довіреною конфігурацією в задачі міграцій; `mysql2` не використовується (PostgreSQL) | `prisma`, `@prisma/client`, `@prisma/adapter-pg` 7.10.1 (узгоджено) |
+
+Перевірка після оновлення: lint, typecheck, unit, інтеграційні (міграції з нуля, перехід зі старих прав, автентифікація, підписка), smoke-тест образів; `prisma migrate diff` — без відмінностей. `qs` 6.17.0 і `body-parser` 2.4.0 опубліковані нещодавно (27 і 22 жовтня) тими самими супровідниками; npm обрав їх як мінімальні сумісні виправлення.
+
+Install-скрипти: дозволено лише `prisma`/`@prisma/engines` 7.10.1, `esbuild`, `fsevents`; `@firebase/util` і `protobufjs` явно заборонено (`allowScripts` у кореневому `package.json`) — для роботи сервера вони не потрібні.
+
+## 13. Відкладені рішення
 
 - **Зображення.** Сервіс зображень, захищене завантаження й підписування запитів обираємо **перед** відповідним завданням. ImageKit — лише кандидат. У цьому етапі нічого з цього не реалізовано і ресурсів не створено.
 - CAPTCHA / App Check для публічних форм (підписка, реєстрація).

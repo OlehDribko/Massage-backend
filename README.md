@@ -76,7 +76,8 @@ npm run prisma -- generate    # Prisma Client у services/booking/src/generated 
 | `FRONTEND_URL` | — | CORS origin; без нього CORS-заголовки не додаються |
 | `SHUTDOWN_TIMEOUT_MS` | `10000` | Граничний час graceful shutdown |
 | `READINESS_TIMEOUT_MS` | `2000` | Граничний час перевірки БД у `/health/ready` |
-| `FIREBASE_PROJECT_ID` | — | Firebase-проєкт середовища. Без неї маршрутів `/api/me` немає |
+| `REQUIRE_FIREBASE_AUTH` | `false` | Режим обов'язкової авторизації: при `true` запуск без `FIREBASE_PROJECT_ID` — помилка конфігурації |
+| `FIREBASE_PROJECT_ID` | — | Firebase-проєкт середовища. Без неї (і без `REQUIRE_FIREBASE_AUTH`) маршрутів `/api/me` немає |
 | `FIREBASE_CREDENTIALS` | — | `service-account-json`, `application-default`, або `none` (лише з емулятором); обов'язкова разом із `FIREBASE_PROJECT_ID` |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | — | Секрет: JSON-ключ службового акаунта того самого проєкту (при `service-account-json`) |
 | `FIREBASE_AUTH_EMULATOR_HOST` | — | Лише локально/CI з `demo-` проєктом; при `NODE_ENV=production` — помилка запуску |

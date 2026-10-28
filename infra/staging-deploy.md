@@ -261,7 +261,7 @@ aws ssm describe-parameters --region eu-west-3 \
 
 ## Workflow `Staging deploy (booking)`
 
-`workflow_dispatch` лише на `develop`. Вхідні дані: `commit_sha`, `api_digest`, `migrate_digest`, `run_migrations` (за замовчуванням `true`).
+`workflow_dispatch` лише на `develop`. Вхідні дані: `commit_sha`, `api_digest`, `migrate_digest`, `run_migrations` (за замовчуванням `true`), `verify_auth` (за замовчуванням `true`: після readiness `GET /api/me` без токена має дати `401 AUTH_REQUIRED` з `WWW-Authenticate: Bearer`, `check-auth.sh`; `false` — лише для образів без Firebase-автентифікації, наприклад відкат на `0e93e68`).
 
 **Job `verify`** (`actions: read`, `contents: read`, без AWS):
 1. Формат SHA (40 hex) і digest (`sha256:` + 64 hex).
@@ -285,7 +285,8 @@ aws ssm describe-parameters --region eu-west-3 \
    - `update-service --desired-count 1`;
    - очікування завершеного rollout до 25 хв (`check-service-deployment.sh`): ревізія та сама, `rolloutState = COMPLETED`, одне розгортання, усі task запущені. Відкат circuit breaker на попередню ревізію — помилка.
 7. **Health** за HTTPS: `GET <STAGING_API_BASE_URL>/health/ready` має повернути 200, `status: ready` і `version` = SHA (`check-readiness.sh`). Так перевіряється, що відповідає саме новий образ і що він бачить БД.
-8. **Summary:** нова й попередня ревізії, образи й інструкція з відкату.
+8. **Автентифікація** (якщо `verify_auth`): `GET <STAGING_API_BASE_URL>/api/me` без токена → `401 AUTH_REQUIRED` (`check-auth.sh`). Health не доводить, що бізнес-API налаштоване; цей крок доводить, що `/api/me` існує і вимагає токен, не звертаючись до Firebase. Разом із `REQUIRE_FIREBASE_AUTH=true` у task definition (ще не додано) неналаштований Firebase зупиняє задачу ще на старті.
+9. **Summary:** нова й попередня ревізії, образи й інструкція з відкату.
 
 **Одночасність:** `concurrency: staging-deploy` без скасування, тож одночасно йде один деплой. Якщо в черзі чекає кілька запусків, GitHub залишає лише найновіший.
 
