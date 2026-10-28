@@ -33,10 +33,12 @@
   },
   "homepage": "https://github.com/OlehDribko/Massage-backend#readme",
   "allowScripts": {
-    "@prisma/engines@7.9.1": true,
     "esbuild@0.28.1": true,
     "fsevents@2.3.3": true,
-    "prisma@7.9.1": true
+    "@prisma/engines@7.10.1": true,
+    "prisma@7.10.1": true,
+    "@firebase/util@1.15.3": false,
+    "protobufjs@7.6.6": false
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
