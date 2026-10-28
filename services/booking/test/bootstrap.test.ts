@@ -26,8 +26,12 @@ const configFrom = (env: Record<string, string>): AppConfig => {
   return result.config;
 };
 
+let verifyCalls = 0;
 const rejectingProvider: IdentityProvider = {
-  verifyIdToken: () => Promise.resolve({ ok: false, reason: "invalid" }),
+  verifyIdToken: () => {
+    verifyCalls += 1;
+    return Promise.resolve({ ok: false, reason: "invalid" });
+  },
   revokeAllSessions: () => Promise.resolve("unavailable"),
 };
 
@@ -86,5 +90,35 @@ describe("createApplication", () => {
       .send({ token: "not-a-jwt" });
     expect(invalidToken.status).toBe(400);
     expect(invalidToken.body).toEqual({ message: "Invalid or expired link", code: "INVALID_ACTION_TOKEN" });
+  });
+
+  it("health checks and public routes never need a token and never call Firebase", async () => {
+    const app = appFor(
+      configFrom({
+        REQUIRE_FIREBASE_AUTH: "true",
+        FIREBASE_PROJECT_ID: "massage-staging",
+        FIREBASE_CREDENTIALS: "application-default",
+        ENABLE_MARKETING_SUBSCRIPTION: "true",
+        BREVO_API_KEY: "dummy-brevo-key",
+        EMAIL_FROM_NAME: "Test",
+        EMAIL_FROM_EMAIL: "sender@example.invalid",
+        ACTION_TOKEN_SECRET: "dummy-action-secret-0123456789abcdef",
+        FRONTEND_URL: "http://localhost:5173",
+      }),
+    );
+    verifyCalls = 0;
+
+    for (const authorization of [undefined, "Bearer stale-or-garbage"]) {
+      const live = request(app).get("/health/live");
+      const unsubscribe = request(app).post("/api/marketing/subscriptions/unsubscribe");
+      if (authorization !== undefined) {
+        void live.set("Authorization", authorization);
+        void unsubscribe.set("Authorization", authorization);
+      }
+      expect((await live).status).toBe(200);
+      // Public route: validation runs, authentication does not.
+      expect((await unsubscribe.send({ token: "not-a-jwt" })).status).toBe(400);
+    }
+    expect(verifyCalls).toBe(0);
   });
 });

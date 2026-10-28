@@ -38,6 +38,7 @@ const main = () => {
       nodeEnv: config.nodeEnv,
       port: config.port,
       authEnabled: config.firebase !== undefined,
+      authRequired: config.authRequired,
       authEmulator: config.firebase?.credentials.kind === "emulator",
       marketingEnabled: config.marketing !== undefined,
       corsEnabled: config.corsOrigin !== undefined,

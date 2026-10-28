@@ -1,5 +1,6 @@
 import type { UserProfile } from "../../generated/prisma/client.js";
 import { bookingReadiness, type BookingReadiness } from "../access/policies.js";
+import type { MarketingStatus } from "../marketing/consent.js";
 import type { VerifiedIdentity } from "../auth/identity.js";
 import { AppError } from "../../shared/errors/app-error.js";
 import type { OwnProfileChanges, ProfileRepository } from "./profile.repository.js";
@@ -20,10 +21,16 @@ export type ProfileView = {
   };
   /** Informational for the UI; booking routes re-check on the server. */
   bookingReadiness: BookingReadiness;
+  /**
+   * Marketing subscription of the profile's email (source of truth:
+   * MarketingSubscription). null while the email is missing or unverified,
+   * so nobody learns the status of an address they have not proven.
+   */
+  marketing: MarketingStatus | null;
 };
 
 // The Firebase UID and internal timestamps stay server-side.
-export const toProfileView = (profile: UserProfile): ProfileView => ({
+export const toProfileView = (profile: UserProfile, marketing: MarketingStatus | null): ProfileView => ({
   profile: {
     id: profile.id,
     role: profile.role,
@@ -37,6 +44,7 @@ export const toProfileView = (profile: UserProfile): ProfileView => ({
     updatedAt: profile.updatedAt.toISOString(),
   },
   bookingReadiness: bookingReadiness(profile),
+  marketing,
 });
 
 const profileNotFound = () =>

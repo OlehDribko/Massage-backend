@@ -73,6 +73,12 @@ export const createInMemoryMarketingRepository = () => {
       rows.set(id, { ...row, ...changes, updatedAt: new Date() });
     }
   };
+  const cleared = {
+    confirmationNonce: null,
+    confirmationSentAt: null,
+    confirmationSource: null,
+    confirmationTextVersion: null,
+  };
 
   const repository: MarketingRepository = {
     ensureExists: (email) => {
@@ -84,48 +90,65 @@ export const createInMemoryMarketingRepository = () => {
       const row: MarketingSubscription = {
         id: randomUUID(),
         email,
-        status: "pending",
-        confirmationNonce: null,
-        confirmationSentAt: null,
-        subscribedAt: null,
+        subscribed: false,
+        consentGivenAt: null,
+        consentSource: null,
+        consentTextVersion: null,
         unsubscribedAt: null,
+        ...cleared,
         createdAt: now,
         updatedAt: now,
       };
       rows.set(row.id, row);
       return Promise.resolve(row);
     },
-    claimConfirmationSend: (id, nonce, sentAt, cooldownSince) => {
+    findByEmail: (email) => Promise.resolve(byEmail(email) ?? null),
+    findById: (id) => Promise.resolve(rows.get(id) ?? null),
+    claimConfirmation: (id, claim) => {
       const row = rows.get(id);
-      if (
-        row === undefined ||
-        row.status === "subscribed" ||
-        (row.confirmationSentAt !== null && row.confirmationSentAt >= cooldownSince)
-      ) {
+      if (row === undefined || row.subscribed) {
         return Promise.resolve(false);
       }
-      update(id, { confirmationNonce: nonce, confirmationSentAt: sentAt });
+      const allowed =
+        claim.mode === "signup"
+          ? row.unsubscribedAt === null && row.consentGivenAt === null && row.confirmationSentAt === null
+          : row.confirmationSentAt === null || row.confirmationSentAt < claim.cooldownSince;
+      if (!allowed) {
+        return Promise.resolve(false);
+      }
+      update(id, {
+        confirmationNonce: claim.nonce,
+        confirmationSentAt: claim.sentAt,
+        confirmationSource: claim.consent.source,
+        confirmationTextVersion: claim.consent.textVersion,
+      });
       return Promise.resolve(true);
     },
-    releaseConfirmationClaim: (id, nonce) => {
+    releaseConfirmation: (id, nonce) => {
       if (rows.get(id)?.confirmationNonce === nonce) {
-        update(id, { confirmationNonce: null, confirmationSentAt: null });
+        update(id, cleared);
       }
       return Promise.resolve();
     },
-    confirm: (id, nonce) => {
+    confirm: (id, nonce, at) => {
       const row = rows.get(id);
-      if (row === undefined || row.confirmationNonce !== nonce || row.status === "subscribed") {
+      if (row === undefined || row.subscribed || row.confirmationNonce !== nonce) {
         return Promise.resolve(false);
       }
-      update(id, { status: "subscribed", subscribedAt: new Date(), unsubscribedAt: null, confirmationNonce: null });
+      update(id, {
+        subscribed: true,
+        consentGivenAt: at,
+        consentSource: row.confirmationSource,
+        consentTextVersion: row.confirmationTextVersion,
+        unsubscribedAt: null,
+        ...cleared,
+      });
       return Promise.resolve(true);
     },
-    findById: (id) => Promise.resolve(rows.get(id) ?? null),
-    unsubscribe: (id) => {
+    unsubscribe: (id, at) => {
       const row = rows.get(id);
-      if (row !== undefined && row.status !== "unsubscribed") {
-        update(id, { status: "unsubscribed", unsubscribedAt: new Date(), confirmationNonce: null });
+      if (row !== undefined && (row.subscribed || row.confirmationNonce !== null)) {
+        update(id, { subscribed: false, unsubscribedAt: at, ...cleared });
       }
       return Promise.resolve();
     },

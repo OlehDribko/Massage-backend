@@ -1,14 +1,27 @@
 import { Router } from "express";
 import { z } from "zod";
+import { AppError } from "../../shared/errors/app-error.js";
 import { withValidatedBody } from "../../shared/http/validated-body.js";
 import { actionTokenSchema } from "../email/schema/email.schema.js";
+import { requireCurrentConsentText } from "./consent.js";
 import type { MarketingService } from "./marketing.service.js";
+
+export const emailSchema = z.string().trim().toLowerCase().max(254).pipe(z.email());
+
+export const consentTextVersionSchema = z.string().min(1).max(64);
 
 const subscribeSchema = z
   .object({
-    email: z.string().trim().toLowerCase().max(254).pipe(z.email()),
+    email: emailSchema,
+    consentTextVersion: consentTextVersionSchema,
   })
   .strict();
+
+export const deliveryFailed = () =>
+  new AppError(503, "The confirmation email could not be sent; nothing was changed, please retry later", {
+    code: "CONFIRMATION_EMAIL_NOT_SENT",
+    details: { retryAfterSeconds: 60 },
+  });
 
 /**
  * /api/marketing: public (no account needed). Guests subscribe here too;
@@ -19,11 +32,19 @@ export const createMarketingRouter = (service: MarketingService): Router => {
 
   router.post(
     "/subscriptions",
-    withValidatedBody(subscribeSchema, async ({ email }, res) => {
-      await service.requestSubscription(email);
+    withValidatedBody(subscribeSchema, async ({ email, consentTextVersion }, res) => {
+      const outcome = await service.requestSubscription(
+        email,
+        { source: "subscription_form", textVersion: requireCurrentConsentText(consentTextVersion) },
+        "explicit",
+      );
+      if (outcome === "delivery_failed") {
+        throw deliveryFailed();
+      }
+      // Same answer for new, pending, cooling-down and subscribed addresses.
       res.status(202).json({
         code: "SUBSCRIPTION_REQUESTED",
-        message: "If this address can receive email, a confirmation link has been sent to it.",
+        message: "If this address can receive email and is not subscribed yet, a confirmation link has been sent to it.",
       });
     }),
   );
@@ -42,7 +63,7 @@ export const createMarketingRouter = (service: MarketingService): Router => {
   router.post(
     "/subscriptions/unsubscribe",
     withValidatedBody(actionTokenSchema, async ({ token }, res) => {
-      await service.unsubscribe(token);
+      await service.unsubscribeByToken(token);
       res.status(200).json({
         code: "UNSUBSCRIBED",
         message:

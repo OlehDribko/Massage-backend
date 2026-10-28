@@ -60,6 +60,7 @@ describe("loadConfig", () => {
       shutdownTimeoutMs: 10_000,
       readinessTimeoutMs: 2_000,
       firebase: undefined,
+      authRequired: false,
       marketing: undefined,
     });
   });
@@ -144,6 +145,27 @@ describe("loadConfig", () => {
   describe("Firebase", () => {
     it("leaves authentication off (no /api/me) without FIREBASE_PROJECT_ID", () => {
       expect(expectConfig({ DATABASE_URL: DB_URL }).firebase).toBeUndefined();
+    });
+
+    it("REQUIRE_FIREBASE_AUTH=true refuses to start without Firebase", () => {
+      const errors = expectErrors({ DATABASE_URL: DB_URL, REQUIRE_FIREBASE_AUTH: "true" });
+      expect(errors).toEqual([
+        "FIREBASE_PROJECT_ID: required when REQUIRE_FIREBASE_AUTH=true (authentication must be configured)",
+      ]);
+
+      const config = expectConfig({
+        DATABASE_URL: DB_URL,
+        REQUIRE_FIREBASE_AUTH: "TRUE",
+        FIREBASE_PROJECT_ID: "massage-staging",
+        FIREBASE_CREDENTIALS: "application-default",
+      });
+      expect(config.authRequired).toBe(true);
+      expect(config.firebase?.projectId).toBe("massage-staging");
+    });
+
+    it.each(["1", "yes"])("rejects an ambiguous REQUIRE_FIREBASE_AUTH=%j", (value) => {
+      const errors = expectErrors({ DATABASE_URL: DB_URL, REQUIRE_FIREBASE_AUTH: value });
+      expect(errors[0]).toMatch(/^REQUIRE_FIREBASE_AUTH:/);
     });
 
     it("requires FIREBASE_PROJECT_ID when other FIREBASE_* variables are set", () => {

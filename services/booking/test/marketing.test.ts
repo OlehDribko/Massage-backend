@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import type { MarketingMailer } from "../src/modules/email/service/email.service.js";
 import { createActionTokenService } from "../src/modules/email/tokens/action-token.service.js";
+import { MARKETING_CONSENT_TEXT_VERSION } from "../src/modules/marketing/consent.js";
 import { createMarketingRouter } from "../src/modules/marketing/marketing.routes.js";
 import { CONFIRMATION_COOLDOWN_MS, createMarketingService } from "../src/modules/marketing/marketing.service.js";
 import { createInMemoryMarketingRepository } from "./helpers/in-memory-repositories.js";
@@ -64,8 +65,8 @@ const setup = (options: { failSends?: boolean } = {}) => {
   };
 };
 
-const subscribe = (app: express.Express, email: string) =>
-  request(app).post("/api/marketing/subscriptions").send({ email });
+const subscribe = (app: express.Express, email: string, consentTextVersion = MARKETING_CONSENT_TEXT_VERSION) =>
+  request(app).post("/api/marketing/subscriptions").send({ email, consentTextVersion });
 const confirm = (app: express.Express, token: string) =>
   request(app).post("/api/marketing/subscriptions/confirm").send({ token });
 const unsubscribe = (app: express.Express, token: string) =>
@@ -73,7 +74,7 @@ const unsubscribe = (app: express.Express, token: string) =>
 
 const NEUTRAL = {
   code: "SUBSCRIPTION_REQUESTED",
-  message: "If this address can receive email, a confirmation link has been sent to it.",
+  message: "If this address can receive email and is not subscribed yet, a confirmation link has been sent to it.",
 };
 
 describe("marketing subscription", () => {
@@ -83,14 +84,26 @@ describe("marketing subscription", () => {
     const response = await subscribe(app, "  Anna@Example.Invalid ");
     expect(response.status).toBe(202);
     expect(response.body).toEqual(NEUTRAL);
-    expect(repo.byEmail("anna@example.invalid")?.status).toBe("pending");
+    expect(repo.byEmail("anna@example.invalid")).toMatchObject({
+      subscribed: false,
+      consentGivenAt: null,
+      confirmationSource: "subscription_form",
+      confirmationTextVersion: MARKETING_CONSENT_TEXT_VERSION,
+    });
     expect(sent).toHaveLength(1);
     expect(sent[0]?.url.startsWith(`${FRONTEND}/marketing/confirm?token=`)).toBe(true);
 
     const confirmed = await confirm(app, tokenFrom(sent[0]?.url ?? ""));
     expect(confirmed.status).toBe(200);
     expect(confirmed.body).toMatchObject({ code: "SUBSCRIBED" });
-    expect(repo.byEmail("anna@example.invalid")?.status).toBe("subscribed");
+    expect(repo.byEmail("anna@example.invalid")).toMatchObject({
+      subscribed: true,
+      consentSource: "subscription_form",
+      consentTextVersion: MARKETING_CONSENT_TEXT_VERSION,
+      unsubscribedAt: null,
+      confirmationNonce: null,
+    });
+    expect(repo.byEmail("anna@example.invalid")?.consentGivenAt).toBeInstanceOf(Date);
     expect(sent[1]).toMatchObject({ kind: "confirmed", email: "anna@example.invalid" });
     expect(sent[1]?.url.startsWith(`${FRONTEND}/unsubscribe?token=`)).toBe(true);
   });
@@ -137,13 +150,22 @@ describe("marketing subscription", () => {
 
     const unsubscribeToken = tokenFrom(sent[1]?.url ?? "");
     expect((await unsubscribe(app, unsubscribeToken)).status).toBe(200);
-    expect(repo.byEmail("b@example.invalid")?.status).toBe("unsubscribed");
+    expect(repo.byEmail("b@example.invalid")).toMatchObject({ subscribed: false, consentSource: "subscription_form" });
+    const unsubscribedAt = repo.byEmail("b@example.invalid")?.unsubscribedAt;
+    expect(unsubscribedAt).toBeInstanceOf(Date);
 
     expect((await confirm(app, confirmToken)).status).toBe(400);
-    expect(repo.byEmail("b@example.invalid")?.status).toBe("unsubscribed");
+    expect(repo.byEmail("b@example.invalid")?.subscribed).toBe(false);
 
-    // Unsubscribing again is harmless.
+    // Unsubscribing again is harmless and keeps the original date.
     expect((await unsubscribe(app, unsubscribeToken)).status).toBe(200);
+    expect(repo.byEmail("b@example.invalid")?.unsubscribedAt).toEqual(unsubscribedAt);
+
+    // Subscribing again needs a new explicit request and a new confirmation.
+    expect((await subscribe(app, "b@example.invalid")).status).toBe(202);
+    expect(repo.byEmail("b@example.invalid")?.subscribed).toBe(false);
+    expect((await confirm(app, tokenFrom(sent.at(-1)?.url ?? ""))).status).toBe(200);
+    expect(repo.byEmail("b@example.invalid")).toMatchObject({ subscribed: true, unsubscribedAt: null });
   });
 
   it("unsubscribe answers the same for unknown subscriptions (no 500, no information)", async () => {
@@ -174,14 +196,22 @@ describe("marketing subscription", () => {
     expect(response.body).toEqual({ message: "Invalid or expired link", code: "INVALID_ACTION_TOKEN" });
   });
 
-  it("keeps answering neutrally when sending fails, allows a retry and logs no provider text", async () => {
+  it("reports a failed send honestly (no false success), allows a retry and logs no provider text", async () => {
     const { app, repo, logs } = setup({ failSends: true });
 
     const response = await subscribe(app, "c@example.invalid");
 
-    expect(response.status).toBe(202);
-    expect(response.body).toEqual(NEUTRAL);
-    expect(repo.byEmail("c@example.invalid")?.confirmationSentAt).toBeNull();
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({
+      message: "The confirmation email could not be sent; nothing was changed, please retry later",
+      code: "CONFIRMATION_EMAIL_NOT_SENT",
+      retryAfterSeconds: 60,
+    });
+    expect(repo.byEmail("c@example.invalid")).toMatchObject({
+      subscribed: false,
+      confirmationSentAt: null,
+      confirmationNonce: null,
+    });
     expect(logs.raw()).toContain("failed to send marketing confirmation email");
     expect(logs.raw()).not.toContain("BREVO_SENTINEL");
     expect(logs.raw()).not.toContain("c@example.invalid");
@@ -189,8 +219,28 @@ describe("marketing subscription", () => {
 
   it("validates input strictly", async () => {
     const { app } = setup();
-    for (const body of [{ email: "nope" }, { email: "a@example.invalid", consent: true }, {}]) {
+    for (const body of [
+      { email: "nope", consentTextVersion: MARKETING_CONSENT_TEXT_VERSION },
+      { email: "a@example.invalid", consentTextVersion: MARKETING_CONSENT_TEXT_VERSION, subscribed: true },
+      { email: "a@example.invalid" },
+      {},
+    ]) {
       expect((await request(app).post("/api/marketing/subscriptions").send(body)).status).toBe(400);
     }
+  });
+
+  it("refuses an outdated consent text and records nothing", async () => {
+    const { app, repo, sent } = setup();
+
+    const response = await subscribe(app, "old@example.invalid", "2020-01-01.fr.0");
+
+    expect(response.status).toBe(409);
+    expect(response.body).toEqual({
+      message: "The consent text shown is outdated; reload and show the current one",
+      code: "CONSENT_TEXT_OUTDATED",
+      currentConsentTextVersion: MARKETING_CONSENT_TEXT_VERSION,
+    });
+    expect(repo.byEmail("old@example.invalid")).toBeUndefined();
+    expect(sent).toHaveLength(0);
   });
 });

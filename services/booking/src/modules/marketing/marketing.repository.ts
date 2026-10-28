@@ -1,21 +1,47 @@
 import type { MarketingSubscription, PrismaClient } from "../../generated/prisma/client.js";
+import type { ConsentRequest } from "./consent.js";
+
+/**
+ * - "explicit": a new, deliberate action by the person (subscription form,
+ *   re-subscribe button). Allowed after an unsubscribe.
+ * - "signup": the sign-up checkbox, which may reach the server repeatedly
+ *   (retries, every profile sync). Acts at most once per address: never after
+ *   an unsubscribe, an earlier consent or an earlier confirmation email.
+ */
+export type RequestMode = "explicit" | "signup";
+
+export type ConfirmationClaim = {
+  nonce: string;
+  sentAt: Date;
+  /** Explicit requests: no new email if one was sent after this time. */
+  cooldownSince: Date;
+  mode: RequestMode;
+  consent: ConsentRequest;
+};
 
 export type MarketingRepository = {
-  /** Creates a pending row for the address if none exists (race-safe). */
+  /** Creates an unsubscribed row for the address if none exists (race-safe). */
   ensureExists: (email: string) => Promise<MarketingSubscription>;
-  /**
-   * Records a confirmation send with a fresh nonce unless the address is
-   * already subscribed or a link was sent after `cooldownSince`.
-   * Atomic: of concurrent requests at most one wins.
-   */
-  claimConfirmationSend: (id: string, nonce: string, sentAt: Date, cooldownSince: Date) => Promise<boolean>;
-  /** Undoes a claim whose email could not be sent, so the user can retry. */
-  releaseConfirmationClaim: (id: string, nonce: string) => Promise<void>;
-  /** Subscribes if the nonce is the current one; the nonce is used up. */
-  confirm: (id: string, nonce: string) => Promise<boolean>;
+  findByEmail: (email: string) => Promise<MarketingSubscription | null>;
   findById: (id: string) => Promise<MarketingSubscription | null>;
-  /** Idempotent; also invalidates any outstanding confirmation link. */
-  unsubscribe: (id: string) => Promise<void>;
+  /**
+   * Records a confirmation request with a fresh nonce if the rules of the
+   * mode allow it. Atomic: of concurrent requests at most one wins.
+   */
+  claimConfirmation: (id: string, claim: ConfirmationClaim) => Promise<boolean>;
+  /** Undoes a claim whose email could not be sent, so the request can be retried. */
+  releaseConfirmation: (id: string, nonce: string) => Promise<void>;
+  /** Subscribes if the nonce is the current one, recording the consent. */
+  confirm: (id: string, nonce: string, at: Date) => Promise<boolean>;
+  /** Idempotent; also cancels an outstanding confirmation. */
+  unsubscribe: (id: string, at: Date) => Promise<void>;
+};
+
+const clearedConfirmation = {
+  confirmationNonce: null,
+  confirmationSentAt: null,
+  confirmationSource: null,
+  confirmationTextVersion: null,
 };
 
 export const createMarketingRepository = (prisma: PrismaClient): MarketingRepository => ({
@@ -24,44 +50,70 @@ export const createMarketingRepository = (prisma: PrismaClient): MarketingReposi
     return prisma.marketingSubscription.findUniqueOrThrow({ where: { email } });
   },
 
-  claimConfirmationSend: async (id, nonce, sentAt, cooldownSince) => {
-    const result = await prisma.marketingSubscription.updateMany({
-      where: {
-        id,
-        status: { not: "subscribed" },
-        OR: [{ confirmationSentAt: null }, { confirmationSentAt: { lt: cooldownSince } }],
-      },
-      data: { confirmationNonce: nonce, confirmationSentAt: sentAt },
-    });
-    return result.count === 1;
-  },
-
-  releaseConfirmationClaim: async (id, nonce) => {
-    await prisma.marketingSubscription.updateMany({
-      where: { id, confirmationNonce: nonce },
-      data: { confirmationNonce: null, confirmationSentAt: null },
-    });
-  },
-
-  confirm: async (id, nonce) => {
-    const result = await prisma.marketingSubscription.updateMany({
-      where: { id, confirmationNonce: nonce, status: { not: "subscribed" } },
-      data: {
-        status: "subscribed",
-        subscribedAt: new Date(),
-        unsubscribedAt: null,
-        confirmationNonce: null,
-      },
-    });
-    return result.count === 1;
-  },
+  findByEmail: (email) => prisma.marketingSubscription.findUnique({ where: { email } }),
 
   findById: (id) => prisma.marketingSubscription.findUnique({ where: { id } }),
 
-  unsubscribe: async (id) => {
+  claimConfirmation: async (id, claim) => {
+    const allowed =
+      claim.mode === "signup"
+        ? {
+            unsubscribedAt: null,
+            consentGivenAt: null,
+            confirmationSentAt: null,
+          }
+        : {
+            OR: [{ confirmationSentAt: null }, { confirmationSentAt: { lt: claim.cooldownSince } }],
+          };
+    const result = await prisma.marketingSubscription.updateMany({
+      where: { id, subscribed: false, ...allowed },
+      data: {
+        confirmationNonce: claim.nonce,
+        confirmationSentAt: claim.sentAt,
+        confirmationSource: claim.consent.source,
+        confirmationTextVersion: claim.consent.textVersion,
+      },
+    });
+    return result.count === 1;
+  },
+
+  releaseConfirmation: async (id, nonce) => {
     await prisma.marketingSubscription.updateMany({
-      where: { id, status: { not: "unsubscribed" } },
-      data: { status: "unsubscribed", unsubscribedAt: new Date(), confirmationNonce: null },
+      where: { id, confirmationNonce: nonce },
+      data: clearedConfirmation,
+    });
+  },
+
+  confirm: async (id, nonce, at) => {
+    const row = await prisma.marketingSubscription.findUnique({ where: { id } });
+    if (
+      row === null ||
+      row.subscribed ||
+      row.confirmationNonce !== nonce ||
+      row.confirmationSource === null ||
+      row.confirmationTextVersion === null
+    ) {
+      return false;
+    }
+    // Conditional on the same nonce: the request read above is the one confirmed.
+    const result = await prisma.marketingSubscription.updateMany({
+      where: { id, subscribed: false, confirmationNonce: nonce },
+      data: {
+        subscribed: true,
+        consentGivenAt: at,
+        consentSource: row.confirmationSource,
+        consentTextVersion: row.confirmationTextVersion,
+        unsubscribedAt: null,
+        ...clearedConfirmation,
+      },
+    });
+    return result.count === 1;
+  },
+
+  unsubscribe: async (id, at) => {
+    await prisma.marketingSubscription.updateMany({
+      where: { id, OR: [{ subscribed: true }, { confirmationNonce: { not: null } }] },
+      data: { subscribed: false, unsubscribedAt: at, ...clearedConfirmation },
     });
   },
 });

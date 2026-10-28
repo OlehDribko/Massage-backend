@@ -105,6 +105,9 @@ const baseEnvSchema = z.object({
       .optional(),
   ),
   ENABLE_MARKETING_SUBSCRIPTION: booleanFlagSchema.default(false),
+  // Functional deployments set this: starting without Firebase is then a
+  // configuration error instead of silently running without /api/me.
+  REQUIRE_FIREBASE_AUTH: booleanFlagSchema.default(false),
   FIREBASE_PROJECT_ID: optionalNonEmpty.pipe(
     z
       .string()
@@ -177,6 +180,8 @@ export type AppConfig = {
   readinessTimeoutMs: number;
   // Absent: no /api/me routes (authentication is unavailable, fail closed).
   firebase: FirebaseConfig | undefined;
+  /** REQUIRE_FIREBASE_AUTH: when true, `firebase` is always present. */
+  authRequired: boolean;
   marketing: MarketingConfig | undefined;
 };
 
@@ -211,6 +216,7 @@ export const loadConfig = (env: EnvSource): ConfigResult => {
     READINESS_TIMEOUT_MS: trimmed(env.READINESS_TIMEOUT_MS),
     ENABLE_LEGACY_USER_ROUTES: trimmed(env.ENABLE_LEGACY_USER_ROUTES),
     ENABLE_MARKETING_SUBSCRIPTION: trimmed(env.ENABLE_MARKETING_SUBSCRIPTION),
+    REQUIRE_FIREBASE_AUTH: trimmed(env.REQUIRE_FIREBASE_AUTH),
     FIREBASE_PROJECT_ID: trimmed(env.FIREBASE_PROJECT_ID),
     FIREBASE_CREDENTIALS: trimmed(env.FIREBASE_CREDENTIALS),
     FIREBASE_AUTH_EMULATOR_HOST: trimmed(env.FIREBASE_AUTH_EMULATOR_HOST),
@@ -251,6 +257,7 @@ export const loadConfig = (env: EnvSource): ConfigResult => {
       shutdownTimeoutMs: base.data.SHUTDOWN_TIMEOUT_MS,
       readinessTimeoutMs: base.data.READINESS_TIMEOUT_MS,
       firebase: firebase.value,
+      authRequired: base.data.REQUIRE_FIREBASE_AUTH,
       marketing: marketing.value,
     },
   };
@@ -277,6 +284,12 @@ const loadFirebaseConfig = (
   }
 
   if (projectId === undefined) {
+    if (base.REQUIRE_FIREBASE_AUTH) {
+      return {
+        ok: false,
+        errors: ["FIREBASE_PROJECT_ID: required when REQUIRE_FIREBASE_AUTH=true (authentication must be configured)"],
+      };
+    }
     if (credentials !== undefined || emulatorHost !== undefined || hasServiceAccountJson) {
       return { ok: false, errors: ["FIREBASE_PROJECT_ID: required when other FIREBASE_* variables are set"] };
     }

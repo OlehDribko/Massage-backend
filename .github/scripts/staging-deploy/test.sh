@@ -181,5 +181,19 @@ expect 1 "readiness: API Gateway 503" "$readiness" 503 "$work/r.json" "$sha"
 printf 'not json' >"$work/r.json"
 expect 1 "readiness: non-JSON body" "$readiness" 200 "$work/r.json" "$sha"
 
+# --- check-auth.sh --------------------------------------------------------
+auth="$dir/check-auth.sh"
+printf '{"message":"Authentication required","code":"AUTH_REQUIRED"}' >"$work/a.json"
+expect 0 "auth: 401 AUTH_REQUIRED with Bearer challenge" "$auth" 401 "$work/a.json" "Bearer"
+expect 1 "auth: 401 without a Bearer challenge" "$auth" 401 "$work/a.json" ""
+printf '{"message":"Not found","code":"NOT_FOUND"}' >"$work/a.json"
+expect 1 "auth: /api/me missing (Firebase not configured)" "$auth" 404 "$work/a.json" ""
+printf '{"message":"Invalid ID token","code":"INVALID_TOKEN"}' >"$work/a.json"
+expect 1 "auth: 401 with another code" "$auth" 401 "$work/a.json" "Bearer"
+printf '{"profile":{}}' >"$work/a.json"
+expect 1 "auth: 200 without a token" "$auth" 200 "$work/a.json" ""
+printf 'not json' >"$work/a.json"
+expect 1 "auth: non-JSON body" "$auth" 401 "$work/a.json" "Bearer"
+
 echo "passed: ${passed}, failed: ${failed}"
 [ "$failed" -eq 0 ]

@@ -131,6 +131,17 @@ describe("entry point (src/server.ts)", () => {
     expectNoSentinels(child.output());
   });
 
+  it("refuses to start when REQUIRE_FIREBASE_AUTH=true but Firebase is not configured", async () => {
+    const child = startTsProcess("src/server.ts", { ...baseEnv, REQUIRE_FIREBASE_AUTH: "true" });
+
+    const exit = await child.exited;
+
+    expect(exit.code).toBe(1);
+    expect(child.output()).toContain("required when REQUIRE_FIREBASE_AUTH=true");
+    expect(messages(child)).not.toContain("server listening");
+    expectNoSentinels(child.output());
+  });
+
   it("refuses to start in production with the Firebase Auth Emulator configured", async () => {
     const child = startTsProcess("src/server.ts", {
       ...baseEnv,

@@ -5,6 +5,8 @@ import { z } from "zod";
 import { createApplication } from "../../src/bootstrap.js";
 import { loadConfig } from "../../src/config/config.js";
 import { createFirebaseIdentityProvider } from "../../src/integrations/firebase/firebase-identity-provider.js";
+import type { MarketingMailer } from "../../src/modules/email/service/email.service.js";
+import { MARKETING_CONSENT_TEXT_VERSION } from "../../src/modules/marketing/consent.js";
 import { createDatabase, type Database } from "../../src/shared/database/database.js";
 import { killRunningChildren, startTsProcess } from "../helpers/child-process.js";
 import { createCapturingLogger, type CapturedLogs, type LogEntry } from "../helpers/logs.js";
@@ -42,6 +44,14 @@ let database: Database;
 let app: Express;
 let logs: CapturedLogs;
 const admin = createEmulatorAdmin();
+const mails: { email: string; url: string }[] = [];
+const mailer: MarketingMailer = {
+  sendConfirmationRequest: (email, url) => {
+    mails.push({ email, url });
+    return Promise.resolve();
+  },
+  sendSubscriptionConfirmed: () => Promise.resolve(),
+};
 
 const profileResponseSchema = z.object({ profile: z.object({ id: z.uuid() }) });
 
@@ -76,6 +86,13 @@ beforeAll(async () => {
     DATABASE_SSL_MODE: "disable",
     FIREBASE_PROJECT_ID: EMULATOR_PROJECT_ID,
     FIREBASE_AUTH_EMULATOR_HOST: emulatorHost(),
+    REQUIRE_FIREBASE_AUTH: "true",
+    ENABLE_MARKETING_SUBSCRIPTION: "true",
+    BREVO_API_KEY: "unused-in-tests",
+    EMAIL_FROM_NAME: "Test",
+    EMAIL_FROM_EMAIL: "sender@example.invalid",
+    ACTION_TOKEN_SECRET: "integration-action-secret-0123456789abcdef",
+    FRONTEND_URL: "https://front.example.invalid",
   });
   if (!config.ok) {
     throw new Error(config.errors.join("; "));
@@ -85,8 +102,14 @@ beforeAll(async () => {
     { url: db.url("app"), sslMode: "disable", poolMax: 10, connectTimeoutMs: 5_000, queryTimeoutMs: 10_000 },
     logs.logger,
   );
-  // The real Firebase adapter (no override).
-  app = createApplication({ config: config.config, logger: logs.logger, database, isShuttingDown: () => false });
+  // The real Firebase adapter (no override); only the email provider is replaced.
+  app = createApplication({
+    config: config.config,
+    logger: logs.logger,
+    database,
+    isShuttingDown: () => false,
+    overrides: { marketingMailer: mailer },
+  });
 });
 
 afterEach(async () => {
@@ -188,6 +211,39 @@ describe("guest → registered client (Auth Emulator + PostgreSQL)", () => {
     const ownerAgain = await sync((await client.signIn("taken@example.invalid", PASSWORD)).idToken);
     expect(ownerAgain.body).toMatchObject({ profile: { id: idOf(ownerProfile) } });
     expect(await profileCount()).toBe(countBefore);
+  });
+});
+
+describe("sign-up with the marketing checkbox (emulator + PostgreSQL)", () => {
+  const optIn = { marketingOptIn: true, marketingConsentTextVersion: MARKETING_CONSENT_TEXT_VERSION };
+
+  it("email + password and Google: one confirmation email each, status false until confirmed", async () => {
+    const password = await client.signUp("checkbox@example.invalid", PASSWORD);
+    const google = await client.signInWithGoogle({ sub: "google-checkbox", email: "checkbox.google@example.invalid", email_verified: true });
+    if ("error" in google) {
+      throw new Error(google.error);
+    }
+
+    const passwordSyncs = await Promise.all(
+      Array.from({ length: 8 }, () => request(app).post("/api/me/sync").set(bearer(password.idToken)).send(optIn)),
+    );
+    const googleSync = await request(app).post("/api/me/sync").set(bearer(google.idToken)).send(optIn);
+    await request(app).post("/api/me/sync").set(bearer(google.idToken)).send(optIn);
+
+    expect(passwordSyncs.every((response) => response.status === 200)).toBe(true);
+    expect(mails.filter((mail) => mail.email === "checkbox@example.invalid")).toHaveLength(1);
+    expect(mails.filter((mail) => mail.email === "checkbox.google@example.invalid")).toHaveLength(1);
+    expect(passwordSyncs[0]?.body).toMatchObject({ profile: { emailVerified: false }, marketing: null });
+    expect(googleSync.body).toMatchObject({
+      marketing: { subscribed: false, pendingConfirmation: true },
+      marketingOptIn: { outcome: "confirmation_sent" },
+    });
+
+    // Firebase email verification does not subscribe.
+    await admin.auth.updateUser(password.localId, { emailVerified: true });
+    await nextSecond();
+    const verified = await client.signIn("checkbox@example.invalid", PASSWORD);
+    expect((await sync(verified.idToken)).body).toMatchObject({ marketing: { subscribed: false } });
   });
 });
 

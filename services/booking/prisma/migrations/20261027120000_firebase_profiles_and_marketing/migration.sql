@@ -2,7 +2,7 @@
 CREATE TYPE "UserRole" AS ENUM ('client', 'admin');
 
 -- CreateEnum
-CREATE TYPE "MarketingSubscriptionStatus" AS ENUM ('pending', 'subscribed', 'unsubscribed');
+CREATE TYPE "MarketingConsentSource" AS ENUM ('signup_checkbox', 'subscription_form', 'account_request');
 
 -- CreateTable
 CREATE TABLE "UserProfile" (
@@ -26,11 +26,15 @@ CREATE TABLE "UserProfile" (
 CREATE TABLE "MarketingSubscription" (
     "id" UUID NOT NULL,
     "email" TEXT NOT NULL,
-    "status" "MarketingSubscriptionStatus" NOT NULL DEFAULT 'pending',
+    "subscribed" BOOLEAN NOT NULL DEFAULT false,
+    "consentGivenAt" TIMESTAMP(3),
+    "consentSource" "MarketingConsentSource",
+    "consentTextVersion" TEXT,
+    "unsubscribedAt" TIMESTAMP(3),
     "confirmationNonce" TEXT,
     "confirmationSentAt" TIMESTAMP(3),
-    "subscribedAt" TIMESTAMP(3),
-    "unsubscribedAt" TIMESTAMP(3),
+    "confirmationSource" "MarketingConsentSource",
+    "confirmationTextVersion" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
@@ -51,25 +55,21 @@ ALTER TABLE "UserProfile"
     ADD CONSTRAINT "UserProfile_name_length" CHECK ("name" IS NULL OR char_length("name") BETWEEN 1 AND 80),
     ADD CONSTRAINT "UserProfile_phone_e164" CHECK ("phoneE164" IS NULL OR "phoneE164" ~ '^\+[1-9][0-9]{6,14}$');
 
+-- A subscription always carries the evidence of its consent, and a pending
+-- confirmation always records what was requested.
 ALTER TABLE "MarketingSubscription"
-    ADD CONSTRAINT "MarketingSubscription_email_lowercase" CHECK ("email" = lower("email"));
+    ADD CONSTRAINT "MarketingSubscription_email_lowercase" CHECK ("email" = lower("email")),
+    ADD CONSTRAINT "MarketingSubscription_consent_evidence" CHECK (
+        NOT "subscribed"
+        OR ("consentGivenAt" IS NOT NULL AND "consentSource" IS NOT NULL AND "consentTextVersion" IS NOT NULL)
+    ),
+    ADD CONSTRAINT "MarketingSubscription_confirmation_complete" CHECK (
+        ("confirmationNonce" IS NULL) = ("confirmationSource" IS NULL)
+        AND ("confirmationNonce" IS NULL) = ("confirmationTextVersion" IS NULL)
+    );
 
--- Carry over confirmed marketing consent from the legacy "User" table.
--- Only addresses that were verified and opted in become "subscribed"; the
--- legacy id is reused so unsubscribe links already sent keep working.
--- Unconfirmed legacy subscribers are not carried over (they subscribe again).
--- The legacy table itself is left unchanged.
-INSERT INTO "MarketingSubscription" ("id", "email", "status", "subscribedAt", "createdAt", "updatedAt")
-SELECT
-    CASE
-        WHEN "id" ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN "id"::uuid
-        ELSE gen_random_uuid()
-    END,
-    lower("email"),
-    'subscribed',
-    "updatedAt",
-    "createdAt",
-    CURRENT_TIMESTAMP
-FROM "User"
-WHERE "marketingConsent" AND "emailVerified"
-ON CONFLICT ("email") DO NOTHING;
+-- Legacy consent ("User"."marketingConsent") is NOT carried over: the legacy
+-- flow could set it without a confirmed opt-in (e.g. for an already verified
+-- address), and "emailVerified" proves only that the address works, not
+-- marketing consent. Legacy subscribers must opt in again; the legacy table
+-- stays unchanged for a later decision.

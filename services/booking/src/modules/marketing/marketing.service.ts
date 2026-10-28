@@ -6,12 +6,24 @@ import {
   invalidActionToken,
   type ActionTokenService,
 } from "../email/tokens/action-token.service.js";
-import type { MarketingRepository } from "./marketing.repository.js";
+import type { ConsentRequest } from "./consent.js";
+import type { MarketingRepository, RequestMode } from "./marketing.repository.js";
 
-/** One confirmation email per address per this interval. */
+/** One confirmation email per address per this interval (explicit requests). */
 export const CONFIRMATION_COOLDOWN_MS = 10 * 60 * 1000;
 
 const uuidSchema = z.uuid();
+
+/**
+ * - confirmation_sent: a confirmation email was accepted by the provider
+ *   (not a promise of delivery to the inbox);
+ * - delivery_failed: the email could not be handed to the provider; nothing
+ *   changed, the request can be repeated;
+ * - no_action: nothing to do (already subscribed, confirmation already sent
+ *   recently, or the sign-up checkbox after an earlier unsubscribe). Not
+ *   distinguished, so the answer reveals nothing about the address.
+ */
+export type RequestOutcome = "confirmation_sent" | "delivery_failed" | "no_action";
 
 export type ConfirmResult = "subscribed" | "already_subscribed";
 
@@ -19,10 +31,10 @@ export type MarketingService = ReturnType<typeof createMarketingService>;
 
 /**
  * Marketing consent, independent of accounts and profiles:
- * - subscribing never creates or verifies an account, and is never automatic;
  * - consent starts only after the emailed link is confirmed (double opt-in);
+ *   Firebase email verification is a different action and never counts;
  * - unsubscribing affects marketing only, never service emails;
- * - responses do not reveal whether an address is known or subscribed.
+ * - only an explicit request can start over after an unsubscribe.
  */
 export const createMarketingService = ({
   repository,
@@ -45,22 +57,27 @@ export const createMarketingService = ({
     return url.toString();
   };
 
-  const requestSubscription = async (email: string): Promise<void> => {
+  const requestSubscription = async (
+    email: string,
+    consent: ConsentRequest,
+    mode: RequestMode,
+  ): Promise<RequestOutcome> => {
     const subscription = await repository.ensureExists(email);
-    if (subscription.status === "subscribed") {
-      return;
+    if (subscription.subscribed) {
+      return "no_action";
     }
 
     const nonce = randomBytes(16).toString("base64url");
     const sentAt = now();
-    const claimed = await repository.claimConfirmationSend(
-      subscription.id,
+    const claimed = await repository.claimConfirmation(subscription.id, {
       nonce,
-      new Date(sentAt),
-      new Date(sentAt - CONFIRMATION_COOLDOWN_MS),
-    );
+      sentAt: new Date(sentAt),
+      cooldownSince: new Date(sentAt - CONFIRMATION_COOLDOWN_MS),
+      mode,
+      consent,
+    });
     if (!claimed) {
-      return;
+      return "no_action";
     }
 
     const confirmUrl = link(
@@ -69,13 +86,15 @@ export const createMarketingService = ({
     );
     try {
       await mailer.sendConfirmationRequest(subscription.email, confirmUrl);
+      return "confirmation_sent";
     } catch (error) {
-      await repository.releaseConfirmationClaim(subscription.id, nonce);
+      await repository.releaseConfirmation(subscription.id, nonce);
       logger.error({ error: describeError(error) }, "failed to send marketing confirmation email");
+      return "delivery_failed";
     }
   };
 
-  const subjectOf = (token: string, purpose: "marketing_confirm" | "marketing_unsubscribe") => {
+  const claimsOf = (token: string, purpose: "marketing_confirm" | "marketing_unsubscribe") => {
     const claims = tokens.verifyToken(token, purpose);
     if (!uuidSchema.safeParse(claims.subjectId).success) {
       throw invalidActionToken();
@@ -84,12 +103,12 @@ export const createMarketingService = ({
   };
 
   const confirm = async (token: string): Promise<ConfirmResult> => {
-    const { subjectId, nonce } = subjectOf(token, "marketing_confirm");
+    const { subjectId, nonce } = claimsOf(token, "marketing_confirm");
     if (nonce === undefined) {
       throw invalidActionToken();
     }
 
-    if (await repository.confirm(subjectId, nonce)) {
+    if (await repository.confirm(subjectId, nonce, new Date(now()))) {
       const subscription = await repository.findById(subjectId);
       if (subscription !== null) {
         const unsubscribeUrl = link(
@@ -107,17 +126,17 @@ export const createMarketingService = ({
 
     // A used, superseded or post-unsubscribe link must not (re)subscribe.
     const current = await repository.findById(subjectId);
-    if (current?.status === "subscribed") {
+    if (current?.subscribed === true) {
       return "already_subscribed";
     }
     throw invalidActionToken();
   };
 
   // Same answer whether or not the subscription exists.
-  const unsubscribe = async (token: string): Promise<void> => {
-    const { subjectId } = subjectOf(token, "marketing_unsubscribe");
-    await repository.unsubscribe(subjectId);
+  const unsubscribeByToken = async (token: string): Promise<void> => {
+    const { subjectId } = claimsOf(token, "marketing_unsubscribe");
+    await repository.unsubscribe(subjectId, new Date(now()));
   };
 
-  return { requestSubscription, confirm, unsubscribe };
+  return { requestSubscription, confirm, unsubscribeByToken };
 };

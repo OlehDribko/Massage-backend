@@ -54,6 +54,24 @@ export const createApplication = ({
   const api = Router();
   let hasApiRoutes = false;
 
+  const marketingRepository = createMarketingRepository(database.prisma);
+  const marketingService =
+    config.marketing === undefined
+      ? undefined
+      : createMarketingService({
+          repository: marketingRepository,
+          mailer:
+            overrides.marketingMailer ??
+            createBrevoMarketingMailer({
+              brevoApiKey: config.marketing.brevoApiKey,
+              fromName: config.marketing.emailFromName,
+              fromEmail: config.marketing.emailFromEmail,
+            }),
+          tokens: createActionTokenService(config.marketing.actionTokenSecret),
+          frontendUrl: config.marketing.frontendUrl,
+          logger,
+        });
+
   if (config.firebase !== undefined) {
     const identityProvider =
       overrides.identityProvider ?? createFirebaseIdentityProvider(config.firebase, logger);
@@ -64,27 +82,15 @@ export const createApplication = ({
         authenticate: createAuthenticate(identityProvider),
         profiles,
         identityProvider,
+        marketing: { repository: marketingRepository, service: marketingService },
+        logger,
       }),
     );
     hasApiRoutes = true;
   }
 
-  if (config.marketing !== undefined) {
-    const marketing = config.marketing;
-    const service = createMarketingService({
-      repository: createMarketingRepository(database.prisma),
-      mailer:
-        overrides.marketingMailer ??
-        createBrevoMarketingMailer({
-          brevoApiKey: marketing.brevoApiKey,
-          fromName: marketing.emailFromName,
-          fromEmail: marketing.emailFromEmail,
-        }),
-      tokens: createActionTokenService(marketing.actionTokenSecret),
-      frontendUrl: marketing.frontendUrl,
-      logger,
-    });
-    api.use("/marketing", createMarketingRouter(service));
+  if (marketingService !== undefined) {
+    api.use("/marketing", createMarketingRouter(marketingService));
     hasApiRoutes = true;
   }
 

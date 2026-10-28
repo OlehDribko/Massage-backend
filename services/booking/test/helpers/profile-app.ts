@@ -5,17 +5,52 @@ import { createAccessGuards, requireActor } from "../../src/modules/access/requi
 import { createProfileRouter } from "../../src/modules/profiles/profile.routes.js";
 import { createProfileService } from "../../src/modules/profiles/profile.service.js";
 import { createFakeIdentityProvider } from "./fake-identity.js";
-import { createInMemoryProfileRepository } from "./in-memory-repositories.js";
+import {
+  createInMemoryMarketingRepository,
+  createInMemoryProfileRepository,
+} from "./in-memory-repositories.js";
+import { createActionTokenService } from "../../src/modules/email/tokens/action-token.service.js";
+import type { MarketingMailer } from "../../src/modules/email/service/email.service.js";
+import { createMarketingService } from "../../src/modules/marketing/marketing.service.js";
 import { createCapturingLogger } from "./logs.js";
 
 /**
  * App with /api/me and two sample routes guarded like future business
  * routes (/api/test/booking, /api/test/admin).
  */
-export const createProfileTestApp = () => {
+export type SentMail = { kind: "confirm" | "confirmed"; email: string; url: string };
+
+export const createProfileTestApp = (
+  options: { marketingEnabled?: boolean; failMarketingSends?: boolean } = {},
+) => {
   const identities = createFakeIdentityProvider();
   const profiles = createInMemoryProfileRepository();
+  const marketingRows = createInMemoryMarketingRepository();
   const logs = createCapturingLogger();
+  const sent: SentMail[] = [];
+  const mailer: MarketingMailer = {
+    sendConfirmationRequest: (email, url) => {
+      if (options.failMarketingSends === true) {
+        return Promise.reject(new Error("PROVIDER_SENTINEL down"));
+      }
+      sent.push({ kind: "confirm", email, url });
+      return Promise.resolve();
+    },
+    sendSubscriptionConfirmed: (email, url) => {
+      sent.push({ kind: "confirmed", email, url });
+      return Promise.resolve();
+    },
+  };
+  const marketingService =
+    options.marketingEnabled === false
+      ? undefined
+      : createMarketingService({
+          repository: marketingRows.repository,
+          mailer,
+          tokens: createActionTokenService("profile-test-secret-0123456789abcdef"),
+          frontendUrl: "https://front.example.invalid",
+          logger: logs.logger,
+        });
   const service = createProfileService(profiles.repository);
   const authenticate = createAuthenticate(identities.provider);
   const guards = createAccessGuards(service);
@@ -30,7 +65,16 @@ export const createProfileTestApp = () => {
   });
 
   const api = Router();
-  api.use("/me", createProfileRouter({ authenticate, profiles: service, identityProvider: identities.provider }));
+  api.use(
+    "/me",
+    createProfileRouter({
+      authenticate,
+      profiles: service,
+      identityProvider: identities.provider,
+      marketing: { repository: marketingRows.repository, service: marketingService },
+      logger: logs.logger,
+    }),
+  );
   api.use("/test", guarded);
 
   const app = createApp({
@@ -42,5 +86,5 @@ export const createProfileTestApp = () => {
     apiRouter: api,
   });
 
-  return { app, identities, profiles, logs };
+  return { app, identities, profiles, marketing: marketingRows, marketingService, sent, logs };
 };

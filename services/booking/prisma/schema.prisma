@@ -58,23 +58,37 @@ model UserProfile {
   updatedAt        DateTime @updatedAt
 }
 
-enum MarketingSubscriptionStatus {
-  pending
-  subscribed
-  unsubscribed
+enum MarketingConsentSource {
+  // Optional, unticked-by-default checkbox at sign-up (POST /api/me/sync).
+  signup_checkbox
+  // Public subscription form (guests too).
+  subscription_form
+  // Explicit request from a signed-in user, e.g. re-subscribing after unsubscribing.
+  account_request
 }
 
-// Marketing consent, separate from accounts: an address subscribes only after
-// confirming the emailed link (double opt-in).
+// Marketing consent per email address: the single source of truth. Separate
+// from accounts, so a guest's subscription survives losing the anonymous
+// session; profiles show it for their verified email. Consent exists only
+// after the emailed link is confirmed (double opt-in); Firebase email
+// verification is never treated as marketing consent.
 model MarketingSubscription {
-  id                 String                      @id @default(uuid()) @db.Uuid
-  email              String                      @unique
-  status             MarketingSubscriptionStatus @default(pending)
-  // Single-use value carried by the current confirmation link.
-  confirmationNonce  String?
-  confirmationSentAt DateTime?
-  subscribedAt       DateTime?
-  unsubscribedAt     DateTime?
-  createdAt          DateTime                    @default(now())
-  updatedAt          DateTime                    @updatedAt
+  id                      String                  @id @default(uuid()) @db.Uuid
+  email                   String                  @unique
+  // Authoritative status: false by default, true only after confirmation,
+  // false again after unsubscribing.
+  subscribed              Boolean                 @default(false)
+  // The confirmed consent (kept after unsubscribing as history of the last consent).
+  consentGivenAt          DateTime?
+  consentSource           MarketingConsentSource?
+  consentTextVersion      String?
+  unsubscribedAt          DateTime?
+  // The outstanding confirmation request, if any: its single-use nonce and
+  // what the user agreed to when asking.
+  confirmationNonce       String?
+  confirmationSentAt      DateTime?
+  confirmationSource      MarketingConsentSource?
+  confirmationTextVersion String?
+  createdAt               DateTime                @default(now())
+  updatedAt               DateTime                @updatedAt
 }
