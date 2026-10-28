@@ -135,12 +135,21 @@ describe("guest → registered client (Auth Emulator + PostgreSQL)", () => {
     const profileId = idOf(asGuest);
 
     // linkWithCredential: Firebase keeps the UID, so our profile is kept too.
+    // Adding a password counts as an account change: Firebase revokes earlier
+    // sessions, and the token returned by the link keeps the anonymous
+    // sign-in's auth_time (observed in the Auth Emulator), so it is rejected.
+    // The frontend therefore signs in again with the new credentials.
+    await nextSecond();
     const linked = await client.linkEmailPassword(guest.idToken, "linked@example.invalid", PASSWORD);
     if ("error" in linked) {
       throw new Error(linked.error);
     }
     expect(linked.localId).toBe(guest.localId);
-    const asRegistered = await sync(linked.idToken);
+    expect((await sync(linked.idToken)).body).toMatchObject({ code: "SESSION_REVOKED" });
+
+    const signedIn = await client.signIn("linked@example.invalid", PASSWORD);
+    expect(signedIn.localId).toBe(guest.localId);
+    const asRegistered = await sync(signedIn.idToken);
     expect(asRegistered.body).toMatchObject({
       profile: { id: profileId, authState: "registered", email: "linked@example.invalid", emailVerified: false },
       bookingReadiness: { blockers: ["email_not_verified", "name_missing", "phone_missing"] },
@@ -149,7 +158,7 @@ describe("guest → registered client (Auth Emulator + PostgreSQL)", () => {
     // The user verifies the email (Firebase's link); the old token still says
     // unverified and must not count, a fresh token does.
     await admin.auth.updateUser(guest.localId, { emailVerified: true });
-    const stale = await sync(linked.idToken);
+    const stale = await sync(signedIn.idToken);
     expect(stale.body).toMatchObject({ profile: { emailVerified: false } });
     await nextSecond();
     const fresh = await client.signIn("linked@example.invalid", PASSWORD);
@@ -166,7 +175,7 @@ describe("guest → registered client (Auth Emulator + PostgreSQL)", () => {
     });
 
     // An older token arriving late does not roll verification back.
-    expect((await sync(linked.idToken)).body).toMatchObject({ profile: { emailVerified: true } });
+    expect((await sync(signedIn.idToken)).body).toMatchObject({ profile: { emailVerified: true } });
   });
 
   it("links a guest to Google without losing the profile", async () => {
