@@ -7,9 +7,9 @@ import { createHealthRouter, type ReadinessOutcome } from "./http/health.js";
 import type { Logger } from "./logging/logger.js";
 
 /**
- * JSON body limit. The largest current payload (registration: name ≤ 40,
- * email, password ≤ 25, boolean) or an action token (JWT, a few hundred bytes)
- * is far below 1 kB; 16 kB leaves headroom while rejecting oversized bodies early.
+ * JSON body limit. The largest current payload (profile update: name ≤ 80 and
+ * a phone number, or an action token of a few hundred bytes) is far below
+ * 1 kB; 16 kB leaves headroom while rejecting oversized bodies early.
  */
 export const JSON_BODY_LIMIT = "16kb";
 
@@ -19,7 +19,8 @@ export type AppDeps = {
   probeReadiness: () => Promise<ReadinessOutcome>;
   appVersion: string | undefined;
   corsOrigin: string | undefined;
-  legacyUserRouter: Router | undefined;
+  /** Business routes under /api; undefined when none is enabled. */
+  apiRouter: Router | undefined;
 };
 
 /** Builds the Express app. Does not open a port. */
@@ -46,8 +47,8 @@ export const createApp = (deps: AppDeps): Express => {
 
   app.use(express.json({ limit: JSON_BODY_LIMIT }));
 
-  if (deps.legacyUserRouter !== undefined) {
-    app.use("/api/users", deps.legacyUserRouter);
+  if (deps.apiRouter !== undefined) {
+    app.use("/api", deps.apiRouter);
   }
 
   app.use(notFoundHandler);

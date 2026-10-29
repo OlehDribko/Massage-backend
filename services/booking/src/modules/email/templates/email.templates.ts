@@ -1,8 +1,10 @@
-import type { User } from "../../../generated/prisma/client.js";
+// Links are built by the server from FRONTEND_URL and signed tokens; they are
+// still escaped for the HTML attribute context.
+const escapeAttribute = (value: string): string =>
+  value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 export const emailTemplates = {
-  emailVerificationRequest(user: User, verifyUrl: string) {
-    const name = user.name ? ` ${user.name}` : "";
+  marketingConfirmationRequest(confirmUrl: string) {
 
     return `
       <!doctype html>
@@ -10,7 +12,7 @@ export const emailTemplates = {
         <head>
           <meta charset="utf-8" />
           <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-          <title>Confirmez votre adresse e-mail</title>
+          <title>Confirmez votre inscription aux offres</title>
         </head>
         <body style="margin:0; padding:0; background-color:#f7f4ef; font-family:Arial, sans-serif; color:#2f2f2f;">
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:#f7f4ef; padding:24px 0;">
@@ -20,19 +22,21 @@ export const emailTemplates = {
                   <tr>
                     <td style="padding:32px;">
                       <h1 style="margin:0 0 16px; font-size:24px; line-height:1.3; color:#2f2f2f;">
-                        Bonjour${name},
+                        Bonjour,
                       </h1>
 
                       <p style="margin:0 0 16px; font-size:16px; line-height:1.6;">
-                        Merci de confirmer que cette adresse e-mail vous appartient.
+                        Vous avez demandé à recevoir les offres saisonnières et les disponibilités
+                        de Stefania Ben. Merci de confirmer votre inscription :
                       </p>
 
                       <p style="margin:0 0 24px; font-size:16px; line-height:1.6;">
-                        <a href="${verifyUrl}">Confirmer mon e-mail</a>
+                        <a href="${escapeAttribute(confirmUrl)}">Confirmer mon inscription</a>
                       </p>
 
                       <p style="margin:0 0 16px; font-size:16px; line-height:1.6;">
-                        Si vous n'êtes pas à l'origine de cette demande, ignorez simplement cet e-mail.
+                        Ce lien est valable 7 jours. Si vous n'êtes pas à l'origine de cette demande,
+                        ignorez simplement cet e-mail : vous ne serez pas inscrit(e).
                       </p>
 
                       <p style="margin:0; font-size:16px; line-height:1.6;">
@@ -50,8 +54,7 @@ export const emailTemplates = {
       </html>
     `;
   },
-  offersSubscriptionConfirmation(user: User, unsubscribeUrl: string) {
-    const name = user.name ? ` ${user.name}` : "";
+  offersSubscriptionConfirmation(unsubscribeUrl: string) {
 
     return `
       <!doctype html>
@@ -69,7 +72,7 @@ export const emailTemplates = {
                   <tr>
                     <td style="padding:32px;">
                       <h1 style="margin:0 0 16px; font-size:24px; line-height:1.3; color:#2f2f2f;">
-                        Bonjour${name},
+                        Bonjour,
                       </h1>
 
                       <p style="margin:0 0 16px; font-size:16px; line-height:1.6;">
@@ -84,58 +87,7 @@ export const emailTemplates = {
 
                       <p style="margin:0 0 24px; font-size:16px; line-height:1.6;">
 Vous pouvez vous désinscrire à tout moment en cliquant
-<a href="${unsubscribeUrl}">sur ce lien</a>.                      </p>
-
-                      <p style="margin:0; font-size:16px; line-height:1.6;">
-                        À bientôt,<br />
-                        Stefania Ben<br />
-                        Massage bien-être
-                      </p>
-                    </td>
-                  </tr>
-                </table>
-              </td>
-            </tr>
-          </table>
-        </body>
-      </html>
-    `;
-  },
-  passwordResetRequest(user: User, resetUrl: string) {
-    const name = user.name ? ` ${user.name}` : "";
-
-    return `
-      <!doctype html>
-      <html lang="fr">
-        <head>
-          <meta charset="utf-8" />
-          <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-          <title>Réinitialisation de votre mot de passe</title>
-        </head>
-        <body style="margin:0; padding:0; background-color:#f7f4ef; font-family:Arial, sans-serif; color:#2f2f2f;">
-          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:#f7f4ef; padding:24px 0;">
-            <tr>
-              <td align="center">
-                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px; background-color:#ffffff; border-radius:8px; overflow:hidden;">
-                  <tr>
-                    <td style="padding:32px;">
-                      <h1 style="margin:0 0 16px; font-size:24px; line-height:1.3; color:#2f2f2f;">
-                        Bonjour${name},
-                      </h1>
-
-                      <p style="margin:0 0 16px; font-size:16px; line-height:1.6;">
-                        Vous avez demandé à réinitialiser le mot de passe de votre compte.
-                      </p>
-
-                      <p style="margin:0 0 24px; font-size:16px; line-height:1.6;">
-                        <a href="${resetUrl}">Réinitialiser mon mot de passe</a>
-                      </p>
-
-                      <p style="margin:0 0 16px; font-size:16px; line-height:1.6;">
-                        Ce lien est valable pendant 15 minutes.
-                        Si votre adresse e-mail n'était pas encore confirmée, la réinitialisation du mot de passe la confirmera également.
-                        Si vous n'êtes pas à l'origine de cette demande, ignorez simplement cet e-mail.
-                      </p>
+<a href="${escapeAttribute(unsubscribeUrl)}">sur ce lien</a>.                      </p>
 
                       <p style="margin:0; font-size:16px; line-height:1.6;">
                         À bientôt,<br />

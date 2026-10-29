@@ -28,7 +28,7 @@ Massage-backend/
       tsconfig.build.json   # збірка лише src → dist
 ```
 
-Зараз існує лише сервіс `booking`. Його інфраструктурна основа (конфігурація, health-check, логи, graceful shutdown) увімкнена завжди. Старий користувацький функціонал (`/api/users/*`: паролі, підтвердження email, відновлення пароля, маркетингова підписка, листи через Brevo) вмикається лише прапорцем `ENABLE_LEGACY_USER_ROUTES` і буде перебудований.
+Зараз існує лише сервіс `booking`. Його інфраструктурна основа (конфігурація, health-check, логи, graceful shutdown) увімкнена завжди. Автентифікація — Firebase Authentication; профілі, ролі й права — у цьому сервісі (`/api/me`, коли задано `FIREBASE_PROJECT_ID`). Маркетингова підписка (`/api/marketing`) вмикається прапорцем `ENABLE_MARKETING_SUBSCRIPTION`. Старі маршрути `/api/users/*` (паролі, власні токени підтвердження й відновлення) видалено. Архітектура, контракт API, інструкція для frontend і налаштування Firebase — у [docs/auth-and-profiles.md](docs/auth-and-profiles.md).
 
 Правила типізації та lint — у [AGENTS.md](AGENTS.md).
 
@@ -76,9 +76,15 @@ npm run prisma -- generate    # Prisma Client у services/booking/src/generated 
 | `FRONTEND_URL` | — | CORS origin; без нього CORS-заголовки не додаються |
 | `SHUTDOWN_TIMEOUT_MS` | `10000` | Граничний час graceful shutdown |
 | `READINESS_TIMEOUT_MS` | `2000` | Граничний час перевірки БД у `/health/ready` |
-| `ENABLE_LEGACY_USER_ROUTES` | `false` | Лише `true`/`false` (без урахування регістру); інші значення — помилка |
+| `REQUIRE_FIREBASE_AUTH` | `false` | Режим обов'язкової авторизації: при `true` запуск без `FIREBASE_PROJECT_ID` — помилка конфігурації |
+| `FIREBASE_PROJECT_ID` | — | Firebase-проєкт середовища. Без неї (і без `REQUIRE_FIREBASE_AUTH`) маршрутів `/api/me` немає |
+| `FIREBASE_CREDENTIALS` | — | `service-account-json`, `application-default`, або `none` (лише з емулятором); обов'язкова разом із `FIREBASE_PROJECT_ID` |
+| `FIREBASE_SERVICE_ACCOUNT_JSON` | — | Секрет: JSON-ключ службового акаунта того самого проєкту (при `service-account-json`) |
+| `FIREBASE_AUTH_EMULATOR_HOST` | — | Лише локально/CI з `demo-` проєктом; при `NODE_ENV=production` — помилка запуску |
+| `ENABLE_MARKETING_SUBSCRIPTION` | `false` | Лише `true`/`false`; вмикає `/api/marketing` |
+| `ENABLE_LEGACY_USER_ROUTES` | — | Застаріла: `false` або відсутність ігноруються, `true` — помилка (маршрути видалено) |
 
-Коли `ENABLE_LEGACY_USER_ROUTES=true`, додатково обов'язкові `BREVO_API_KEY`, `EMAIL_FROM_NAME`, `EMAIL_FROM_EMAIL`, `ACTION_TOKEN_SECRET` і `FRONTEND_URL`. Коли прапорець вимкнений, `/api/users/*` не підключаються, а Brevo-клієнт і сервіс токенів не створюються. Сам імпорт модулів не читає `process.env` і не вимагає секретів.
+Коли `ENABLE_MARKETING_SUBSCRIPTION=true`, додатково обов'язкові `BREVO_API_KEY`, `EMAIL_FROM_NAME`, `EMAIL_FROM_EMAIL`, `ACTION_TOKEN_SECRET` (≥ 32 символи) і `FRONTEND_URL`. Без прапорця Brevo-клієнт і сервіс токенів не створюються. Firebase Admin SDK створюється лише при заданому `FIREBASE_PROJECT_ID`. Сам імпорт модулів не читає `process.env` і не вимагає секретів. Правила для Firebase-змінних — у [docs/auth-and-profiles.md](docs/auth-and-profiles.md#8-конфігурація-backend).
 
 **Формат `DATABASE_URL`** (`src/shared/database/database-url.ts`). URL розбирається самим сервісом і не передається в `pg` як `connectionString`:
 - спецсимволи в імені користувача, паролі та назві БД мають бути percent-encoded (`@` → `%40` тощо); `+` лишається плюсом;
@@ -140,16 +146,15 @@ npm run prisma -- generate    # Prisma Client у services/booking/src/generated 
 ## Навмисні зміни HTTP-відповідей (порівняно з попередньою версією)
 
 - Видалено налагоджувальний `POST /api`, який логував тіло запиту.
-- `/api/users/*` вимкнені за замовчуванням: без прапорця вони повертають 404.
+- `/api/users/*` видалено (404); їх замінили `/api/me` (Firebase) і `/api/marketing`.
 - Невідомий маршрут → `404 {"message":"Not found","code":"NOT_FOUND"}` (раніше HTML-сторінка Express).
 - Некоректний JSON → `400 {"message":"Malformed JSON request body","code":"INVALID_JSON"}` (раніше 500).
 - Тіло понад 16 kB → `413 {"message":"Request body too large","code":"PAYLOAD_TOO_LARGE"}` (раніше ліміт 100 kB і відповідь 500).
 - Непідтримуване кодування чи charset → 415.
-- Помилка відправки листа (legacy) → `502` з фіксованим повідомленням (`Failed to send verification email` / `Failed to send password reset email`) замість тексту внутрішньої помилки.
 - Прибрано заголовок `X-Powered-By`; додано заголовок `X-Request-Id`.
 - CORS-заголовки додаються лише при заданому `FRONTEND_URL` (раніше без нього дозволялися будь-які origin, але без цієї змінної сервер тоді не стартував).
 
-Відповіді валідації (`400 Validation failed`) і `AppError` не змінилися.
+Відповіді валідації (`400 Validation failed`) отримали поле `code: "VALIDATION_FAILED"`; формат `AppError` не змінився.
 
 ## Локальний запуск через Docker Compose
 
@@ -221,20 +226,20 @@ docker compose --env-file /dev/null down
 ## Тести
 
 - `npm test` — unit- і процесні тести без Docker. TLS-тести (`test/tls-verification.test.ts`) генерують тимчасовий CA через CLI **`openssl`**; без нього вони завершуються помилкою «openssl is required…», а не пропускаються.
-- `npm run test:integration` — міграції та права в контейнерах `postgres:17.11-bookworm` (змінюється через `INTEGRATION_POSTGRES_IMAGE`). Потрібен запущений Docker. Кожен сценарій отримує окремий контейнер із випадковими паролями й міткою `massage-booking.integration-test=1`; після тесту контейнер видаляється. Підключення йдуть через опублікований порт із паролем, а не через `trust`.
-- `npm run test:smoke` — перевірка вже зібраних образів, а не вихідного коду. Тест створює окрему Docker-мережу з PostgreSQL, двічі запускає migrate-образ і перевіряє права runtime-ролі та відмову з неправильним паролем через `psql` у тій самій мережі. Потім запускає runtime-образ і перевіряє live/ready/legacy, користувача не-root і SIGTERM. Ресурси отримують мітку `massage-booking.smoke-test=1` і видаляються навіть при збої; при збої тест виводить логи контейнерів.
+- `npm run test:integration` — міграції та права в контейнерах `postgres:17.11-bookworm` (змінюється через `INTEGRATION_POSTGRES_IMAGE`), профілі й автентифікація через Firebase Auth Emulator, підписка. Потрібні запущений Docker і емулятор (`npm run emulator:auth -w @massage/booking`, далі `FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099`). Кожен сценарій отримує окремий контейнер із випадковими паролями й міткою `massage-booking.integration-test=1`; після тесту контейнер видаляється. Підключення йдуть через опублікований порт із паролем, а не через `trust`.
+- `npm run test:smoke` — перевірка вже зібраних образів, а не вихідного коду. Тест створює окрему Docker-мережу з PostgreSQL, двічі запускає migrate-образ і перевіряє права runtime-ролі та відмову з неправильним паролем через `psql` у тій самій мережі. Потім запускає runtime-образ і перевіряє live/ready, `401` на `/api/me` без токена, відсутність legacy-маршрутів, користувача не-root і SIGTERM. Ресурси отримують мітку `massage-booking.smoke-test=1` і видаляються навіть при збої; при збої тест виводить логи контейнерів.
 - `test/postgres-image.test.ts` (частина `npm test`) перевіряє, що `compose.yaml`, тестовий helper і CI використовують той самий образ PostgreSQL.
 
 ## CI (GitHub Actions)
 
 Workflow `.github/workflows/ci.yml` запускається на pull request і push у `main` та `develop`, а також вручну (`workflow_dispatch`). Фільтрів шляхів немає, тож перевірки йдуть на кожну зміну.
 
-Не використовує секретів, не звертається до Neon, Brevo, Firebase чи AWS, не публікує образи, не запускає `terraform plan`/`apply` і **не виконує деплой в AWS** (CD ще не налаштовано). Права — лише `contents: read`; застарілий запуск для того самого PR чи гілки скасовується.
+Не використовує секретів, не звертається до Neon, Brevo, реальних Firebase-проєктів чи AWS (Firebase — лише локальний Auth Emulator з `demo-` проєктом), не публікує образи, не запускає `terraform plan`/`apply` і **не виконує деплой в AWS** (CD ще не налаштовано). Права — лише `contents: read`; застарілий запуск для того самого PR чи гілки скасовується.
 
 | Job | Що перевіряє |
 |---|---|
 | `code` | `npm ci`, `prisma generate` без БД, lint, typecheck, `npm test` (unit, процесні, TLS через `openssl`), build |
-| `integration` | `npm run test:integration` на `postgres:17.11-bookworm`: перші й повторні міграції, невдала міграція, перехід зі старих прав, відсутність доступу до `_prisma_migrations`, DML на бізнес-таблицях, відмова з неправильним паролем |
+| `integration` | Firebase Auth Emulator (firebase-tools 15.34.1) і `npm run test:integration` на `postgres:17.11-bookworm`: перші й повторні міграції, невдала міграція, перехід зі старих прав, відсутність доступу до `_prisma_migrations`, DML на бізнес-таблицях, відмова з неправильним паролем; гість → клієнт, прив'язка облікових даних, заблоковані й відкликані сесії, конкурентне створення профілю, призначення ролі, підписка |
 | `docker` | Збірка `runtime` і `migrate` для **linux/amd64**, перевірка платформи, `npm run test:smoke` |
 | `terraform` | Terraform 1.16.6: `terraform fmt -check -recursive infra`; в `infra/bootstrap` і `infra/environments/staging` — `init -backend=false -input=false -lockfile=readonly` і `validate`. Без облікових даних AWS, backend і `plan`/`apply` |
 | `deploy-scripts` | `shellcheck` і тести скриптів staging-деплою (`.github/scripts/staging-deploy/test.sh`) на фікстурах, без AWS |
@@ -261,8 +266,9 @@ npm ci
 npm run prisma -- generate
 npm run lint && npm run typecheck && npm test && npm run build
 
-# integration (потрібен Docker)
-npm run test:integration
+# integration (потрібні Docker і Firebase Auth Emulator в окремому терміналі)
+npm run emulator:auth -w @massage/booking
+FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099 npm run test:integration
 
 # docker (на Apple Silicon --platform linux/amd64 працює через емуляцію; без нього — нативний arm64)
 docker build --platform linux/amd64 -f services/booking/Dockerfile --target runtime -t massage-booking-api:smoke .
@@ -285,4 +291,4 @@ for dir in infra/bootstrap infra/environments/staging; do (cd "$dir" && terrafor
 
 ## Ще не налаштовано
 
-Автоматичний CD (публікація й деплой staging поки запускаються вручну; ECS/API Gateway описані в Terraform, але не створені — див. [infra/staging-deploy.md](infra/staging-deploy.md)), production, branch protection у GitHub, `trust proxy` для роботи за балансувальником, повне мапування помилок Prisma. Бізнес-функціонал користувачів буде перебудований (Firebase, Notifications).
+Автоматичний CD (публікація й деплой staging поки запускаються вручну; ECS/API Gateway описані в Terraform, але не створені — див. [infra/staging-deploy.md](infra/staging-deploy.md)), production, branch protection у GitHub, `trust proxy` для роботи за балансувальником, повне мапування помилок Prisma. Notifications-сервіс, бронювання й графік — наступні етапи.

@@ -17,7 +17,7 @@ const baseEnv = {
   NODE_ENV: "production",
   LOG_LEVEL: "info",
   DATABASE_URL: `postgresql://user:${SENTINELS.dbPassword}@127.0.0.1:5/booking`,
-  // Present in the environment but unused while legacy routes are disabled.
+  // Present in the environment but unused while marketing is disabled.
   ACTION_TOKEN_SECRET: SENTINELS.actionSecret,
 };
 
@@ -64,7 +64,7 @@ afterEach(async () => {
 });
 
 describe("entry point (src/server.ts)", () => {
-  it("starts without Brevo config, serves health, hides legacy routes and stops on SIGTERM", async () => {
+  it("starts without Brevo or Firebase config, serves health, has no /api routes and stops on SIGTERM", async () => {
     const port = await getFreePort();
     const child = startTsProcess("src/server.ts", { ...baseEnv, PORT: String(port) });
 
@@ -118,16 +118,42 @@ describe("entry point (src/server.ts)", () => {
     expect(child.output()).not.toContain("db.example.invalid");
   });
 
-  it("requires legacy settings when ENABLE_LEGACY_USER_ROUTES=true without printing secrets", async () => {
+  it("requires marketing settings when ENABLE_MARKETING_SUBSCRIPTION=true without printing secrets", async () => {
     const child = startTsProcess("src/server.ts", {
       ...baseEnv,
-      ENABLE_LEGACY_USER_ROUTES: "true",
+      ENABLE_MARKETING_SUBSCRIPTION: "true",
     });
 
     const exit = await child.exited;
 
     expect(exit.code).toBe(1);
     expect(child.output()).toContain("BREVO_API_KEY");
+    expectNoSentinels(child.output());
+  });
+
+  it("refuses to start when REQUIRE_FIREBASE_AUTH=true but Firebase is not configured", async () => {
+    const child = startTsProcess("src/server.ts", { ...baseEnv, REQUIRE_FIREBASE_AUTH: "true" });
+
+    const exit = await child.exited;
+
+    expect(exit.code).toBe(1);
+    expect(child.output()).toContain("required when REQUIRE_FIREBASE_AUTH=true");
+    expect(messages(child)).not.toContain("server listening");
+    expectNoSentinels(child.output());
+  });
+
+  it("refuses to start in production with the Firebase Auth Emulator configured", async () => {
+    const child = startTsProcess("src/server.ts", {
+      ...baseEnv,
+      FIREBASE_PROJECT_ID: "demo-massage",
+      FIREBASE_AUTH_EMULATOR_HOST: "127.0.0.1:9099",
+    });
+
+    const exit = await child.exited;
+
+    expect(exit.code).toBe(1);
+    expect(child.output()).toContain("FIREBASE_AUTH_EMULATOR_HOST");
+    expect(messages(child)).not.toContain("server listening");
     expectNoSentinels(child.output());
   });
 

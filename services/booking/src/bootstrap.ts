@@ -1,25 +1,46 @@
+import { Router, type Express } from "express";
 import type { Database } from "./shared/database/database.js";
-import type { Express } from "express";
 import { createApp } from "./app.js";
 import type { AppConfig } from "./config/config.js";
 import { createReadinessProbe } from "./http/health.js";
+import { createAuthenticate } from "./http/auth/authenticate.js";
+import { createFirebaseIdentityProvider } from "./integrations/firebase/firebase-identity-provider.js";
 import type { Logger } from "./logging/logger.js";
-import { createLegacyUserRouter } from "./modules/users/legacy-user-routes.js";
+import type { IdentityProvider } from "./modules/auth/identity.js";
+import { createBrevoMarketingMailer, type MarketingMailer } from "./modules/email/service/email.service.js";
+import { createActionTokenService } from "./modules/email/tokens/action-token.service.js";
+import { createMarketingRepository } from "./modules/marketing/marketing.repository.js";
+import { createMarketingRouter } from "./modules/marketing/marketing.routes.js";
+import { createMarketingService } from "./modules/marketing/marketing.service.js";
+import { createProfileRepository } from "./modules/profiles/profile.repository.js";
+import { createProfileRouter } from "./modules/profiles/profile.routes.js";
+import { createProfileService } from "./modules/profiles/profile.service.js";
+
+/** Replacements for external services (tests only). */
+export type ApplicationOverrides = {
+  identityProvider?: IdentityProvider;
+  marketingMailer?: MarketingMailer;
+};
 
 /**
- * Composes the application from validated config. Legacy /api/users routes
- * (and the Brevo client) are created only when ENABLE_LEGACY_USER_ROUTES=true.
+ * Composes the application from validated config:
+ * - /api/me (profiles) only when Firebase is configured; without it the
+ *   routes do not exist, so nothing is reachable unauthenticated;
+ * - /api/marketing only when ENABLE_MARKETING_SUBSCRIPTION=true.
+ * External clients (Firebase Admin SDK, Brevo) are created here, not on import.
  */
 export const createApplication = ({
   config,
   logger,
   database,
   isShuttingDown,
+  overrides = {},
 }: {
   config: AppConfig;
   logger: Logger;
   database: Database;
   isShuttingDown: () => boolean;
+  overrides?: ApplicationOverrides;
 }): Express => {
   // (a) Promise.race in the probe bounds the HTTP response time;
   // (b) query_timeout makes the driver fail the hung query itself;
@@ -30,9 +51,48 @@ export const createApplication = ({
     config.readinessTimeoutMs,
   );
 
-  const legacyUserRouter = config.legacyUserRoutes.enabled
-    ? createLegacyUserRouter({ prisma: database.prisma, config: config.legacyUserRoutes, logger })
-    : undefined;
+  const api = Router();
+  let hasApiRoutes = false;
+
+  const marketingRepository = createMarketingRepository(database.prisma);
+  const marketingService =
+    config.marketing === undefined
+      ? undefined
+      : createMarketingService({
+          repository: marketingRepository,
+          mailer:
+            overrides.marketingMailer ??
+            createBrevoMarketingMailer({
+              brevoApiKey: config.marketing.brevoApiKey,
+              fromName: config.marketing.emailFromName,
+              fromEmail: config.marketing.emailFromEmail,
+            }),
+          tokens: createActionTokenService(config.marketing.actionTokenSecret),
+          frontendUrl: config.marketing.frontendUrl,
+          logger,
+        });
+
+  if (config.firebase !== undefined) {
+    const identityProvider =
+      overrides.identityProvider ?? createFirebaseIdentityProvider(config.firebase, logger);
+    const profiles = createProfileService(createProfileRepository(database.prisma));
+    api.use(
+      "/me",
+      createProfileRouter({
+        authenticate: createAuthenticate(identityProvider),
+        profiles,
+        identityProvider,
+        marketing: { repository: marketingRepository, service: marketingService },
+        logger,
+      }),
+    );
+    hasApiRoutes = true;
+  }
+
+  if (marketingService !== undefined) {
+    api.use("/marketing", createMarketingRouter(marketingService));
+    hasApiRoutes = true;
+  }
 
   return createApp({
     logger,
@@ -40,6 +100,6 @@ export const createApplication = ({
     probeReadiness,
     appVersion: config.appVersion,
     corsOrigin: config.corsOrigin,
-    legacyUserRouter,
+    apiRouter: hasApiRoutes ? api : undefined,
   });
 };
