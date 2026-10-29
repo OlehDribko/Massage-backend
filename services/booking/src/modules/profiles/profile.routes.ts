@@ -153,7 +153,11 @@ export const createProfileRouter = ({
       if (outcome === "delivery_failed") {
         throw deliveryFailed();
       }
-      res.status(202).json({ outcome });
+      // A confirmation sent recently (lost or not yet read): tell the owner
+      // when the "send again" button works.
+      const retryAfterSeconds =
+        outcome === "no_action" ? await marketing.service.resendAvailableInSeconds(identity.email) : 0;
+      res.status(202).json(retryAfterSeconds > 0 ? { outcome, retryAfterSeconds } : { outcome });
     }),
   );
 

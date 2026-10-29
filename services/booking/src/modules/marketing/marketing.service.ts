@@ -138,5 +138,19 @@ export const createMarketingService = ({
     await repository.unsubscribe(subjectId, new Date(now()));
   };
 
-  return { requestSubscription, confirm, unsubscribeByToken };
+  /**
+   * Seconds until an explicit request may send a new confirmation email for
+   * this address (0 when it may send now or there is nothing pending). Only
+   * for the owner of the address: the public form stays neutral.
+   */
+  const resendAvailableInSeconds = async (email: string): Promise<number> => {
+    const subscription = await repository.findByEmail(email);
+    if (subscription === null || subscription.subscribed || subscription.confirmationSentAt === null) {
+      return 0;
+    }
+    const remaining = subscription.confirmationSentAt.getTime() + CONFIRMATION_COOLDOWN_MS - now();
+    return remaining > 0 ? Math.ceil(remaining / 1000) : 0;
+  };
+
+  return { requestSubscription, confirm, unsubscribeByToken, resendAvailableInSeconds };
 };

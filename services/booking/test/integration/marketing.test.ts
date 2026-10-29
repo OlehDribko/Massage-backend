@@ -3,7 +3,7 @@ import type { MarketingMailer } from "../../src/modules/email/service/email.serv
 import { createActionTokenService } from "../../src/modules/email/tokens/action-token.service.js";
 import { MARKETING_CONSENT_TEXT_VERSION, type ConsentRequest } from "../../src/modules/marketing/consent.js";
 import { createMarketingRepository } from "../../src/modules/marketing/marketing.repository.js";
-import { createMarketingService } from "../../src/modules/marketing/marketing.service.js";
+import { CONFIRMATION_COOLDOWN_MS, createMarketingService } from "../../src/modules/marketing/marketing.service.js";
 import { createDatabase, type Database } from "../../src/shared/database/database.js";
 import { createCapturingLogger } from "../helpers/logs.js";
 import { runMigrations } from "./helpers/migrations.js";
@@ -51,13 +51,14 @@ const rowOf = async (email: string): Promise<unknown> => {
   return row;
 };
 
-const service = () =>
+const service = (now?: () => number, sender: MarketingMailer = mailer) =>
   createMarketingService({
     repository: createMarketingRepository(database.prisma),
-    mailer,
+    mailer: sender,
     tokens: createActionTokenService(SECRET),
     frontendUrl: "https://front.example.invalid",
     logger: createCapturingLogger().logger,
+    ...(now === undefined ? {} : { now }),
   });
 
 beforeAll(async () => {
@@ -135,6 +136,32 @@ describe("marketing subscription in PostgreSQL", () => {
     ).toBe("confirmation_sent");
     expect(await marketing.confirm(tokenOf(sent.length - 1))).toBe("subscribed");
     expect(await rowOf("pg@example.invalid")).toMatchObject({ subscribed: true, source: "account_request", hasUnsubscribedDate: false });
+  });
+
+  it("recovery: failed send charges no cooldown, sign-up never resends, explicit resend after the cooldown", async () => {
+    const SIGNUP: ConsentRequest = { source: "signup_checkbox", textVersion: MARKETING_CONSENT_TEXT_VERSION };
+    const ACCOUNT: ConsentRequest = { source: "account_request", textVersion: MARKETING_CONSENT_TEXT_VERSION };
+    let clock = Date.parse("2026-10-28T12:00:00Z");
+    const failing: MarketingMailer = { ...mailer, sendConfirmationRequest: () => Promise.reject(new Error("down")) };
+    const before = sent.length;
+
+    expect(await service(() => clock, failing).requestSubscription("rec@example.invalid", SIGNUP, "signup")).toBe("delivery_failed");
+    expect(await rowOf("rec@example.invalid")).toMatchObject({ subscribed: false, pending: false });
+
+    const marketing = service(() => clock);
+    expect(await marketing.requestSubscription("rec@example.invalid", SIGNUP, "signup")).toBe("confirmation_sent");
+    expect(await marketing.requestSubscription("rec@example.invalid", SIGNUP, "signup")).toBe("no_action");
+    expect(await marketing.requestSubscription("rec@example.invalid", ACCOUNT, "explicit")).toBe("no_action");
+    expect(await marketing.resendAvailableInSeconds("rec@example.invalid")).toBe(CONFIRMATION_COOLDOWN_MS / 1000);
+    expect(sent.length - before).toBe(1);
+
+    clock += CONFIRMATION_COOLDOWN_MS + 1;
+    expect(await marketing.resendAvailableInSeconds("rec@example.invalid")).toBe(0);
+    expect(await marketing.requestSubscription("rec@example.invalid", SIGNUP, "signup")).toBe("no_action");
+    expect(await marketing.requestSubscription("rec@example.invalid", ACCOUNT, "explicit")).toBe("confirmation_sent");
+    await expect(marketing.confirm(tokenOf(before))).rejects.toMatchObject({ statusCode: 400 });
+    expect(await marketing.confirm(tokenOf(sent.length - 1))).toBe("subscribed");
+    expect(await rowOf("rec@example.invalid")).toMatchObject({ subscribed: true, source: "account_request" });
   });
 
   it("the database refuses a subscription without consent evidence", async () => {

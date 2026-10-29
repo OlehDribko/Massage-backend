@@ -28,9 +28,11 @@ export const createProfileTestApp = (
   const marketingRows = createInMemoryMarketingRepository();
   const logs = createCapturingLogger();
   const sent: SentMail[] = [];
+  const mail = { failing: options.failMarketingSends === true };
+  let clock = Date.parse("2026-10-28T12:00:00Z");
   const mailer: MarketingMailer = {
     sendConfirmationRequest: (email, url) => {
-      if (options.failMarketingSends === true) {
+      if (mail.failing) {
         return Promise.reject(new Error("PROVIDER_SENTINEL down"));
       }
       sent.push({ kind: "confirm", email, url });
@@ -50,6 +52,7 @@ export const createProfileTestApp = (
           tokens: createActionTokenService("profile-test-secret-0123456789abcdef"),
           frontendUrl: "https://front.example.invalid",
           logger: logs.logger,
+          now: () => clock,
         });
   const service = createProfileService(profiles.repository);
   const authenticate = createAuthenticate(identities.provider);
@@ -86,5 +89,19 @@ export const createProfileTestApp = (
     apiRouter: api,
   });
 
-  return { app, identities, profiles, marketing: marketingRows, marketingService, sent, logs };
+  return {
+    app,
+    identities,
+    profiles,
+    marketing: marketingRows,
+    marketingService,
+    sent,
+    logs,
+    advance: (ms: number) => {
+      clock += ms;
+    },
+    setMarketingSendsFailing: (failing: boolean) => {
+      mail.failing = failing;
+    },
+  };
 };

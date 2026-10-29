@@ -1,6 +1,8 @@
+import jwt from "jsonwebtoken";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { MARKETING_CONSENT_TEXT_VERSION } from "../src/modules/marketing/consent.js";
+import { CONFIRMATION_COOLDOWN_MS } from "../src/modules/marketing/marketing.service.js";
 import { identity } from "./helpers/fake-identity.js";
 import { createProfileTestApp } from "./helpers/profile-app.js";
 
@@ -16,14 +18,15 @@ const setup = (options: Parameters<typeof createProfileTestApp>[0] = {}) => {
   // Google sign-in: email verified by Google.
   context.identities.issue("google", identity({ uid: "uid-google", email: "g@example.invalid", emailVerified: true, signInProvider: "google.com" }));
   context.identities.issue("guest", identity({ uid: "uid-guest", isAnonymous: true, signInProvider: "anonymous", email: undefined, emailVerified: false }));
-  const confirm = async (index: number) => {
+  const confirmToken = async (token: string) => {
     const service = context.marketingService;
     if (service === undefined) {
       throw new Error("marketing disabled");
     }
-    return service.confirm(tokenFrom(context.sent[index]?.url));
+    return service.confirm(token);
   };
-  return { ...context, confirm };
+  const confirm = (index: number) => confirmToken(tokenFrom(context.sent[index]?.url));
+  return { ...context, confirm, confirmToken };
 };
 
 const sync = (app: Parameters<typeof request>[0], token: string, body?: object) =>
@@ -247,5 +250,83 @@ describe("account actions", () => {
     expect(response.body).toMatchObject({
       marketing: { subscribed: true, consentSource: "subscription_form" },
     });
+  });
+});
+
+describe("recovering an unfinished subscription (explicit resend)", () => {
+  const resend = (app: Parameters<typeof request>[0], token: string) =>
+    request(app)
+      .post("/api/me/marketing/subscription")
+      .set(bearer(token))
+      .send({ consentTextVersion: MARKETING_CONSENT_TEXT_VERSION });
+
+  it("lost email: syncs never resend; the explicit resend is rate-limited and replaces the old link", async () => {
+    const { app, sent, confirm, advance } = setup();
+    await sync(app, "google", OPT_IN);
+
+    for (let i = 0; i < 3; i += 1) {
+      expect((await sync(app, "google", OPT_IN)).body).toMatchObject({ marketingOptIn: { outcome: "no_action" } });
+    }
+    const tooSoon = await resend(app, "google");
+    expect(tooSoon.status).toBe(202);
+    expect(tooSoon.body).toEqual({ outcome: "no_action", retryAfterSeconds: CONFIRMATION_COOLDOWN_MS / 1000 });
+    advance(CONFIRMATION_COOLDOWN_MS / 2);
+    expect((await resend(app, "google")).body).toEqual({ outcome: "no_action", retryAfterSeconds: CONFIRMATION_COOLDOWN_MS / 2000 });
+    expect(sent).toHaveLength(1);
+
+    advance(CONFIRMATION_COOLDOWN_MS / 2 + 1);
+    expect((await resend(app, "google")).body).toEqual({ outcome: "confirmation_sent" });
+    expect(sent).toHaveLength(2);
+    expect((await resend(app, "google")).body).toMatchObject({ outcome: "no_action" });
+
+    // The lost (first) link no longer works; the new one does.
+    await expect(confirm(0)).rejects.toMatchObject({ statusCode: 400 });
+    expect(await confirm(1)).toBe("subscribed");
+    expect((await resend(app, "google")).body).toEqual({ outcome: "no_action" });
+  });
+
+  it("expired link: rejected, nothing changes, an explicit resend issues a working link", async () => {
+    const { app, marketing, sent, confirm, confirmToken, advance } = setup();
+    await sync(app, "google", OPT_IN);
+    const row = marketing.byEmail("g@example.invalid");
+    const expired = jwt.sign(
+      { userId: row?.id, purpose: "marketing_confirm", nonce: row?.confirmationNonce },
+      "profile-test-secret-0123456789abcdef",
+      { issuer: "massage-backend", expiresIn: -10 },
+    );
+    advance(7 * 24 * 60 * 60 * 1000);
+
+    await expect(confirmToken(expired)).rejects.toMatchObject({ statusCode: 400 });
+    expect((await sync(app, "google")).body).toMatchObject({ marketing: { subscribed: false, pendingConfirmation: true } });
+
+    expect((await resend(app, "google")).body).toEqual({ outcome: "confirmation_sent" });
+    expect(await confirm(sent.length - 1)).toBe("subscribed");
+    expect((await sync(app, "google")).body).toMatchObject({
+      marketing: { subscribed: true, consentSource: "account_request" },
+    });
+  });
+
+  it("failed delivery: no cooldown is charged; a retry sends once and later syncs send nothing", async () => {
+    const { app, sent, confirm, setMarketingSendsFailing } = setup({ failMarketingSends: true });
+    expect((await sync(app, "google", OPT_IN)).body).toMatchObject({ marketingOptIn: { outcome: "delivery_failed" } });
+    const failed = await resend(app, "google");
+    expect(failed.status).toBe(503);
+    expect(failed.headers["retry-after"]).toBe("60");
+
+    setMarketingSendsFailing(false);
+    expect((await resend(app, "google")).body).toEqual({ outcome: "confirmation_sent" });
+    expect((await sync(app, "google", OPT_IN)).body).toMatchObject({ marketingOptIn: { outcome: "no_action" } });
+    expect(sent).toHaveLength(1);
+    expect(await confirm(0)).toBe("subscribed");
+  });
+
+  it("failed delivery at sign-up: the same checkbox sent again by a sync retry sends once", async () => {
+    const { app, sent, setMarketingSendsFailing } = setup({ failMarketingSends: true });
+    await sync(app, "google", OPT_IN);
+    setMarketingSendsFailing(false);
+
+    expect((await sync(app, "google", OPT_IN)).body).toMatchObject({ marketingOptIn: { outcome: "confirmation_sent" } });
+    expect((await sync(app, "google", OPT_IN)).body).toMatchObject({ marketingOptIn: { outcome: "no_action" } });
+    expect(sent).toHaveLength(1);
   });
 });

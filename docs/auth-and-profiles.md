@@ -199,7 +199,19 @@ Content-Type: application/json
 { "consentTextVersion": "2026-10-28.fr.1" }
 ```
 
-→ `202 {"outcome":"confirmation_sent"}` або `202 {"outcome":"no_action"}` (вже підписано або лист надіслано менше 10 хв тому); `503 CONFIRMATION_EMAIL_NOT_SENT` — лист не відправлено, нічого не змінено; `409 CONSENT_TEXT_OUTDATED` (з `currentConsentTextVersion`); `403 REGISTERED_ACCOUNT_REQUIRED` для гостя. Маршрут існує лише при `ENABLE_MARKETING_SUBSCRIPTION=true`.
+→ `202 {"outcome":"confirmation_sent"}`; `202 {"outcome":"no_action","retryAfterSeconds":412}` — лист надіслано менше 10 хв тому, кнопку «надіслати ще раз» можна активувати через вказану кількість секунд; `202 {"outcome":"no_action"}` без `retryAfterSeconds` — уже підписано; `503 CONFIRMATION_EMAIL_NOT_SENT` — лист не відправлено, нічого не змінено; `409 CONSENT_TEXT_OUTDATED` (з `currentConsentTextVersion`); `403 REGISTERED_ACCOUNT_REQUIRED` для гостя. Маршрут існує лише при `ENABLE_MARKETING_SUBSCRIPTION=true`.
+
+#### Відновлення незавершеної підписки
+
+Синхронізації (`sync` з чекбоксом) ніколи не надсилають лист повторно. Для відновлення є одна явна операція з обмеженням частоти: `POST /api/me/marketing/subscription` для зареєстрованого користувача, `POST /api/marketing/subscriptions` для гостя. Не більше одного листа на адресу за 10 хв (`CONFIRMATION_COOLDOWN_MS`); новий лист робить попереднє посилання недійсним.
+
+| Що сталося | Що бачить frontend | Що робити |
+|---|---|---|
+| Лист не вдалося відправити | `marketingOptIn.outcome: "delivery_failed"` або `503 CONFIRMATION_EMAIL_NOT_SENT` (`Retry-After: 60`); `pendingConfirmation: false` | Кнопка «Надіслати ще раз». Невдала спроба нічого не записує й ліміт не витрачає |
+| Посилання прострочене (7 днів) або вже замінене | `400 INVALID_ACTION_TOKEN` на сторінці підтвердження; `pendingConfirmation: true` | Запропонувати «Надіслати нове посилання» (явна операція; ліміт до того часу вже минув) |
+| Лист загубився | `pendingConfirmation: true` | «Надіслати ще раз»: у межах 10 хв — `no_action` з `retryAfterSeconds`, після — новий лист |
+
+Тести: `test/marketing-account.test.ts` (опис «recovering an unfinished subscription»), `test/marketing.test.ts` (ліміт і заміна посилання у формі), `test/integration/marketing.test.ts` (ті самі правила в PostgreSQL).
 
 ### `DELETE /api/me/marketing/subscription` — відписка
 
@@ -290,7 +302,7 @@ Firebase Web SDK **10.6.0 або новіший** (з увімкненим за�
 
 3. **Перехід гостя до акаунта** (той самий Firebase UID → той самий профіль, з іменем і телефоном):
    - Google: `linkWithPopup(auth.currentUser, new GoogleAuthProvider())`;
-   - email + пароль: `linkWithCredential(auth.currentUser, EmailAuthProvider.credential(email, password))`, **потім одразу** `signInWithEmailAndPassword(auth, email, password)` (той самий UID). Додавання пароля Firebase вважає зміною акаунта й відкликає попередні сесії; токен, повернений прив'язкою, зберігає час анонімного входу, тож backend відхиляє його як `SESSION_REVOKED` (так поводиться Auth Emulator; у реальному проєкті перевірити на staging, але повторний вхід коректний в обох випадках);
+   - email + пароль: `linkWithCredential(auth.currentUser, EmailAuthProvider.credential(email, password))`, **потім одразу** `signInWithEmailAndPassword(auth, email, password)` (той самий UID). Додавання пароля Firebase вважає зміною акаунта й відкликає попередні сесії; токен, повернений прив'язкою, зберігає час анонімного входу, тож backend відхиляє його як `SESSION_REVOKED` (так поводиться Auth Emulator; **поза емулятором не перевірено** — [сценарій](firebase-staging-checklist.md), крок 2a; повторний вхід коректний в обох випадках);
    - потім `POST /api/me/sync` (з чекбоксом розсилки, якщо це завершення реєстрації — крок 4).
 
    Загальне правило: на `401 SESSION_REVOKED` одразу після прив'язки або зміни пароля — повторний вхід (`signInWithEmailAndPassword` / `reauthenticateWithCredential`), а не вихід.
@@ -322,7 +334,7 @@ Firebase Web SDK **10.6.0 або новіший** (з увімкненим за�
 
 9. **Заблокований користувач** (`403 ACCOUNT_DISABLED`): `signOut(auth)` і повідомлення «Акаунт заблоковано». Firebase також не видасть новий токен.
 
-10. **Підписка в профілі:** показувати `profile.marketing.subscribed`. «Відписатися» — `DELETE /api/me/marketing/subscription`; «Підписатися знову» — `POST /api/me/marketing/subscription` з `consentTextVersion` (лише явна дія користувача).
+10. **Підписка в профілі:** показувати `profile.marketing.subscribed`. «Відписатися» — `DELETE /api/me/marketing/subscription`; «Підписатися знову» і «Надіслати лист ще раз» (коли `marketing.pendingConfirmation: true`) — `POST /api/me/marketing/subscription` з `consentTextVersion` (лише явна дія користувача); `retryAfterSeconds` у відповіді — скільки чекати до наступного листа. Сторінка `/marketing/confirm` на `400 INVALID_ACTION_TOKEN` пропонує надіслати нове посилання.
 
 11. **Готовність до бронювання:** показувати форму доповнення профілю за `bookingReadiness.blockers`; телефон просити в міжнародному форматі (`+33 …`). Рішення завжди за сервером.
 
@@ -416,14 +428,14 @@ HTTP-маршруту для зміни ролі немає; профіль не
 3. SSM-параметр ключа й зміни Terraform для task definition та execution role (розділ 8) → `terraform plan` → погоджений `apply` (лише нова ревізія task definition і IAM).
 4. `ECR publish` для нового коміту.
 5. `Staging deploy` з `run_migrations=true`: міграція `20261027120000_firebase_profiles_and_marketing` створює `UserProfile`, `MarketingSubscription`, enum-и й обмеження; раннер видає `booking_app` DML на нові таблиці. Legacy `User` не змінюється.
-6. Перевірки через HTTPS:
-   - workflow `Staging deploy` сам перевіряє (крок «Check authentication over HTTPS», вхід `verify_auth`, за замовчуванням `true`), що `GET /api/me` без токена → `401 AUTH_REQUIRED` з `WWW-Authenticate: Bearer`: маршрути існують і вимагають токен. Запит без токена, тож Firebase не викликається; health checks теж ніколи не звертаються до Firebase. `verify_auth=false` — лише для відкату на образ без автентифікації;
-   - повна перевірка з токеном потребує тестового акаунта staging (вручну, нижче);
-   - тестовий web-клієнт staging: анонімний вхід → `POST /api/me/sync` → `anonymous_session`;
-   - реєстрація email + пароль, лист підтвердження Firebase, `getIdToken(true)` + `sync` → `emailVerified: true`;
-   - вхід через Google (реальний), прив'язка гостя до Google;
-   - блокування користувача в консолі → `403 ACCOUNT_DISABLED`; «вихід на всіх пристроях» → `401 SESSION_REVOKED`;
-   - призначення першого адміністратора (розділ 9).
+6. Перевірки через HTTPS — два різні рівні, один не замінює інший:
+
+   | Перевірка | Хто і коли | Що доводить | Чого **не** доводить |
+   |---|---|---|---|
+   | `GET /api/me` **без токена** → `401 AUTH_REQUIRED` з `WWW-Authenticate: Bearer` | Автоматично, кожен деплой: workflow `Staging deploy`, крок «Check authentication over HTTPS» (вхід `verify_auth`, за замовчуванням `true`; `false` — лише для відкату на образ без автентифікації) | Задеплоєно образ з auth-маршрутами, і вони вимагають токен. Разом із `REQUIRE_FIREBASE_AUTH=true` — що конфігурацію Firebase задано (інакше задача не стартує) | Що токени Firebase приймаються, що службовий ключ і роль IAM правильні, що профіль створюється і читається. Firebase цим запитом не викликається; health checks теж ніколи не звертаються до Firebase |
+   | Запит зі **справжнім Firebase ID token** staging-проєкту: `POST /api/me/sync`, потім `GET /api/me` → `200` з профілем | Вручну, після першого деплою з Firebase і після змін ключа/IAM: [сценарій ручної перевірки](firebase-staging-checklist.md), крок 1 | Підпис і `aud`/`iss` реального проєкту; доступ Admin SDK до Firebase (перевірка блокування й відкликання викликає `getUser` службовим акаунтом); створення профілю в БД і його читання | — |
+
+   Далі — решта [сценарію ручної перевірки](firebase-staging-checklist.md) (Google, email/пароль, гість → акаунт, відновлення пароля, маркетинг, права) і призначення першого адміністратора (розділ 9).
 7. Пауза staging (`desired_count=0`), як в `infra/staging-deploy.md`.
 
 ## 11. Що перевірено і де
@@ -443,9 +455,11 @@ HTTP-маршруту для зміни ролі немає; профіль не
 | Команда призначення ролі | — | так (усі відмови й `--apply`) | — |
 | Підписка: double opt-in, нейтральні відповіді, одноразові посилання, доказ згоди, обмеження БД | так | так | реальні листи Brevo не перевірено |
 | Чекбокс при реєстрації (email/пароль і Google), без чекбокса, повторні й паралельні `sync`, відписка й подальший `sync`, повторна підписка лише явною дією, помилка відправки | так | так (email/пароль, Google, паралельні) | — |
+| Відновлення: помилка доставки, прострочене й загублене посилання; явне повторне надсилання з лімітом і `retryAfterSeconds` | так | правила ліміту й заміни посилання в PostgreSQL | реальна доставка Brevo — [сценарій](firebase-staging-checklist.md), крок 6 |
 | `emailVerified` не дає згоди; legacy-згоди не переносяться | так | так | — |
 | Публічні маршрути й health без токена, без викликів Firebase; `REQUIRE_FIREBASE_AUTH` | так | — | — |
-| Перевірка автентифікації в деплої (`check-auth.sh`) | тести скрипта | — | на staging — при наступному деплої |
+| Перевірка автентифікації в деплої (`check-auth.sh`, без токена) | тести скрипта | — | на staging — при наступному деплої |
+| Інтеграція зі справжнім Firebase (токен staging-проєкту, ключ, IAM) | — | — | лише вручну: [сценарій](firebase-staging-checklist.md) |
 | Секрети й токени не потрапляють у відповіді й логи | так | так | — |
 
 Локально: `npm run emulator:auth -w @massage/booking` (firebase-tools 15.34.1 через `npx`, Java не потрібна), потім `FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099 npm run test:integration`. CI запускає емулятор у job `integration`.
