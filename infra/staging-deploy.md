@@ -344,6 +344,26 @@ aws ssm describe-parameters --region eu-west-3 \
    Для коміту, що містить цей workflow, спершу потрібні push-CI і `ECR publish`.
 8. Після перевірок деплою — пауза, якщо staging не потрібен постійно (розділ «Пауза staging»).
 
+## Короткий запуск з Firebase-автентифікацією (одне погодження)
+
+Перший деплой версії з Firebase (`develop` після PR #21 і #22) з ручною перевіркою і поверненням на паузу. Погоджується одним пакетом: кроки 4–9 виконуються лише після погодження; будь-яка помилка → одразу крок 9.
+
+| # | Дія | Хто | Зупинка, якщо |
+|---|---|---|---|
+| 1 | Службовий акаунт `booking-api-staging` (роль Firebase Authentication Admin), JSON-ключ → SSM `/massage-staging/booking/firebase-service-account` (`docs/auth-and-profiles.md`, розділ 8) | власник | `jq` не дав `ok` |
+| 2 | `terraform plan -out=firebase-auth.tfplan` у `infra/environments/staging`. Очікується лише: нова ревізія task definition `…-booking-api` (з Firebase env і секретом), оновлення inline-політик і описів двох execution roles. Будь-що інше — не застосовувати | асистент | план містить інші ресурси |
+| 3 | Злиття PR #22 у `develop`, push-CI на `develop` зелений | власник | CI не зелений |
+| 4 | `terraform apply firebase-auth.tfplan`, потім контрольний `plan` → `No changes`. Сервіс не стартує: `desired_count` не керується Terraform | асистент | помилка apply |
+| 5 | `gh workflow run ecr-publish.yml --ref develop` для вершини `develop`; digest-и — з artifact `ecr-publish-<sha>` | асистент | publish не успішний |
+| 6 | `gh workflow run staging-deploy.yml --ref develop -f commit_sha=<sha> -f api_digest=sha256:… -f migrate_digest=sha256:… -f run_migrations=true -f verify_auth=true`. Застосовує міграцію `20261027120000_firebase_profiles_and_marketing` (лише нові таблиці; legacy `User` не змінюється; старий образ із новою схемою працює), ставить `desired-count 1`, перевіряє readiness і `401 AUTH_REQUIRED` | асистент | будь-який крок workflow червоний (міграція впала → API не оновлюється) |
+| 7 | `API_BASE_URL=<STAGING_API_BASE_URL> node tools/firebase-check/server.mjs` і кроки 1–5, 8, 9 з `docs/firebase-staging-checklist.md` (маркетинг на staging вимкнено → крок 6 сценарію лише `unavailable`). Обмеження — 60 хв | власник + асистент | `401 INVALID_TOKEN` / `503 AUTH_UNAVAILABLE` на кроці 1 сценарію |
+| 8 | (Необов'язково) призначення адміністратора тестовому акаунту (`docs/auth-and-profiles.md`, розділ 9, спершу dry-run) і крок 7 сценарію | власник | — |
+| 9 | Пауза: «Зупинка» і всі 5 перевірок «Перевірка паузи» нижче; видалити тестових користувачів у Firebase Console | асистент + власник | — |
+
+Відкат: якщо задача з новою ревізією не стає healthy (неправильний ключ або IAM), circuit breaker повертає попередню ревізію, workflow червоний → крок 9. Ручний відкат образу — розділ «Workflow», `run_migrations=false`, `verify_auth=false`. Міграція не відкочується (лише додає таблиці).
+
+Вартість вікна до 2 год: ≈ $0.05 (розділ «Кошторис», ≈ $0.52 на добу під час роботи).
+
 ## Пауза staging
 
 Режим для перерв між перевірками: API не працює, а все потрібне для повторного запуску лишається на місці. Виконує **[власник]** зі своїм профілем (`AWS_PROFILE=massage`). Роль деплою для цього не потрібна, а workflow паузи немає.
