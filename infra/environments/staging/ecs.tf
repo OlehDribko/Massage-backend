@@ -90,11 +90,18 @@ resource "aws_ecs_task_definition" "api" {
         { name = "READINESS_TIMEOUT_MS", value = "2000" },
         # Legacy /api/users stays off: no Brevo key or token secret is provided.
         { name = "ENABLE_LEGACY_USER_ROUTES", value = "false" },
+        # Firebase Authentication (docs/auth-and-profiles.md, section 8). With
+        # REQUIRE_FIREBASE_AUTH the task refuses to start without a working
+        # Firebase configuration instead of serving without /api/me.
+        { name = "REQUIRE_FIREBASE_AUTH", value = "true" },
+        { name = "FIREBASE_PROJECT_ID", value = var.firebase_project_id },
+        { name = "FIREBASE_CREDENTIALS", value = "service-account-json" },
         # Replaced with the deployed commit SHA by the deploy workflow.
         { name = "APP_VERSION", value = var.booking_image_commit_sha },
       ]
       secrets = [
         { name = "DATABASE_URL", valueFrom = local.booking_parameter_arns.database_url },
+        { name = "FIREBASE_SERVICE_ACCOUNT_JSON", valueFrom = local.booking_parameter_arns.firebase_service_account },
       ]
       healthCheck = {
         command     = ["CMD", "node", "-e", local.api_health_command]

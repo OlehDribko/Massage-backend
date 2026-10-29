@@ -106,7 +106,7 @@ S3 тарифікується за обсяг збережених даних (�
 | Workflow `.github/workflows/ecr-publish.yml` | так | запущено успішно (run 39656783947) |
 | ECS, API Gateway, Cloud Map, ролі задач і деплою, лог-групи (`infra/environments/staging`) | так | так (38 ресурсів, 2026-10-26; виправлення Cloud Map 2026-10-27, контрольний `plan` — `No changes`); сервіс на паузі (`desired_count = 0`); див. `infra/staging-deploy.md`, «Cloud Map: health check» |
 | Workflow `.github/workflows/staging-deploy.yml` | так | запущено успішно (run 40400135052) |
-| SSM-параметри з рядками підключення | лише імена | так (створив власник поза Terraform) |
+| SSM-параметри з рядками підключення та ключем Firebase (`firebase-service-account`) | лише імена | так (створює власник поза Terraform) |
 | ALB, власний домен, сертифікати, production | ні | ні |
 
 > Команди, що змінюють AWS (`apply`, перенесення state), виконуються лише після окремого рішення.

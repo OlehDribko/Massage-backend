@@ -29,3 +29,4 @@ booking_image_commit_sha = "<40-character commit SHA>"
 # api_throttling_rate_limit  = 2
 # api_throttling_burst_limit = 10
 # github_deploy_environment  = "staging"
+# firebase_project_id        = "massage-fr"  # staging Firebase project

@@ -354,7 +354,7 @@ Brevo використовується лише для листів маркет
 
 ## 7. Firebase-проєкти: staging і production
 
-Два **окремі** Firebase-проєкти, наприклад `massage-staging` і `massage-production`. Окремі проєкти — окремі користувачі, ключі, налаштування. Токен staging відхиляється production-бекендом і навпаки (`aud`/`iss`), а службовий ключ іншого проєкту не пройде перевірку конфігурації (`project_id` ≠ `FIREBASE_PROJECT_ID`).
+Два **окремі** Firebase-проєкти. Staging — `massage-fr` (створено; Google, Email/Password і Anonymous увімкнено, вхід за посиланням з email вимкнено). Production — окремий проєкт, ще не створено. Окремі проєкти — окремі користувачі, ключі, налаштування. Токен staging відхиляється production-бекендом і навпаки (`aud`/`iss`), а службовий ключ іншого проєкту не пройде перевірку конфігурації (`project_id` ≠ `FIREBASE_PROJECT_ID`).
 
 Кроки для кожного проєкту (робить власник у консолі Firebase):
 
@@ -388,13 +388,26 @@ Brevo використовується лише для листів маркет
 ### Admin SDK в AWS (staging), безпечне підключення
 
 **Зараз (рекомендовано): JSON-ключ у SSM, як і рядки підключення до БД.**
-1. `aws ssm put-parameter --type SecureString --name /massage-staging/booking/firebase-service-account --value file://<тимчасовий файл>` (той самий безпечний спосіб, що для `database-url`; файл одразу видалити).
+1. Покласти JSON-ключ у SSM так, щоб вміст не потрапив у термінал, історію чи Git:
+   ```bash
+   export AWS_PROFILE=massage AWS_REGION=eu-west-3
+   KEY=~/Downloads/<завантажений-ключ>.json        # поза репозиторієм
+   # Перевірка без виводу вмісту: лише "ok" або помилка.
+   jq -e '.type == "service_account" and .project_id == "massage-fr" and (.private_key | startswith("-----BEGIN PRIVATE KEY-----"))' "$KEY" >/dev/null && echo ok
+   aws ssm put-parameter --name /massage-staging/booking/firebase-service-account \
+     --type SecureString --tier Standard --value "file://$KEY" --no-cli-pager --query Version
+   # Перевірка без розшифрування: тип, версія, дата.
+   aws ssm get-parameter --name /massage-staging/booking/firebase-service-account \
+     --query 'Parameter.{Type:Type,Version:Version,Modified:LastModifiedDate}' --no-cli-pager
+   rm "$KEY"; unset KEY
+   ```
+   `put-parameter` без `--overwrite` не перезапише наявний параметр (для ротації — з `--overwrite`). `--with-decryption` не використовувати. Ключ ~2,4 KB — вміщується в Standard (4 KB).
 2. Task definition API: `environment` — `REQUIRE_FIREBASE_AUTH=true`, `FIREBASE_PROJECT_ID=<staging project>`, `FIREBASE_CREDENTIALS=service-account-json`; `secrets` — `FIREBASE_SERVICE_ACCOUNT_JSON` з ARN параметра.
 3. Execution role API: `ssm:GetParameters` і на цей параметр.
 4. Egress 443 у SG API вже дозволено (`api_https`).
 5. Ротація: новий ключ → `put-parameter --overwrite` → новий деплой → видалити старий ключ у Google Cloud.
 
-Ці зміни Terraform (`infra/environments/staging/ecs.tf`, `ecs_iam.tf`) **ще не внесено й не застосовано** — це окремий крок перед деплоєм цієї версії з увімкненою автентифікацією. Без них нова версія стартує, але `/api/me` не буде (і `/health/*` працюватиме як зараз).
+Ці зміни внесено в Terraform staging (`infra/environments/staging/ecs.tf`, `ecs_iam.tf`, змінна `firebase_project_id`, за замовчуванням `massage-fr`), але **ще не застосовано**. Порядок: спершу SSM-параметр, потім `apply`. Інакше наступна задача API не стартує: ECS не знайде секрет. Ключ отримує лише execution role API; задача міграції його не бачить.
 
 **Пізніше (без довгоживучого ключа): Workload Identity Federation AWS → Google Cloud** з `FIREBASE_CREDENTIALS=application-default` і конфігурацією `external_account` у `GOOGLE_APPLICATION_CREDENTIALS`. Для ECS Fargate облікові дані задачі надходять через container credentials endpoint, а не IMDS; підтримку цього шляху в google-auth-library треба перевірити окремо. Не перевірено в цьому етапі.
 

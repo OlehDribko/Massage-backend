@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Firebase check</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 16px; max-width: 980px; background: #fff; color: #111; }
+  fieldset { margin: 0 0 12px; border: 1px solid #ccc; }
+  button { margin: 2px 4px 2px 0; }
+  input { margin-right: 6px; }
+  #state { background: #f3f3f3; padding: 8px; white-space: pre-wrap; }
+  #log { background: #111; color: #ddd; padding: 8px; white-space: pre-wrap; max-height: 480px; overflow: auto; }
+  .warn { color: #a40; }
+</style>
+</head>
+<body>
+<h1>Firebase check <small id="project"></small></h1>
+<p class="warn">Лише тестові акаунти staging. ID token на сторінці не показується; «Копіювати токен» кладе його в буфер для <code>read -rs TOKEN</code>.</p>
+<div id="state">завантаження…</div>
+
+<fieldset><legend>Сесія</legend>
+  <button data-action="guest">Гість (лише якщо немає сесії)</button>
+  <button data-action="google-signin">Вхід Google</button>
+  <button data-action="google-link">Прив'язати гостя до Google</button>
+  <button data-action="refresh">Оновити токен (getIdToken(true))</button>
+  <button data-action="copy-token">Копіювати токен</button>
+  <button data-action="signout">Вийти</button>
+</fieldset>
+
+<fieldset><legend>Email / пароль</legend>
+  <input id="email" type="email" placeholder="email" autocomplete="username">
+  <input id="password" type="password" placeholder="пароль" autocomplete="current-password"><br>
+  <button data-action="signup">Реєстрація</button>
+  <button data-action="link-password">Прив'язати гостя (крок 2/2a)</button>
+  <button data-action="signin">Вхід</button>
+  <button data-action="verify">Надіслати лист підтвердження</button>
+  <button data-action="reset">Скидання пароля</button>
+</fieldset>
+
+<fieldset><legend>API (через локальний проксі)</legend>
+  <label><input id="optin" type="checkbox"> маркетинговий чекбокс у sync</label><br>
+  <button data-action="sync">POST /api/me/sync</button>
+  <button data-action="me">GET /api/me</button>
+  <input id="name" placeholder="ім'я"><input id="phone" placeholder="+33…">
+  <button data-action="patch">PATCH /api/me</button><br>
+  <button data-action="subscribe">POST /api/me/marketing/subscription</button>
+  <button data-action="unsubscribe">DELETE /api/me/marketing/subscription</button>
+  <button data-action="revoke">POST /api/me/sessions/revoke</button>
+  <button data-action="no-token">GET /api/me без токена</button>
+  <button data-action="ready">GET /health/ready</button>
+</fieldset>
+
+<div id="log"></div>
+<script type="module" src="/app.js"></script>
+</body>
+</html>

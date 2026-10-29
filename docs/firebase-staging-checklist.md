@@ -5,7 +5,7 @@
 ## Підготовка
 
 - Задеплоєно staging з `REQUIRE_FIREBASE_AUTH=true`. Крок деплою «Check authentication over HTTPS» зелений, тобто `GET /api/me` без токена повертає `401`. Це **лише** доказ наявності auth-маршруту, а не інтеграції.
-- Web-клієнт staging (frontend або мінімальна тестова сторінка) з конфігурацією staging-проєкту.
+- Web-клієнт staging: frontend або локальний клієнт `tools/firebase-check` (див. його README). Він працює через локальний проксі, тож CORS staging не змінюється.
 - Тестові дані:
   - дві тестові поштові скриньки (A, B);
   - тестовий Google-акаунт;

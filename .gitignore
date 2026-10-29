@@ -31,3 +31,6 @@ crash.*.log
 # Firebase emulator (firebase-tools) debug logs
 firebase-debug.log
 firebase-debug.*.log
+
+# Local Firebase test client: web config of the environment being checked
+tools/firebase-check/firebase-config.local.json
