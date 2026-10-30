@@ -1,6 +1,8 @@
--- OutboxEvent.publishedAt had no exact meaning (an event has several
--- recipients, each delivered independently). The Notifications component
--- records its progress in its own tables instead; nothing ever set it.
+-- Additive only: new tables and enums. OutboxEvent is left unchanged; its
+-- unused column publishedAt stays until a later release, because API
+-- versions released before this one select it (Prisma returns all fields)
+-- and must keep working during rollout and after a rollback.
+
 -- CreateEnum
 CREATE TYPE "NotificationEventStatus" AS ENUM ('planned', 'invalid');
 
@@ -9,12 +11,6 @@ CREATE TYPE "NotificationRecipientRole" AS ENUM ('client', 'studio');
 
 -- CreateEnum
 CREATE TYPE "NotificationDeliveryStatus" AS ENUM ('pending', 'in_progress', 'accepted', 'failed', 'skipped');
-
--- DropIndex
-DROP INDEX "OutboxEvent_publishedAt_position_idx";
-
--- AlterTable
-ALTER TABLE "OutboxEvent" DROP COLUMN "publishedAt";
 
 -- CreateTable
 CREATE TABLE "NotificationEvent" (

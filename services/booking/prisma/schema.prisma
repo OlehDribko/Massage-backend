@@ -217,20 +217,27 @@ model BookingTimeChange {
 // and records its own progress in NotificationEvent / NotificationDelivery;
 // it never writes here.
 model OutboxEvent {
-  id            String   @id @default(uuid()) @db.Uuid
+  id            String    @id @default(uuid()) @db.Uuid
   // Commit order of events (writers hold the calendar lock): consumers read by position.
-  position      BigInt   @unique @default(autoincrement())
+  position      BigInt    @unique @default(autoincrement())
   type          String
   schemaVersion Int
   aggregateType String
-  aggregateId   String   @db.Uuid
+  aggregateId   String    @db.Uuid
   // One event per business fact, e.g. "booking.created:<bookingId>".
-  dedupeKey     String   @unique
+  dedupeKey     String    @unique
   payload       Json
-  occurredAt    DateTime @db.Timestamptz(3)
+  occurredAt    DateTime  @db.Timestamptz(3)
+  // DEPRECATED, unused, always null. Kept so that API versions released
+  // before the Notifications component (their Prisma Client selects it) keep
+  // working during rollout and after a rollback. Delivery progress lives in
+  // NotificationEvent / NotificationDelivery. Drop in a later release, once no
+  // older version can run (docs/notifications.md, "Сумісність").
+  publishedAt   DateTime? @db.Timestamptz(3)
 
   notification NotificationEvent?
 
+  @@index([publishedAt, position])
   @@index([aggregateId])
 }
 

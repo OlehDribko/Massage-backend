@@ -190,6 +190,8 @@ describe("planning and sending", () => {
     await makeWorker(createFakeEmailProvider({ now })).worker.tick();
     const after = await stack.db.query("admin", `SELECT id, type, payload::text, position FROM "OutboxEvent" ORDER BY position`);
     expect(after.rows).toEqual(before.rows);
+    // The deprecated column stays (older API versions select it) and stays unused.
+    expect(await countRows(stack.db, `SELECT count(*)::int AS n FROM "OutboxEvent" WHERE "publishedAt" IS NOT NULL`)).toBe(0);
   });
 
   it("an unusable event gets a visible invalid state; a missing client address a failed delivery", async () => {
