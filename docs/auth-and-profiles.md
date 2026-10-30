@@ -61,7 +61,7 @@
 | `src/http/auth/authenticate.ts` | Middleware `Authorization: Bearer <ID token>` |
 | `src/modules/profiles/*` | Профіль: синхронізація з токена, читання, зміна власних полів, телефон |
 | `src/modules/access/policies.ts` | Правила: готовність до бронювання, адміністрування, скасування, перенесення |
-| `src/modules/access/require-access.ts` | Guards `requireBookingClient`, `requireAdmin` для майбутніх маршрутів |
+| `src/modules/access/require-access.ts` | Guards `requireProfile`, `requireBookingClient`, `requireAdmin` для маршрутів бронювань і адміністрування ([docs/booking.md](booking.md)) |
 | `src/modules/profiles/role-assignment.ts`, `src/admin/assign-role.ts` | Призначення ролі власником (команда, не HTTP) |
 | `src/modules/marketing/*` | Підписка на розсилку |
 
@@ -233,9 +233,11 @@ Content-Type: application/json
 | `name_missing` | Немає імені |
 | `phone_missing` | Немає телефону |
 
-Це підказка для інтерфейсу. Майбутні маршрути бронювання перевіряють те саме на сервері (`requireBookingClient`, з синхронізацією профілю з поточного токена) і відповідають `403 BOOKING_NOT_READY` з тим самим списком `blockers`.
+Це підказка для інтерфейсу. Маршрути бронювання (`POST /api/bookings`, перенесення) перевіряють те саме на сервері (`requireBookingClient`, з синхронізацією профілю з поточного токена) і відповідають `403 BOOKING_NOT_READY` з тим самим списком `blockers`.
 
-### Права для майбутніх маршрутів (`src/modules/access/policies.ts`)
+### Права бізнес-маршрутів (`src/modules/access/policies.ts`)
+
+Застосовуються маршрутами каталогу, графіка й бронювань — див. [docs/booking.md](booking.md).
 
 | Дія | Хто може |
 |---|---|
