@@ -43,10 +43,6 @@ export const bookingWindow = (now: Date, rules: BookingRules): BookingWindow => 
   };
 };
 
-/** Two half-open ranges overlap. */
-const overlaps = (aStart: number, aEnd: number, bStart: number, bEnd: number): boolean =>
-  aStart < bEnd && bStart < aEnd;
-
 /** Instant range of a local interval on a date (DST-aware). */
 export const intervalInstants = (
   date: LocalDate,
@@ -58,14 +54,20 @@ export const intervalInstants = (
 });
 
 /**
- * Starts offered on one local date for a session of `durationMinutes`:
- * - every slotStepMinutes from the start of each working interval (elapsed
- *   time, so a step never lands on a non-existent local time);
- * - the session ends within the interval (the break after it need not fit);
- * - starts no later than latestStartMinuteOfDay local time;
- * - within [earliestStart, horizonEnd);
- * - [start, end + break) overlaps no occupied time, so the break is kept
- *   both before and after every other booking.
+ * Starts offered on one local date for a session of `durationMinutes`.
+ *
+ * Each working interval is split into free stretches by the confirmed
+ * bookings in it. A stretch begins at the interval start or where an earlier
+ * booking's break ends (its `blockedUntil`), and the possible starts step
+ * every slotStepMinutes from that beginning. So the grid never lengthens
+ * the break: a session ending at 14:10 leaves 14:25, 14:40, … (not 14:30).
+ * A start is offered when:
+ * - the session ends within the working interval (no break needed after
+ *   the last session of an interval);
+ * - if another booking follows, the session plus one break ends by its start;
+ * - it is no later than latestStartMinuteOfDay local time;
+ * - it lies within [earliestStart, horizonEnd).
+ * Elapsed time is used, so a step never lands on a non-existent local time.
  */
 export const daySlots = ({
   date,
@@ -83,26 +85,38 @@ export const daySlots = ({
   rules: BookingRules;
 }): Slot[] => {
   const duration = minutesToMs(durationMinutes);
-  const blocked = duration + minutesToMs(rules.breakMinutes);
+  const withBreak = duration + minutesToMs(rules.breakMinutes);
   const step = minutesToMs(rules.slotStepMinutes);
   const latestStart = localDateTimeToInstant(date, rules.latestStartMinuteOfDay, rules.timeZone).getTime();
   const earliest = window.earliestStart.getTime();
   const horizonEnd = window.horizonEnd.getTime();
 
   const starts = new Set<number>();
-  for (const interval of intervals) {
-    const { start, end } = intervalInstants(date, interval, rules.timeZone);
-    for (let t = start.getTime(); t + duration <= end.getTime() && t <= latestStart; t += step) {
-      if (t < earliest || t >= horizonEnd) {
-        continue;
+  const offer = (from: number, until: number, intervalEnd: number, nextBooked: number | undefined): void => {
+    for (let t = from; t < until && t + duration <= intervalEnd && t <= latestStart; t += step) {
+      if (nextBooked !== undefined && t + withBreak > nextBooked) {
+        break;
       }
-      const taken = occupied.some((other) =>
-        overlaps(t, t + blocked, other.startsAt.getTime(), other.blockedUntil.getTime()),
-      );
-      if (!taken) {
+      if (t >= earliest && t < horizonEnd) {
         starts.add(t);
       }
     }
+  };
+
+  for (const interval of intervals) {
+    const { start, end } = intervalInstants(date, interval, rules.timeZone);
+    const intervalStart = start.getTime();
+    const intervalEnd = end.getTime();
+    const busy = occupied
+      .filter((other) => other.startsAt.getTime() < intervalEnd && other.blockedUntil.getTime() > intervalStart)
+      .sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime());
+
+    let stretchStart = intervalStart;
+    for (const other of busy) {
+      offer(stretchStart, other.startsAt.getTime(), intervalEnd, other.startsAt.getTime());
+      stretchStart = Math.max(stretchStart, other.blockedUntil.getTime());
+    }
+    offer(stretchStart, intervalEnd, intervalEnd, undefined);
   }
 
   return [...starts]

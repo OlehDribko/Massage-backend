@@ -61,18 +61,42 @@ describe("possible starts (15-minute grid, session fits the interval, latest sta
     expect(day).toContain("14:00");
   });
 
-  it("keeps a 20-minute break before and after another booking (but not after the last session)", () => {
-    // Booked 10:00–11:00: occupied (with its break) until 11:20.
+  it("keeps one 15-minute break between sessions (not 15 before plus 15 after)", () => {
+    // Booked 10:00–11:00: occupied until 11:15.
     const day = slotsOf("2027-03-02", [iv("08:00", "13:00")], 60, [occupied("2027-03-02", "10:00", 60)]);
-    // Before: a session must end by 09:40 (its own break ends by 10:00) → last start 08:30.
-    expect(day.slice(0, 3)).toEqual(["08:00", "08:15", "08:30"]);
-    expect(day).not.toContain("08:45");
+    // Before: the session must end by 09:45 → last start 08:45.
+    expect(day.slice(0, 4)).toEqual(["08:00", "08:15", "08:30", "08:45"]);
     expect(day).not.toContain("09:00");
-    // After: not before 11:20; on the 15-minute grid the next start is 11:30.
-    expect(day).not.toContain("11:15");
-    expect(day[3]).toBe("11:30");
+    // After: exactly when the break ends.
+    expect(day[4]).toBe("11:15");
     // The last session may end exactly at the interval end (no break needed after it).
     expect(day.at(-1)).toBe("12:00");
+  });
+
+  it("the grid restarts after the break: a session ending 14:10 leaves 14:25, not 14:30", () => {
+    // 55-minute booking 13:15–14:10, break until 14:25.
+    const day = slotsOf("2027-03-02", [iv("09:00", "18:00")], 60, [occupied("2027-03-02", "13:15", 55)]);
+    expect(day).toContain("14:25");
+    expect(day).toContain("14:40");
+    expect(day).not.toContain("14:30");
+    // Before the booking the grid still follows the interval start; 12:00 + 60 + 15 = 13:15.
+    expect(day).toContain("12:00");
+    expect(day).not.toContain("12:15");
+  });
+
+  it("two bookings: each free stretch has its own grid; a gap too short for the session offers nothing", () => {
+    // 09:00–10:00 (break to 10:15) and 11:00–12:00: 10:15 + 60 + 15 = 11:30 > 11:00.
+    const day = slotsOf("2027-03-02", [iv("09:00", "14:00")], 60, [
+      occupied("2027-03-02", "09:00", 60),
+      occupied("2027-03-02", "11:00", 60),
+    ]);
+    expect(day).toEqual(["12:15", "12:30", "12:45", "13:00"]);
+    // A 30-minute session fits in the gap: 10:15 + 30 + 15 = 11:00.
+    const short = slotsOf("2027-03-02", [iv("09:00", "14:00")], 30, [
+      occupied("2027-03-02", "09:00", 60),
+      occupied("2027-03-02", "11:00", 60),
+    ]);
+    expect(short.slice(0, 2)).toEqual(["10:15", "12:15"]);
   });
 
   it("an empty day (day off) has no starts", () => {

@@ -164,7 +164,9 @@ ALTER TABLE "ScheduleExceptionInterval"
     ADD CONSTRAINT "ScheduleExceptionInterval_minutes" CHECK (0 <= "startMinute" AND "startMinute" < "endMinute" AND "endMinute" <= 1440);
 
 -- A booking's end follows from its own snapshot of the duration; the occupied
--- time [startsAt, blockedUntil) includes the break after the session.
+-- time [startsAt, blockedUntil) includes the one 15-minute rest break after
+-- the session. With the exclusion constraint below this guarantees exactly
+-- one break between two sessions (the next may start when the break ends).
 -- Cancellation fields are set together, and only on cancelled bookings.
 ALTER TABLE "Booking"
     ADD CONSTRAINT "Booking_currency_eur" CHECK ("currency" = 'EUR'),
@@ -172,7 +174,7 @@ ALTER TABLE "Booking"
     ADD CONSTRAINT "Booking_duration_range" CHECK ("durationMinutes" BETWEEN 5 AND 480),
     ADD CONSTRAINT "Booking_service_name_length" CHECK (char_length("serviceName") BETWEEN 1 AND 120),
     ADD CONSTRAINT "Booking_end_matches_duration" CHECK ("endsAt" = "startsAt" + make_interval(mins => "durationMinutes")),
-    ADD CONSTRAINT "Booking_blocked_after_end" CHECK ("blockedUntil" >= "endsAt"),
+    ADD CONSTRAINT "Booking_break_after_end" CHECK ("blockedUntil" = "endsAt" + interval '15 minutes'),
     ADD CONSTRAINT "Booking_idempotency_key_format" CHECK ("idempotencyKey" ~ '^[A-Za-z0-9_-]{8,128}$'),
     ADD CONSTRAINT "Booking_cancellation_consistent" CHECK (
         ("status" = 'cancelled') = ("cancelledAt" IS NOT NULL)

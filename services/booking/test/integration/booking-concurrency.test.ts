@@ -86,7 +86,8 @@ describe("simultaneous requests", () => {
   });
 
   it("overlapping intervals (different starts, break included): only one wins", async () => {
-    const starts = ["09:00", "09:15", "09:30", "10:00", "10:15"].map((time) => paris("2027-03-02", time));
+    // 60 min + one 15-min break: every pair of these overlaps; 10:15 would not.
+    const starts = ["09:00", "09:15", "09:30", "09:45", "10:00"].map((time) => paris("2027-03-02", time));
     const responses = await Promise.all(starts.map((startsAt, i) => book(i, i % 2 === 0 ? users.clientA : users.clientB, startsAt)));
     expect(statuses(responses)).toEqual([201, 409, 409, 409, 409]);
     expect(await countRows(stack.db, `SELECT count(*)::int AS n FROM "Booking" WHERE status = 'confirmed'`)).toBe(1);
@@ -181,7 +182,7 @@ describe("database guard (independent of the application)", () => {
            "startsAt", "endsAt", "blockedUntil", status, "idempotencyKey", "requestFingerprint",
            "cancelledAt", "cancelledBy", "cancelledByProfileId", "updatedAt")
          SELECT gen_random_uuid(), p.id, $1, 'M', 60, 100, 'EUR', $2::timestamptz, $2::timestamptz + interval '60 minutes',
-           $2::timestamptz + interval '80 minutes', $3::"BookingStatus", $4, 'x',
+           $2::timestamptz + interval '75 minutes', $3::"BookingStatus", $4, 'x',
            CASE WHEN $3 = 'cancelled' THEN now() END, CASE WHEN $3 = 'cancelled' THEN 'client'::"BookingActor" END,
            CASE WHEN $3 = 'cancelled' THEN p.id END, now()
          FROM "UserProfile" p WHERE p."firebaseUid" = 'uid-a'`,
@@ -189,10 +190,15 @@ describe("database guard (independent of the application)", () => {
       );
     try {
       await insert("2027-03-02T09:00:00Z", "confirmed", "raw-key-0001");
-      // 10:10 is inside 09:00's break (until 10:20).
+      // 10:10 is inside 09:00's break (until 10:15).
       await expect(insert("2027-03-02T10:10:00Z", "confirmed", "raw-key-0002")).rejects.toMatchObject({ code: "23P01" });
       await insert("2027-03-02T09:30:00Z", "cancelled", "raw-key-0003");
-      await insert("2027-03-02T10:20:00Z", "confirmed", "raw-key-0004");
+      // Exactly when the break ends: allowed (one break, not two).
+      await insert("2027-03-02T10:15:00Z", "confirmed", "raw-key-0004");
+      // The break is exactly 15 minutes for every writer.
+      await expect(
+        client.query(`UPDATE "Booking" SET "blockedUntil" = "endsAt" + interval '30 minutes' WHERE "idempotencyKey" = 'raw-key-0001'`),
+      ).rejects.toMatchObject({ code: "23514" });
       // End must match the snapshot duration.
       await expect(
         client.query(`UPDATE "Booking" SET "endsAt" = "endsAt" + interval '5 minutes' WHERE "idempotencyKey" = 'raw-key-0001'`),

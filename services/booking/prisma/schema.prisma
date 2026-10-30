@@ -161,9 +161,10 @@ enum BookingActor {
 
 // A booking with a snapshot of the service at creation (name, duration,
 // price): catalogue edits never change existing bookings, and rescheduling
-// keeps them. [startsAt, blockedUntil) is the occupied time including the
-// break after the session; a database exclusion constraint forbids two
-// confirmed bookings from overlapping there.
+// keeps them. [startsAt, blockedUntil) is the occupied time including the one
+// 15-minute break after the session (blockedUntil = endsAt + 15 min); a
+// database exclusion constraint forbids two confirmed bookings from
+// overlapping there, so consecutive sessions are at least 15 minutes apart.
 model Booking {
   id                   String        @id @default(uuid()) @db.Uuid
   clientProfileId      String        @db.Uuid

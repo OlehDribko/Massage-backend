@@ -23,7 +23,7 @@ export type UnavailableReason =
   | "too_soon"
   /** After the end of the local day today + horizonDays. */
   | "beyond_horizon"
-  /** Not an offered start: outside working intervals, not on the step grid, after the latest start, or the session would not fit. */
+  /** Not an offered start: outside working intervals, not on the grid of its free stretch, after the latest start, or the session would not fit. */
   | "outside_schedule"
   /** Overlaps another booking or its break. */
   | "taken";
@@ -55,18 +55,22 @@ export const checkStart = async (
 
   const date = localDateTimeOf(startsAt, rules.timeZone).date;
   const { intervals } = await loadDaySchedule(tx, date);
-  const offered = daySlots({ date, intervals, durationMinutes, occupied: [], window, rules });
-  if (!offered.some((slot) => slot.startsAt.getTime() === startsAt.getTime())) {
-    return { ok: false, reason: "outside_schedule" };
-  }
-
-  const blockedUntil = new Date(startsAt.getTime() + minutesToMs(durationMinutes + rules.breakMinutes));
-  const others = await activeBookingTimes(tx, {
-    from: startsAt,
-    to: blockedUntil,
+  // Bookings of that day decide where free stretches (and their grids) begin.
+  const occupied = await activeBookingTimes(tx, {
+    from: localDateTimeToInstant(date, 0, rules.timeZone),
+    to: localDateTimeToInstant(addDays(date, 1), 0, rules.timeZone),
     ...(excludeBookingId === undefined ? {} : { excludeBookingId }),
   });
-  return others.length === 0 ? { ok: true } : { ok: false, reason: "taken" };
+  const offered = daySlots({ date, intervals, durationMinutes, occupied, window, rules });
+  if (offered.some((slot) => slot.startsAt.getTime() === startsAt.getTime())) {
+    return { ok: true };
+  }
+
+  const blockedUntil = startsAt.getTime() + minutesToMs(durationMinutes + rules.breakMinutes);
+  const overlapsBooking = occupied.some(
+    (other) => startsAt.getTime() < other.blockedUntil.getTime() && other.startsAt.getTime() < blockedUntil,
+  );
+  return { ok: false, reason: overlapsBooking ? "taken" : "outside_schedule" };
 };
 
 export type AvailabilityDay = { date: LocalDate; slots: Slot[] };

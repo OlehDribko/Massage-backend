@@ -248,20 +248,49 @@ describe("schedule and availability", () => {
     expect(view.body).toMatchObject({ timeZone: "Europe/Paris", exceptions: [{ date: "2027-03-07", closed: false }] });
   });
 
-  it("availability keeps the 20-minute break around bookings and reveals nothing about them", async () => {
+  it("availability keeps one 15-minute break between bookings and reveals nothing about them", async () => {
     const serviceId = await createService();
     await setWeekly();
     await book(users.clientA, serviceId, paris("2027-03-02", "10:00")).expect(201);
 
     const slots = await slotsOn(serviceId, "2027-03-02");
-    expect(slots).not.toContain(paris("2027-03-02", "09:00")); // would end 10:00 + break
-    expect(slots).not.toContain(paris("2027-03-02", "11:15")); // inside the break after 11:00
-    expect(slots).toContain(paris("2027-03-02", "11:30"));
+    expect(slots).not.toContain(paris("2027-03-02", "09:00")); // would end 10:00, no break before 10:00
+    expect(slots).not.toContain(paris("2027-03-02", "11:00")); // inside the break after 11:00
+    expect(slots).toContain(paris("2027-03-02", "11:15")); // exactly when the break ends
 
     const raw = (await availability(serviceId, "2027-03-02")).text;
     for (const secret of ["anna@example.invalid", "Anna", "+33612345678", "bookingId", "clientProfileId"]) {
       expect(raw).not.toContain(secret);
     }
+  });
+
+  it("the grid restarts when the break ends: after a session ending 14:10, 14:25 is bookable (not rounded to 14:30)", async () => {
+    const short = await createService({ name: "Massage 55", durationMinutes: 55, priceCents: 6000 });
+    const hour = await createService();
+    await setWeekly();
+    // Wednesday without lunch: 09:00–18:00.
+    await request(stack.app).put("/api/admin/schedule/exceptions/2027-03-03").set(asAdmin()).send({ intervals: [{ start: "09:00", end: "18:00" }] }).expect(200);
+    // 13:15 + 55 min = 14:10; the break ends at 14:25.
+    await book(users.clientA, short, paris("2027-03-03", "13:15")).expect(201);
+
+    const slots = await slotsOn(hour, "2027-03-03");
+    expect(slots).toContain(paris("2027-03-03", "14:25"));
+    expect(slots).toContain(paris("2027-03-03", "14:40"));
+    expect(slots).not.toContain(paris("2027-03-03", "14:15"));
+    expect(slots).not.toContain(paris("2027-03-03", "14:30"));
+
+    // Rescheduling and creating use the same rule.
+    const other = bookingIdOf(await book(users.clientB, hour, paris("2027-03-02", "09:00")));
+    const tooEarly = await reschedule(users.clientB, other, paris("2027-03-03", "14:20"));
+    expect(tooEarly.body).toMatchObject({ code: "SLOT_UNAVAILABLE", reason: "taken" });
+    const moved = await reschedule(users.clientB, other, paris("2027-03-03", "14:25"));
+    expect(moved.status).toBe(200);
+    expect(moved.body).toMatchObject({ booking: { startsAt: paris("2027-03-03", "14:25"), endsAt: paris("2027-03-03", "15:25") } });
+    // Next free start after 15:25 + 15 = 15:40.
+    expect(await slotsOn(hour, "2027-03-03")).toContain(paris("2027-03-03", "15:40"));
+    const overlapping = await book(users.clientA, hour, paris("2027-03-03", "15:30"));
+    expect(overlapping.body).toMatchObject({ code: "SLOT_UNAVAILABLE", reason: "taken" });
+    expect((await book(users.clientA, hour, paris("2027-03-03", "15:40"))).status).toBe(201);
   });
 
   it("lead time 12 h and horizon: today + 45 days until local midnight", async () => {
