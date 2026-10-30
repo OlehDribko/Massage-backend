@@ -226,9 +226,9 @@ variable "vpc_link_az_ids" {
 }
 
 variable "api_throttling_rate_limit" {
-  description = "Steady-state request rate limit (requests/second) of the HTTP API $default route. Also caps the request-driven cost: 2 rps is at most 172,800 requests/day."
+  description = "Steady-state request rate limit (requests/second) of the HTTP API $default route. Also caps the request-driven cost: 1 rps is at most 86,400 requests/day."
   type        = number
-  default     = 2
+  default     = 1
 }
 
 variable "api_throttling_burst_limit" {
@@ -256,5 +256,57 @@ variable "firebase_project_id" {
   validation {
     condition     = can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]$", var.firebase_project_id)) && !startswith(var.firebase_project_id, "demo-")
     error_message = "firebase_project_id must be a real Firebase project ID (6-30 lowercase letters, digits, hyphens; not a demo- emulator project)."
+  }
+}
+
+# --- Booking notifications worker (notifications.tf) ---
+
+variable "booking_notifications_image" {
+  description = "booking-api image by digest that the notifications worker runs (<registry>/<ecr_namespace>/booking-api@sha256:...). Owned by Terraform: the deploy workflow does not update the worker."
+  type        = string
+
+  validation {
+    condition     = can(regex("^${var.aws_account_id}\\.dkr\\.ecr\\.${var.region}\\.amazonaws\\.com/${var.ecr_namespace}/booking-api@sha256:[0-9a-f]{64}$", var.booking_notifications_image))
+    error_message = "booking_notifications_image must be <account>.dkr.ecr.<region>.amazonaws.com/<ecr_namespace>/booking-api@sha256:<64 hex>."
+  }
+}
+
+variable "notification_studio_email" {
+  description = "Studio mailbox for booking notifications (NOTIFICATION_STUDIO_EMAIL). Must also be in notification_recipient_allowlist."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[^@\\s,]+@[^@\\s,]+\\.[^@\\s,]+$", var.notification_studio_email))
+    error_message = "notification_studio_email must be an email address."
+  }
+}
+
+variable "notification_recipient_allowlist" {
+  description = "The only recipients staging may email (NOTIFICATION_RECIPIENT_ALLOWLIST): approved test mailboxes. Kept out of Git (terraform.tfvars)."
+  type        = list(string)
+
+  validation {
+    condition     = length(var.notification_recipient_allowlist) > 0 && alltrue([for email in var.notification_recipient_allowlist : can(regex("^[^@\\s,]+@[^@\\s,]+\\.[^@\\s,]+$", email))])
+    error_message = "notification_recipient_allowlist must be a non-empty list of email addresses."
+  }
+}
+
+variable "email_from_name" {
+  description = "Sender name of booking notifications (EMAIL_FROM_NAME)."
+  type        = string
+
+  validation {
+    condition     = length(trimspace(var.email_from_name)) > 0
+    error_message = "email_from_name must not be empty."
+  }
+}
+
+variable "email_from_email" {
+  description = "Sender address (EMAIL_FROM_EMAIL); must be a verified sender or on an authenticated domain in Brevo."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[^@\\s,]+@[^@\\s,]+\\.[^@\\s,]+$", var.email_from_email))
+    error_message = "email_from_email must be an email address."
   }
 }

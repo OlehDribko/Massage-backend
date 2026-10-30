@@ -88,3 +88,18 @@ output "deploy_workflow_variables" {
     STAGING_API_BASE_URL           = aws_apigatewayv2_api.api.api_endpoint
   }
 }
+
+output "notifications_secret_parameter_names" {
+  description = "SSM SecureString parameters of the notifications worker, created outside Terraform."
+  value       = local.notifications_parameters
+}
+
+output "notifications_service" {
+  description = "ECS service, task family, log group and security group of the notifications worker."
+  value = {
+    service        = aws_ecs_service.notifications.name
+    task_family    = aws_ecs_task_definition.notifications.family
+    log_group      = aws_cloudwatch_log_group.notifications.name
+    security_group = aws_security_group.notifications.id
+  }
+}
