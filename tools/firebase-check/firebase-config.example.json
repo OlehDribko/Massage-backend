@@ -1,7 +1,0 @@
-{
-  "apiKey": "<Web API key from Project settings → General → Your apps>",
-  "authDomain": "massage-fr.firebaseapp.com",
-  "projectId": "massage-fr",
-  "appId": "<Web app ID>",
-  "consentTextVersion": "2026-10-28.fr.1"
-}

@@ -302,7 +302,7 @@ Firebase Web SDK **10.6.0 або новіший** (з увімкненим за�
 
 3. **Перехід гостя до акаунта** (той самий Firebase UID → той самий профіль, з іменем і телефоном):
    - Google: `linkWithPopup(auth.currentUser, new GoogleAuthProvider())`;
-   - email + пароль: `linkWithCredential(auth.currentUser, EmailAuthProvider.credential(email, password))`, **потім одразу** `signInWithEmailAndPassword(auth, email, password)` (той самий UID). Додавання пароля Firebase вважає зміною акаунта й відкликає попередні сесії; токен, повернений прив'язкою, зберігає час анонімного входу, тож backend відхиляє його як `SESSION_REVOKED` (так поводиться Auth Emulator; **поза емулятором не перевірено** — [сценарій](firebase-staging-checklist.md), крок 2a; повторний вхід коректний в обох випадках);
+   - email + пароль: `linkWithCredential(auth.currentUser, EmailAuthProvider.credential(email, password))`, **потім одразу** `signInWithEmailAndPassword(auth, email, password)` (той самий UID). Додавання пароля Firebase вважає зміною акаунта й відкликає попередні сесії; токен, повернений прив'язкою, зберігає час анонімного входу, тож backend відхиляє його як `SESSION_REVOKED` (так поводиться Auth Emulator; **поза емулятором не перевірено** — [сценарій](firebase-staging-checklist.md), частина A, рядок `info A2a`; повторний вхід коректний в обох випадках);
    - потім `POST /api/me/sync` (з чекбоксом розсилки, якщо це завершення реєстрації — крок 4).
 
    Загальне правило: на `401 SESSION_REVOKED` одразу після прив'язки або зміни пароля — повторний вхід (`signInWithEmailAndPassword` / `reauthenticateWithCredential`), а не вихід.
@@ -453,10 +453,10 @@ HTTP-маршруту для зміни ролі немає; профіль не
 
    | Перевірка | Хто і коли | Що доводить | Чого **не** доводить |
    |---|---|---|---|
-   | `GET /api/me` **без токена** → `401 AUTH_REQUIRED` з `WWW-Authenticate: Bearer` | Автоматично, кожен деплой: workflow `Staging deploy`, крок «Check authentication over HTTPS» (вхід `verify_auth`, за замовчуванням `true`; `false` — лише для відкату на образ без автентифікації) | Задеплоєно образ з auth-маршрутами, і вони вимагають токен. Разом із `REQUIRE_FIREBASE_AUTH=true` — що конфігурацію Firebase задано (інакше задача не стартує) | Що токени Firebase приймаються, що службовий ключ і роль IAM правильні, що профіль створюється і читається. Firebase цим запитом не викликається; health checks теж ніколи не звертаються до Firebase |
-   | Запит зі **справжнім Firebase ID token** staging-проєкту: `POST /api/me/sync`, потім `GET /api/me` → `200` з профілем | Вручну, після першого деплою з Firebase і після змін ключа/IAM: [сценарій ручної перевірки](firebase-staging-checklist.md), крок 1 | Підпис і `aud`/`iss` реального проєкту; доступ Admin SDK до Firebase (перевірка блокування й відкликання викликає `getUser` службовим акаунтом); створення профілю в БД і його читання | — |
+   | `GET /api/me` **без токена** → `401 AUTH_REQUIRED` з `WWW-Authenticate: Bearer` | Автоматично, кожен деплой: workflow `Staging deploy`, крок «Check authentication over HTTPS» (вхід `verify_auth`, за замовчуванням `true`; `false` — лише для відкату на образ без автентифікації) | Задеплоєно образ з auth-маршрутами, і вони вимагають токен. Разом із `REQUIRE_FIREBASE_AUTH=true` — що конфігурацію Firebase задано й вона синтаксично коректна (інакше процес не стартує: немає параметра SSM, не JSON, чужий `project_id`) | Що токени Firebase приймаються, що службовий ключ і роль IAM правильні, що профіль створюється і читається. Firebase цим запитом не викликається; health checks теж ніколи не звертаються до Firebase. Тому **відкликаний ключ або відсутня роль IAM не роблять задачу unhealthy і не викликають відкат ECS**: їх видно лише з авторизованого запиту (`503 AUTH_UNAVAILABLE`) |
+   | Запит зі **справжнім Firebase ID token** staging-проєкту: `POST /api/me/sync`, потім `GET /api/me` → `200` з профілем | Вручну, після першого деплою з Firebase і після змін ключа/IAM: [сценарій](firebase-staging-checklist.md), частина A (Firebase REST, `curl`, `jq`) | Підпис і `aud`/`iss` реального проєкту; доступ Admin SDK до Firebase (перевірка блокування й відкликання викликає `getUser` службовим акаунтом); створення профілю в БД і його читання | — |
 
-   Далі — решта [сценарію ручної перевірки](firebase-staging-checklist.md) (Google, email/пароль, гість → акаунт, відновлення пароля, маркетинг, права) і призначення першого адміністратора (розділ 9).
+   Частина A сценарію перевіряє також email/пароль, прив'язку гостя, профіль і відкликання сесій. **Реальний вхід Google, листи Firebase, маркетинг і права адміністратора ще не перевірено** — частина B, разом з інтеграцією frontend.
 7. Пауза staging (`desired_count=0`), як в `infra/staging-deploy.md`.
 
 ## 11. Що перевірено і де
@@ -476,11 +476,11 @@ HTTP-маршруту для зміни ролі немає; профіль не
 | Команда призначення ролі | — | так (усі відмови й `--apply`) | — |
 | Підписка: double opt-in, нейтральні відповіді, одноразові посилання, доказ згоди, обмеження БД | так | так | реальні листи Brevo не перевірено |
 | Чекбокс при реєстрації (email/пароль і Google), без чекбокса, повторні й паралельні `sync`, відписка й подальший `sync`, повторна підписка лише явною дією, помилка відправки | так | так (email/пароль, Google, паралельні) | — |
-| Відновлення: помилка доставки, прострочене й загублене посилання; явне повторне надсилання з лімітом і `retryAfterSeconds` | так | правила ліміту й заміни посилання в PostgreSQL | реальна доставка Brevo — [сценарій](firebase-staging-checklist.md), крок 6 |
+| Відновлення: помилка доставки, прострочене й загублене посилання; явне повторне надсилання з лімітом і `retryAfterSeconds` | так | правила ліміту й заміни посилання в PostgreSQL | реальна доставка Brevo — [сценарій](firebase-staging-checklist.md), частина B |
 | `emailVerified` не дає згоди; legacy-згоди не переносяться | так | так | — |
 | Публічні маршрути й health без токена, без викликів Firebase; `REQUIRE_FIREBASE_AUTH` | так | — | — |
 | Перевірка автентифікації в деплої (`check-auth.sh`, без токена) | тести скрипта | — | на staging — при наступному деплої |
-| Інтеграція зі справжнім Firebase (токен staging-проєкту, ключ, IAM) | — | — | лише вручну: [сценарій](firebase-staging-checklist.md) |
+| Інтеграція зі справжнім Firebase (токен staging-проєкту, ключ, IAM) | — | — | [сценарій](firebase-staging-checklist.md): частина A — Firebase REST у вікні запуску; Google — частина B, ще не перевірено |
 | Секрети й токени не потрапляють у відповіді й логи | так | так | — |
 
 Локально: `npm run emulator:auth -w @massage/booking` (firebase-tools 15.34.1 через `npx`, Java не потрібна), потім `FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099 npm run test:integration`. CI запускає емулятор у job `integration`.

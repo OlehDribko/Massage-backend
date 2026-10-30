@@ -32,5 +32,3 @@ crash.*.log
 firebase-debug.log
 firebase-debug.*.log
 
-# Local Firebase test client: web config of the environment being checked
-tools/firebase-check/firebase-config.local.json
