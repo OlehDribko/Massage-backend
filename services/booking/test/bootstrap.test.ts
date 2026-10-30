@@ -45,10 +45,16 @@ const appFor = (config: AppConfig) =>
   });
 
 describe("createApplication", () => {
-  it("has no /api routes without Firebase and marketing config", async () => {
+  it("has no account, booking, admin or marketing routes without Firebase and marketing config", async () => {
     const app = appFor(configFrom({ ENABLE_LEGACY_USER_ROUTES: "false" }));
 
-    for (const path of ["/api/me/sync", "/api/marketing/subscriptions", "/api/users/subscribe"]) {
+    for (const path of [
+      "/api/me/sync",
+      "/api/bookings",
+      "/api/admin/services",
+      "/api/marketing/subscriptions",
+      "/api/users/subscribe",
+    ]) {
       const response = await request(app).post(path).send({ email: "a@example.invalid" });
       expect(response.status).toBe(404);
     }
@@ -65,6 +71,19 @@ describe("createApplication", () => {
 
     const legacy = await request(app).post("/api/users").send({});
     expect(legacy.status).toBe(404);
+
+    // Bookings and administration require a token before anything else.
+    for (const [method, path] of [
+      ["get", "/api/bookings"],
+      ["post", "/api/bookings"],
+      ["get", "/api/admin/bookings?date=2027-03-02"],
+      ["post", "/api/admin/services"],
+      ["put", "/api/admin/schedule/weekly"],
+    ] satisfies ["get" | "post" | "put", string][]) {
+      const response = await request(app)[method](path).send({});
+      expect(response.status).toBe(401);
+      expect(response.body).toMatchObject({ code: "AUTH_REQUIRED" });
+    }
   });
 
   it("mounts /api/marketing with validation when enabled", async () => {

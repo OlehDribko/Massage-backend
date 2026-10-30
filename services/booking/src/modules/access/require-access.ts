@@ -17,7 +17,7 @@ export const requireActor = (req: Request): UserProfile => {
 };
 
 /**
- * Route guards for future business routes; mount after `authenticate`.
+ * Route guards for business routes; mount after `authenticate`.
  * Each guard syncs the profile from the verified token first, so decisions
  * use the current verification state, never client-supplied fields.
  */
@@ -26,6 +26,12 @@ export const createAccessGuards = (profiles: ProfileService) => {
     const actor = await profiles.sync(requireIdentity(req));
     actors.set(req, actor);
     return actor;
+  };
+
+  /** Any signed-in user (guests too): loads the profile for the handler. */
+  const requireProfile: RequestHandler = async (req, _res, next) => {
+    await loadActor(req);
+    next();
   };
 
   /** Booking for oneself: registered, verified, named client with a phone. */
@@ -52,5 +58,5 @@ export const createAccessGuards = (profiles: ProfileService) => {
     next();
   };
 
-  return { requireBookingClient, requireAdmin };
+  return { requireProfile, requireBookingClient, requireAdmin };
 };
