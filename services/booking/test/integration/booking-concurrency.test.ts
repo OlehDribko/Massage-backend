@@ -195,7 +195,10 @@ describe("database guard (independent of the application)", () => {
       await insert("2027-03-02T09:30:00Z", "cancelled", "raw-key-0003");
       // Exactly when the break ends: allowed (one break, not two).
       await insert("2027-03-02T10:15:00Z", "confirmed", "raw-key-0004");
-      // The break is exactly 15 minutes for every writer.
+      // A longer free gap is fine: 10:15 ends 11:15, next at 11:45 (30 min later).
+      await insert("2027-03-02T11:45:00Z", "confirmed", "raw-key-0005");
+      // Only a wrong stored value is refused: a booking's own blockedUntil must
+      // be its endsAt + 15 min (the minimum break it reserves), not any other value.
       await expect(
         client.query(`UPDATE "Booking" SET "blockedUntil" = "endsAt" + interval '30 minutes' WHERE "idempotencyKey" = 'raw-key-0001'`),
       ).rejects.toMatchObject({ code: "23514" });

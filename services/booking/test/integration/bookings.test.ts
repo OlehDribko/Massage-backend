@@ -293,6 +293,22 @@ describe("schedule and availability", () => {
     expect((await book(users.clientA, hour, paris("2027-03-03", "15:40"))).status).toBe(201);
   });
 
+  it("15 minutes is the minimum break: after a session ending 14:10, both 14:25 and later 14:40 can be booked", async () => {
+    const short = await createService({ name: "Massage 55", durationMinutes: 55, priceCents: 6000 });
+    const hour = await createService();
+    await setWeekly();
+    for (const date of ["2027-03-03", "2027-03-04"]) {
+      await request(stack.app).put(`/api/admin/schedule/exceptions/${date}`).set(asAdmin()).send({ intervals: [{ start: "09:00", end: "18:00" }] }).expect(200);
+      await book(users.clientA, short, paris(date, "13:15")).expect(201); // ends 14:10
+    }
+    // Exactly at the end of the minimum break.
+    expect((await book(users.clientB, hour, paris("2027-03-03", "14:25"))).status).toBe(201);
+    // With a longer free gap (30 min), chosen by the client.
+    const later = await book(users.clientB, hour, paris("2027-03-04", "14:40"));
+    expect(later.status).toBe(201);
+    expect(later.body).toMatchObject({ booking: { startsAt: paris("2027-03-04", "14:40"), endsAt: paris("2027-03-04", "15:40") } });
+  });
+
   it("lead time 12 h and horizon: today + 45 days until local midnight", async () => {
     const serviceId = await createService();
     await setWeekly();
