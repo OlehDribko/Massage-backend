@@ -28,7 +28,7 @@ Massage-backend/
       tsconfig.build.json   # збірка лише src → dist
 ```
 
-Зараз існує лише сервіс `booking`. Його інфраструктурна основа (конфігурація, health-check, логи, graceful shutdown) увімкнена завжди. Автентифікація — Firebase Authentication; профілі, ролі й права — у цьому сервісі (`/api/me`, коли задано `FIREBASE_PROJECT_ID`). Маркетингова підписка (`/api/marketing`) вмикається прапорцем `ENABLE_MARKETING_SUBSCRIPTION`. Старі маршрути `/api/users/*` (паролі, власні токени підтвердження й відновлення) видалено. Архітектура, контракт API, інструкція для frontend і налаштування Firebase — у [docs/auth-and-profiles.md](docs/auth-and-profiles.md). Каталог послуг, графік, доступні години й бронювання (`/api/services`, `/api/bookings`, `/api/admin`) — у [docs/booking.md](docs/booking.md).
+Зараз існує лише сервіс `booking`. Його інфраструктурна основа (конфігурація, health-check, логи, graceful shutdown) увімкнена завжди. Автентифікація — Firebase Authentication; профілі, ролі й права — у цьому сервісі (`/api/me`, коли задано `FIREBASE_PROJECT_ID`). Маркетингова підписка (`/api/marketing`) вмикається прапорцем `ENABLE_MARKETING_SUBSCRIPTION`. Старі маршрути `/api/users/*` (паролі, власні токени підтвердження й відновлення) видалено. Архітектура, контракт API, інструкція для frontend і налаштування Firebase — у [docs/auth-and-profiles.md](docs/auth-and-profiles.md). Каталог послуг, графік, доступні години й бронювання (`/api/services`, `/api/bookings`, `/api/admin`) — у [docs/booking.md](docs/booking.md). Листи про бронювання надсилає окремий процес `npm run notifications:worker -w @massage/booking` (вимкнений за замовчуванням) — [docs/notifications.md](docs/notifications.md).
 
 Правила типізації та lint — у [AGENTS.md](AGENTS.md).
 

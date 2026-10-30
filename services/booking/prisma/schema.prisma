@@ -212,8 +212,10 @@ model BookingTimeChange {
 }
 
 // Transactional outbox: events written in the same transaction as the
-// booking change, for a future Notifications component. Nothing reads or
-// delivers them yet (publishedAt stays null): no email is sent in this stage.
+// booking change (only by the bookings module, under the calendar lock, so
+// `position` follows commit order). The Notifications component reads them
+// and records its own progress in NotificationEvent / NotificationDelivery;
+// it never writes here.
 model OutboxEvent {
   id            String    @id @default(uuid()) @db.Uuid
   // Commit order of events (writers hold the calendar lock): consumers read by position.
@@ -226,8 +228,90 @@ model OutboxEvent {
   dedupeKey     String    @unique
   payload       Json
   occurredAt    DateTime  @db.Timestamptz(3)
+  // DEPRECATED, unused, always null. Kept so that API versions released
+  // before the Notifications component (their Prisma Client selects it) keep
+  // working during rollout and after a rollback. Delivery progress lives in
+  // NotificationEvent / NotificationDelivery. Drop in a later release, once no
+  // older version can run (docs/notifications.md, "Сумісність").
   publishedAt   DateTime? @db.Timestamptz(3)
+
+  notification NotificationEvent?
 
   @@index([publishedAt, position])
   @@index([aggregateId])
+}
+
+// ---------------------------------------------------------------------------
+// Notifications component (worker): its own tables only. See
+// docs/notifications.md.
+// ---------------------------------------------------------------------------
+
+enum NotificationEventStatus {
+  // Deliveries were recorded for this event (one per recipient).
+  planned
+  // The event could not be used (unknown type/version, invalid payload): no deliveries; see reasonCode.
+  invalid
+}
+
+// The worker's processing of one outbox event: exists once the event was
+// examined. It says nothing about whether emails were sent; that is per
+// delivery.
+model NotificationEvent {
+  eventId     String                  @id @db.Uuid
+  event       OutboxEvent             @relation(fields: [eventId], references: [id], onDelete: Restrict)
+  position    BigInt
+  status      NotificationEventStatus
+  reasonCode  String?
+  processedAt DateTime                @db.Timestamptz(3)
+
+  deliveries NotificationDelivery[]
+}
+
+enum NotificationRecipientRole {
+  client
+  studio
+}
+
+enum NotificationDeliveryStatus {
+  // Waiting for an attempt (first one or a retry at nextAttemptAt).
+  pending
+  // Leased by a worker (leaseOwner, leaseToken, leaseExpiresAt).
+  in_progress
+  // The provider accepted the message (not: delivered to the mailbox).
+  accepted
+  // Will not be sent: see resultCode (invalid recipient, rejected, attempts exhausted).
+  failed
+  // Deliberately not sent: see resultCode (e.g. recipient not allowed on staging).
+  skipped
+}
+
+// One email to one recipient for one event. Recipients are fixed when the
+// event is first planned. `id` is also the provider idempotency key.
+model NotificationDelivery {
+  id                String                     @id @default(uuid()) @db.Uuid
+  eventId           String                     @db.Uuid
+  event             NotificationEvent          @relation(fields: [eventId], references: [eventId], onDelete: Restrict)
+  eventPosition     BigInt
+  eventType         String
+  bookingId         String                     @db.Uuid
+  recipientRole     NotificationRecipientRole
+  // null when the event carries no address for this recipient (then failed, recipient_missing).
+  recipientEmail    String?
+  status            NotificationDeliveryStatus @default(pending)
+  attempts          Int                        @default(0)
+  nextAttemptAt     DateTime                   @db.Timestamptz(3)
+  leaseOwner        String?
+  leaseToken        String?                    @db.Uuid
+  leaseExpiresAt    DateTime?                  @db.Timestamptz(3)
+  lastErrorCode     String?
+  resultCode        String?
+  providerMessageId String?
+  acceptedAt        DateTime?                  @db.Timestamptz(3)
+  completedAt       DateTime?                  @db.Timestamptz(3)
+  createdAt         DateTime                   @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime                   @updatedAt @db.Timestamptz(3)
+
+  @@unique([eventId, recipientRole])
+  @@index([status, nextAttemptAt])
+  @@index([bookingId, recipientRole, eventPosition])
 }
