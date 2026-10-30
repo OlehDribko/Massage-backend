@@ -388,20 +388,28 @@ Brevo використовується лише для листів маркет
 ### Admin SDK в AWS (staging), безпечне підключення
 
 **Зараз (рекомендовано): JSON-ключ у SSM, як і рядки підключення до БД.**
-1. Покласти JSON-ключ у SSM так, щоб вміст не потрапив у термінал, історію чи Git:
+1. Покласти JSON-ключ у SSM так, щоб вміст не потрапив у термінал, історію чи Git; локальний файл видаляється лише після підтвердженого запису:
    ```bash
    export AWS_PROFILE=massage AWS_REGION=eu-west-3
-   KEY=~/Downloads/<завантажений-ключ>.json        # поза репозиторієм
-   # Перевірка без виводу вмісту: лише "ok" або помилка.
-   jq -e '.type == "service_account" and .project_id == "massage-fr" and (.private_key | startswith("-----BEGIN PRIVATE KEY-----"))' "$KEY" >/dev/null && echo ok
-   aws ssm put-parameter --name /massage-staging/booking/firebase-service-account \
-     --type SecureString --tier Standard --value "file://$KEY" --no-cli-pager --query Version
-   # Перевірка без розшифрування: тип, версія, дата.
-   aws ssm get-parameter --name /massage-staging/booking/firebase-service-account \
-     --query 'Parameter.{Type:Type,Version:Version,Modified:LastModifiedDate}' --no-cli-pager
-   rm "$KEY"; unset KEY
+   PARAM=/massage-staging/booking/firebase-service-account
+   KEY="$(ls -t ~/Downloads/massage-fr-*.json | head -1)"; chmod 600 "$KEY"
+   # Перевірка файлу без виводу вмісту.
+   jq -e '.type == "service_account" and .project_id == "massage-fr"
+          and .client_email == "booking-api-staging@massage-fr.iam.gserviceaccount.com"
+          and (.private_key | startswith("-----BEGIN PRIVATE KEY-----"))' "$KEY" >/dev/null && echo "file ok"
+   # Запис (без --overwrite: наявний параметр не перезапишеться).
+   aws ssm put-parameter --name "$PARAM" --type SecureString --tier Standard \
+     --value "file://$KEY" --query Version --output text --no-cli-pager
+   # Метадані без розшифрування.
+   aws ssm get-parameter --name "$PARAM" --query 'Parameter.{Type:Type,Version:Version,Modified:LastModifiedDate}' --no-cli-pager
+   # Звірка вмісту за SHA-256: значення йде лише в pipe, виводиться "match" або "MISMATCH".
+   L="$(shasum -a 256 < "$KEY" | cut -c1-64)"
+   R="$(aws ssm get-parameter --name "$PARAM" --with-decryption --query Parameter.Value --output text | perl -pe 'chomp if eof' | shasum -a 256 | cut -c1-64)"
+   [ "$L" = "$R" ] && echo match || echo MISMATCH
+   # Видалення файлу — лише після match.
+   [ "$L" = "$R" ] && rm "$KEY" && echo deleted; unset L R KEY
    ```
-   `put-parameter` без `--overwrite` не перезапише наявний параметр (для ротації — з `--overwrite`). `--with-decryption` не використовувати. Ключ ~2,4 KB — вміщується в Standard (4 KB).
+   Для ротації — `put-parameter` з `--overwrite`. Ключ ~2,4 KB — вміщується в Standard (4 KB).
 2. Task definition API: `environment` — `REQUIRE_FIREBASE_AUTH=true`, `FIREBASE_PROJECT_ID=<staging project>`, `FIREBASE_CREDENTIALS=service-account-json`; `secrets` — `FIREBASE_SERVICE_ACCOUNT_JSON` з ARN параметра.
 3. Execution role API: `ssm:GetParameters` і на цей параметр.
 4. Egress 443 у SG API вже дозволено (`api_https`).
