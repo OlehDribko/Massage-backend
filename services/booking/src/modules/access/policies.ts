@@ -56,7 +56,7 @@ const isVerifiedAdmin = (actor: Actor): boolean =>
 /** A client books for themselves only; admins do not book. */
 export const canBookForSelf = (actor: Actor): boolean => bookingReadiness(actor).ready;
 
-/** Services and schedule (future catalogue routes). */
+/** Catalogue, schedule and the admin booking view (/api/admin). */
 export const canManageCatalog = (actor: Actor): boolean => isVerifiedAdmin(actor);
 
 /** Admins receive notifications about appointments. */

@@ -2,7 +2,7 @@
   "name": "@massage/booking",
   "version": "1.0.0",
   "private": true,
-  "description": "Booking service: users, email verification, marketing subscription (current backend)",
+  "description": "Booking service: profiles, catalogue, schedule, availability and bookings; marketing subscription",
   "type": "module",
   "engines": {
     "node": "^24.0.0"
