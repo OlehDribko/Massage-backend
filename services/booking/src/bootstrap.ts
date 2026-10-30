@@ -17,14 +17,39 @@ import { createActionTokenService } from "./modules/email/tokens/action-token.se
 import { createMarketingRepository } from "./modules/marketing/marketing.repository.js";
 import { createMarketingRouter } from "./modules/marketing/marketing.routes.js";
 import { createMarketingService } from "./modules/marketing/marketing.service.js";
+import { createNotificationStatusReader } from "./notifications/status.js";
 import { createProfileRepository } from "./modules/profiles/profile.repository.js";
 import { createProfileRouter } from "./modules/profiles/profile.routes.js";
 import { createProfileService } from "./modules/profiles/profile.service.js";
 import { createPublicAvailabilityRouter } from "./modules/schedule/availability.routes.js";
 import { DEFAULT_BOOKING_RULES, type BookingRules } from "./modules/schedule/booking-rules.js";
-import { createCalendarTransaction } from "./modules/schedule/calendar-transaction.js";
+import { createCalendarTransaction, type CalendarTransaction } from "./modules/schedule/calendar-transaction.js";
 import { createAdminScheduleRouter } from "./modules/schedule/schedule.routes.js";
 import { createScheduleService } from "./modules/schedule/schedule.service.js";
+
+/**
+ * Booking notifications running in this process (server.ts creates the
+ * dispatcher). Absent: notifications are off; booking views then carry no
+ * notification status.
+ */
+export type NotificationsRuntime = {
+  /** Called after every booking write, committed or not; must not throw or block. */
+  wake: () => void;
+};
+
+/**
+ * Wraps the calendar transaction: `after` runs once the transaction has
+ * finished, successfully or not. After a failure it still runs, because the
+ * outcome of a failed COMMIT can be unknown and a pass is cheap.
+ */
+const afterEachWrite = (calendar: CalendarTransaction, after: () => void): CalendarTransaction =>
+  async (work) => {
+    try {
+      return await calendar(work);
+    } finally {
+      after();
+    }
+  };
 
 /** Replacements for external services (tests only). */
 export type ApplicationOverrides = {
@@ -49,12 +74,14 @@ export const createApplication = ({
   logger,
   database,
   isShuttingDown,
+  notifications,
   overrides = {},
 }: {
   config: AppConfig;
   logger: Logger;
   database: Database;
   isShuttingDown: () => boolean;
+  notifications?: NotificationsRuntime | undefined;
   overrides?: ApplicationOverrides;
 }): Express => {
   // (a) Promise.race in the probe bounds the HTTP response time;
@@ -113,8 +140,17 @@ export const createApplication = ({
       }),
     );
 
-    const bookings = createBookingService({ prisma: database.prisma, calendar, rules, now });
-    api.use("/bookings", authenticate, createClientBookingRouter({ bookings, guards, rules, now }));
+    // Booking writes wake the notification sender right after the
+    // transaction; the HTTP response does not wait for any email.
+    const bookings = createBookingService({
+      prisma: database.prisma,
+      calendar: notifications === undefined ? calendar : afterEachWrite(calendar, notifications.wake),
+      rules,
+      now,
+    });
+    const notificationStatus =
+      notifications === undefined ? undefined : createNotificationStatusReader({ prisma: database.prisma, now });
+    api.use("/bookings", authenticate, createClientBookingRouter({ bookings, guards, rules, now, notificationStatus }));
 
     // Administration lives in the owning modules; every route needs a
     // verified admin, checked on the server for each request.
@@ -128,7 +164,7 @@ export const createApplication = ({
         now,
       }),
     );
-    admin.use("/bookings", createAdminBookingRouter({ bookings, rules, now }));
+    admin.use("/bookings", createAdminBookingRouter({ bookings, rules, now, notificationStatus }));
     api.use("/admin", authenticate, guards.requireAdmin, admin);
   }
 

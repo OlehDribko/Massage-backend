@@ -1,3 +1,4 @@
+import type { AdminNotificationStatus, ClientNotificationStatus } from "../../notifications/status.js";
 import type { BookingRules } from "../schedule/booking-rules.js";
 import { cancellationAllowed, phaseOf, rescheduleAllowed, type BookingPhase } from "./booking.rules.js";
 import type { BookingWithClient } from "./booking.service.js";
@@ -9,7 +10,7 @@ export type BookingHistoryEntry =
   | { type: "rescheduled"; at: string; from: TimeRange; to: TimeRange }
   | { type: "cancelled"; at: string; by: "client" | "admin" };
 
-export type ClientBookingView = {
+type BookingViewBase = {
   id: string;
   status: "confirmed" | "cancelled";
   /** Derived from the server clock. */
@@ -28,11 +29,22 @@ export type ClientBookingView = {
   createdAt: string;
 };
 
-export type AdminBookingView = ClientBookingView & {
-  client: { profileId: string; name: string | null; email: string | null; phone: string | null };
+export type ClientBookingView = BookingViewBase & {
+  /**
+   * The client's own email about the latest change of this booking. Separate
+   * from `status`: a failed email never changes the booking. null when
+   * booking emails are off on this server.
+   */
+  notification: ClientNotificationStatus | null;
 };
 
-export const toClientBookingView = (booking: BookingWithClient, now: Date, rules: BookingRules): ClientBookingView => {
+export type AdminBookingView = BookingViewBase & {
+  client: { profileId: string; name: string | null; email: string | null; phone: string | null };
+  /** Client and studio results for every change of the booking, oldest first; empty when emails are off. */
+  notifications: AdminNotificationStatus[];
+};
+
+const toBaseView = (booking: BookingWithClient, now: Date, rules: BookingRules): BookingViewBase => {
   const active = booking.status === "confirmed";
   const history: BookingHistoryEntry[] = [
     { type: "created", at: booking.createdAt.toISOString() },
@@ -77,8 +89,20 @@ export const toClientBookingView = (booking: BookingWithClient, now: Date, rules
   };
 };
 
-export const toAdminBookingView = (booking: BookingWithClient, now: Date, rules: BookingRules): AdminBookingView => ({
-  ...toClientBookingView(booking, now, rules),
+export const toClientBookingView = (
+  booking: BookingWithClient,
+  now: Date,
+  rules: BookingRules,
+  notification: ClientNotificationStatus | null = null,
+): ClientBookingView => ({ ...toBaseView(booking, now, rules), notification });
+
+export const toAdminBookingView = (
+  booking: BookingWithClient,
+  now: Date,
+  rules: BookingRules,
+  notifications: AdminNotificationStatus[] = [],
+): AdminBookingView => ({
+  ...toBaseView(booking, now, rules),
   // The client's own reschedule rights are not the admin's actions.
   allowedActions: { reschedule: false, cancel: booking.status === "confirmed" && cancellationAllowed(booking.startsAt, now) },
   client: {
@@ -87,4 +111,5 @@ export const toAdminBookingView = (booking: BookingWithClient, now: Date, rules:
     email: booking.client.email,
     phone: booking.client.phoneE164,
   },
+  notifications,
 });

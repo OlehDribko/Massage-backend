@@ -1,62 +1,82 @@
 import { z } from "zod";
-import { parseDatabaseUrl } from "../shared/database/database-url.js";
 
 /**
- * Configuration of the notifications worker (its own entry point; the HTTP
- * API never starts it). Email settings are independent of the marketing flag.
- * Messages name variables and rules, never values.
+ * Configuration of booking notifications. They run inside the API process
+ * (dispatcher.ts), woken by booking writes; there is no polling loop. Email
+ * settings are independent of the marketing flag. Messages name variables
+ * and rules, never values.
  */
 export type WorkerTuning = {
-  pollIntervalMs: number;
+  /** Deliveries claimed per statement. */
   batchSize: number;
-  /** How long a claimed delivery belongs to one worker. */
+  /** Outbox events planned per statement (planning repeats until done). */
+  planBatchSize: number;
+  /** How long a claimed delivery belongs to one process. */
   leaseMs: number;
   /** Provider request timeout; well below the lease (see validation). */
   requestTimeoutMs: number;
+  /** Attempts per recipient, the first one included. */
   maxAttempts: number;
-  /** Exponential backoff: base and cap (before jitter and Retry-After). */
-  retryBaseMs: number;
-  retryCapMs: number;
+  /** Pause before retry n (index 0 = before the 2nd attempt); one entry per retry. */
+  retryDelaysMs: number[];
+  /** Up to this share is added at random, so simultaneous failures spread out. */
+  retryJitterRatio: number;
   /** Retry-After from the provider is honoured up to this limit. */
   retryAfterCapMs: number;
-  /** Pause of the whole worker after a provider configuration error. */
-  configurationPauseMs: number;
 };
 
 export const DEFAULT_TUNING: WorkerTuning = {
-  pollIntervalMs: 5_000,
   batchSize: 10,
+  planBatchSize: 50,
   leaseMs: 60_000,
   requestTimeoutMs: 20_000,
-  maxAttempts: 8,
-  retryBaseMs: 30_000,
-  retryCapMs: 30 * 60_000,
-  retryAfterCapMs: 6 * 60 * 60_000,
-  configurationPauseMs: 5 * 60_000,
+  maxAttempts: 3,
+  retryDelaysMs: [60_000, 5 * 60_000],
+  retryJitterRatio: 0.2,
+  retryAfterCapMs: 10 * 60_000,
 };
 
-/** The lease must outlive a full request (timeout) with a safety margin. */
-export const tuningErrors = (tuning: WorkerTuning): string[] =>
-  tuning.leaseMs >= 2 * tuning.requestTimeoutMs + 10_000
-    ? []
-    : ["lease must be at least 2 × request timeout + 10 s"];
+/**
+ * Brevo drops a repeat of an idempotency key only within 30 minutes of the
+ * first request (docs/notifications.md). All attempts of one email must fit
+ * in that window, so a repeat after a lost response is still recognised.
+ */
+export const PROVIDER_IDEMPOTENCY_WINDOW_MS = 30 * 60_000;
+
+/** Latest possible start of the last attempt, counted from the first. */
+export const lastAttemptWithinMs = (tuning: WorkerTuning): number =>
+  tuning.retryDelaysMs.reduce(
+    (total, delay) => total + tuning.requestTimeoutMs + Math.max(delay * (1 + tuning.retryJitterRatio), tuning.retryAfterCapMs),
+    0,
+  );
+
+export const tuningErrors = (tuning: WorkerTuning): string[] => {
+  const errors: string[] = [];
+  // The lease must outlive a full request (timeout) with a safety margin.
+  if (tuning.leaseMs < 2 * tuning.requestTimeoutMs + 10_000) {
+    errors.push("lease must be at least 2 × request timeout + 10 s");
+  }
+  if (tuning.retryDelaysMs.length !== tuning.maxAttempts - 1) {
+    errors.push("retryDelaysMs must have one entry per retry (maxAttempts − 1)");
+  }
+  if (lastAttemptWithinMs(tuning) >= PROVIDER_IDEMPOTENCY_WINDOW_MS) {
+    errors.push("all attempts must fit in the provider's idempotency window");
+  }
+  return errors;
+};
 
 export type DeploymentEnvironment = "production" | "staging" | "development";
 
 export type NotificationConfig =
-  | { enabled: false; logLevel: LogLevel }
+  | { enabled: false }
   | {
       enabled: true;
-      logLevel: LogLevel;
       environment: DeploymentEnvironment;
-      database: { url: string; sslMode: "verify-full" | "disable"; poolMax: number };
       studioEmail: string;
       /** Outside production: only these recipients get email; others are skipped visibly. */
       recipientAllowlist: ReadonlySet<string> | null;
       brevo: { apiKey: string; senderName: string; senderEmail: string };
     };
-
-type LogLevel = "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
 
 export type NotificationConfigResult = { ok: true; config: NotificationConfig } | { ok: false; errors: string[] };
 
@@ -71,23 +91,10 @@ const optional = (value: string | undefined): string | undefined => {
   return trimmed === "" ? undefined : trimmed;
 };
 
-const baseSchema = z.object({
-  ENABLE_BOOKING_NOTIFICATIONS: flagSchema.default(false),
-  LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
-});
-
 const enabledSchema = z.object({
   NOTIFICATIONS_ENVIRONMENT: z.enum(["production", "staging", "development"], {
     error: "must be production, staging or development",
   }),
-  DATABASE_URL: z.string().min(1, "is required"),
-  DATABASE_SSL_MODE: z.enum(["verify-full", "disable"], { error: "must be verify-full or disable" }).default("verify-full"),
-  DATABASE_POOL_MAX: z
-    .string()
-    .regex(/^\d{1,2}$/, "must be an integer between 1 and 10")
-    .transform(Number)
-    .pipe(z.number().int().min(1, "must be an integer between 1 and 10").max(10, "must be an integer between 1 and 10"))
-    .default(2),
   NOTIFICATION_STUDIO_EMAIL: emailSchema,
   NOTIFICATION_RECIPIENT_ALLOWLIST: z.string().optional(),
   BREVO_API_KEY: z.string().min(1, "is required"),
@@ -99,22 +106,16 @@ const formatIssues = (issues: z.ZodError["issues"]): string[] =>
   issues.map((issue) => `${issue.path.map(String).join(".")}: ${issue.message}`);
 
 export const loadNotificationConfig = (env: Record<string, string | undefined>): NotificationConfigResult => {
-  const base = baseSchema.safeParse({
-    ENABLE_BOOKING_NOTIFICATIONS: optional(env.ENABLE_BOOKING_NOTIFICATIONS),
-    LOG_LEVEL: optional(env.LOG_LEVEL),
-  });
-  if (!base.success) {
-    return { ok: false, errors: formatIssues(base.error.issues) };
+  const flag = flagSchema.default(false).safeParse(optional(env.ENABLE_BOOKING_NOTIFICATIONS));
+  if (!flag.success) {
+    return { ok: false, errors: formatIssues(flag.error.issues).map((issue) => `ENABLE_BOOKING_NOTIFICATIONS${issue}`) };
   }
-  if (!base.data.ENABLE_BOOKING_NOTIFICATIONS) {
-    return { ok: true, config: { enabled: false, logLevel: base.data.LOG_LEVEL } };
+  if (!flag.data) {
+    return { ok: true, config: { enabled: false } };
   }
 
   const parsed = enabledSchema.safeParse({
     NOTIFICATIONS_ENVIRONMENT: optional(env.NOTIFICATIONS_ENVIRONMENT),
-    DATABASE_URL: env.DATABASE_URL,
-    DATABASE_SSL_MODE: optional(env.DATABASE_SSL_MODE),
-    DATABASE_POOL_MAX: optional(env.DATABASE_POOL_MAX),
     NOTIFICATION_STUDIO_EMAIL: optional(env.NOTIFICATION_STUDIO_EMAIL),
     NOTIFICATION_RECIPIENT_ALLOWLIST: optional(env.NOTIFICATION_RECIPIENT_ALLOWLIST),
     BREVO_API_KEY: optional(env.BREVO_API_KEY),
@@ -125,11 +126,6 @@ export const loadNotificationConfig = (env: Record<string, string | undefined>):
     return { ok: false, errors: formatIssues(parsed.error.issues) };
   }
   const data = parsed.data;
-
-  const databaseUrl = parseDatabaseUrl(data.DATABASE_URL, data.DATABASE_SSL_MODE);
-  if (!databaseUrl.ok) {
-    return { ok: false, errors: [`DATABASE_URL: ${databaseUrl.error}`] };
-  }
 
   // Allowlist: required outside production (no email may go to real people
   // from staging or development), refused in production (never filter
@@ -161,9 +157,7 @@ export const loadNotificationConfig = (env: Record<string, string | undefined>):
     ok: true,
     config: {
       enabled: true,
-      logLevel: base.data.LOG_LEVEL,
       environment: data.NOTIFICATIONS_ENVIRONMENT,
-      database: { url: data.DATABASE_URL, sslMode: data.DATABASE_SSL_MODE, poolMax: data.DATABASE_POOL_MAX },
       studioEmail: data.NOTIFICATION_STUDIO_EMAIL,
       recipientAllowlist: allowlist,
       brevo: { apiKey: data.BREVO_API_KEY, senderName: data.EMAIL_FROM_NAME, senderEmail: data.EMAIL_FROM_EMAIL },

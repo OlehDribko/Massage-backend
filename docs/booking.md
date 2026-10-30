@@ -2,7 +2,7 @@
 
 Етап Booking API: каталог послуг → робочий графік → доступні години → створення, перенесення й скасування бронювання. Один масажист, одна студія, часовий пояс **Europe/Paris**, валюта **EUR**, оплата лише на місці.
 
-**Стан:** реалізовано й перевірено автоматичними тестами з PostgreSQL. Міграцію `20261030120000_catalog_schedule_bookings` ще не застосовано ні на Neon, ні на staging: це окремий погоджений крок деплою. Листи про записи надсилає окремий worker ([docs/notifications.md](notifications.md)), який ще не розгорнуто.
+**Стан:** реалізовано й перевірено автоматичними тестами з PostgreSQL. Міграцію `20261030120000_catalog_schedule_bookings` ще не застосовано ні на Neon, ні на staging: це окремий погоджений крок деплою. Листи про записи надсилає модуль Notifications у процесі API ([docs/notifications.md](notifications.md)); на staging ще не ввімкнено.
 
 ## 1. Архітектура
 
@@ -125,10 +125,13 @@ Content-Type: application/json
   "payment": "on_site", "cancellation": null,
   "allowedActions": { "reschedule": true, "cancel": true },
   "history": [ { "type": "created", "at": "2027-03-01T06:00:00.000Z" } ],
-  "createdAt": "2027-03-01T06:00:00.000Z"
+  "createdAt": "2027-03-01T06:00:00.000Z",
+  "notification": { "event": "created", "status": "pending", "reason": null }
 } }
 ```
-Ціну, тривалість і кінець визначає сервер; поля `priceCents`, `endsAt` тощо в запиті відхиляються. Запис підтверджується одразу. Відповідь не обіцяє жодного листа.
+Ціну, тривалість і кінець визначає сервер; поля `priceCents`, `endsAt` тощо в запиті відхиляються. Запис підтверджується одразу. Відповідь не чекає листа й не обіцяє його.
+
+`notification` — стан **власного** листа клієнта про останню зміну запису, окремо від `status` бронювання: `pending`, `sending`, `accepted` (прийнято провайдером, не «доставлено»), `failed`, `skipped`, `interrupted` і безпечна причина. `null` — листи на сервері вимкнено. Значення й тексти для інтерфейсу — [docs/notifications.md](notifications.md), розділ 11.
 
 - **`GET /api/bookings`** → `200 { "bookings": [ … ] }`: лише власні записи, зокрема скасовані й минулі.
 - **`GET /api/bookings/:bookingId`** → `200 { "booking": … }` з повною історією. Чужий запис → `404 BOOKING_NOT_FOUND`.
@@ -150,8 +153,8 @@ Content-Type: application/json
 | `GET /api/admin/schedule/exceptions?from=&to=` | `200 { "timeZone", "exceptions" }` |
 | `PUT /api/admin/schedule/exceptions/2027-03-08` `{ "closed": true }` або `{ "intervals": [ { "start": "10:00", "end": "14:00" } ] }` | `200 { "date", "closed", "intervals" }` або `409 SCHEDULE_CONFLICT` |
 | `DELETE /api/admin/schedule/exceptions/2027-03-08` | `200 { "date", "removed": true }`: повернення до тижневого правила (теж із перевіркою конфліктів) |
-| `GET /api/admin/bookings?date=2027-03-02` | `200 { "date", "timeZone", "bookings": [ { …запис…, "client": { "profileId", "name", "email", "phone" } } ] }`: записи, що починаються в цю місцеву дату, усі статуси |
-| `GET /api/admin/bookings/:id` | `200 { "booking" }` з даними клієнта й історією |
+| `GET /api/admin/bookings?date=2027-03-02` | `200 { "date", "timeZone", "bookings": [ { …запис…, "client": { "profileId", "name", "email", "phone" }, "notifications": [ … ] } ] }`: записи, що починаються в цю місцеву дату, усі статуси |
+| `GET /api/admin/bookings/:id` | `200 { "booking" }` з даними клієнта, історією й `notifications` — результати листів клієнту й студії для кожної зміни запису ([docs/notifications.md](notifications.md), розділ 11); `[]`, коли листи вимкнено |
 | `POST /api/admin/bookings/:id/cancel` `{ "reason"?: "…" }` | `200 { "booking", "changed" }` |
 
 Приклад конфлікту графіка:
@@ -195,13 +198,13 @@ Content-Type: application/json
 | `payload` | `bookingId`, `status`, `timeZone`, `startsAt`, `endsAt`, `service {id, name, durationMinutes, priceCents, currency}`, `client {profileId, name, email, phone}`, `actor {profileId, role}`, `previous {startsAt, endsAt}` (перенесення), `cancellation {by, at, reason}` (скасування) — стан на момент зміни |
 | `occurredAt` | Час зміни |
 
-Отримувачі листа: клієнт (email з payload) і адміністратор(и). Адміністраторів майбутній споживач визначає сам за профілями з роллю `admin`.
+Одержувачі листа: клієнт (email з payload) і студія (`NOTIFICATION_STUDIO_EMAIL`).
 
-> **Доставка листів** — окремий компонент Notifications (worker), див. [docs/notifications.md](notifications.md). Він лише читає ці події й веде облік у власних таблицях. Поле `publishedAt` не використовується й тимчасово лишається для сумісності зі старшими версіями API ([docs/notifications.md](notifications.md), розділ 11). API ніде не повідомляє, що лист надіслано.
+> **Доставка листів** — модуль Notifications, який виконується в процесі API й прокидається після запису бронювання, див. [docs/notifications.md](notifications.md). Він лише читає ці події й веде облік у власних таблицях. Поле `publishedAt` не використовується й тимчасово лишається для сумісності зі старшими версіями API ([docs/notifications.md](notifications.md), розділ 12). API не каже «доставлено»: лише стан, прийнятий провайдером, або помилку (поле `notification` / `notifications`).
 
 ## 8. Відкладено
 
-- **Розгортання worker повідомлень** (реалізовано, [docs/notifications.md](notifications.md)) — окреме погоджене рішення.
+- **Увімкнення листів на staging** (реалізовано, [docs/notifications.md](notifications.md)) — окреме погоджене рішення.
 - **Галерея послуг.** Провайдер (кандидат — ImageKit), захищене завантаження й підписування запитів ще не узгоджені. Тому немає ImageKit, S3, Media-сервісу, завантаження файлів і довільних URL зображень: поле на кшталт `imageUrl` у запиті відхиляється.
 - **Налаштування правил часу через API.** Значення змінюються в `booking-rules.ts` і деплоєм.
 - **Адміністративні дії над розпочатими й завершеними сеансами** (зміна історії, «не з'явився» тощо), CRM, експорт, аналітика, редагування клієнтів.

@@ -18,8 +18,6 @@
     "test:smoke": "vitest run --config vitest.smoke.config.ts",
     "prisma": "DOTENV_CONFIG_PATH=${DOTENV_CONFIG_PATH:-../../.env} prisma",
     "migrate:deploy": "tsx --env-file-if-exists=${DOTENV_CONFIG_PATH:-../../.env} src/migrate/run-migrations.ts",
-    "notifications:worker": "node dist/notifications/main.js",
-    "notifications:dev": "tsx --env-file-if-exists=${DOTENV_CONFIG_PATH:-../../.env} src/notifications/main.ts",
     "emulator:auth": "npx --yes firebase-tools@15.34.1 emulators:start --only auth --project demo-massage-it --config test/integration/firebase.json"
   },
   "dependencies": {
