@@ -126,7 +126,7 @@ export const createUsers = async (stack: BookingStack) => {
 export const resetCalendar = async (db: PostgresContainer): Promise<void> => {
   await db.query(
     "admin",
-    `TRUNCATE "OutboxEvent", "BookingTimeChange", "Booking", "Service", "ScheduleExceptionInterval", "ScheduleException", "WeeklyScheduleInterval"`,
+    `TRUNCATE "NotificationDelivery", "NotificationEvent", "OutboxEvent", "BookingTimeChange", "Booking", "Service", "ScheduleExceptionInterval", "ScheduleException", "WeeklyScheduleInterval"`,
   );
 };
 

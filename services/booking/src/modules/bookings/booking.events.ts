@@ -2,11 +2,12 @@ import type { Booking, UserProfile } from "../../generated/prisma/client.js";
 import type { Tx } from "../schedule/calendar-transaction.js";
 
 /**
- * Transactional outbox for a future Notifications component (emails to the
- * client and the admin). Events are written in the same transaction as the
- * booking change, so an event exists if and only if the change committed.
- * Nothing delivers them in this stage: publishedAt stays null and no email
- * is sent.
+ * Transactional outbox for the Notifications component (emails to the
+ * client and the studio, src/notifications). Events are written in the same
+ * transaction as the booking change, so an event exists if and only if the
+ * change committed. Only this module writes them, always inside the calendar
+ * transaction, so `position` follows commit order. Delivery progress lives in
+ * the Notifications tables, not here.
  *
  * Contract (schemaVersion 1):
  * - `id`: stable event id (UUID), for deduplication by consumers;

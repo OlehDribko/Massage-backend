@@ -589,7 +589,7 @@ describe("outbox", () => {
     await reschedule(users.clientA, id, paris("2027-03-02", "11:00")).expect(200);
     await request(stack.app).post(`/api/admin/bookings/${id}/cancel`).set(asAdmin()).send({ reason: "Illness" }).expect(200);
 
-    const result = await stack.db.query("admin", `SELECT id, type, "schemaVersion", "aggregateId", "dedupeKey", payload, "publishedAt" FROM "OutboxEvent" ORDER BY position`);
+    const result = await stack.db.query("admin", `SELECT id, type, "schemaVersion", "aggregateId", "dedupeKey", payload FROM "OutboxEvent" ORDER BY position`);
     const rows: unknown = result.rows;
     const parsed = z
       .array(
@@ -600,7 +600,6 @@ describe("outbox", () => {
           aggregateId: z.literal(id),
           dedupeKey: z.string(),
           payload: z.record(z.string(), z.unknown()),
-          publishedAt: z.null(),
         }),
       )
       .parse(rows);
