@@ -302,7 +302,7 @@ Firebase Web SDK **10.6.0 або новіший** (з увімкненим за�
 
 3. **Перехід гостя до акаунта** (той самий Firebase UID → той самий профіль, з іменем і телефоном):
    - Google: `linkWithPopup(auth.currentUser, new GoogleAuthProvider())`;
-   - email + пароль: `linkWithCredential(auth.currentUser, EmailAuthProvider.credential(email, password))`, **потім одразу** `signInWithEmailAndPassword(auth, email, password)` (той самий UID). Додавання пароля Firebase вважає зміною акаунта й відкликає попередні сесії; токен, повернений прив'язкою, зберігає час анонімного входу, тож backend відхиляє його як `SESSION_REVOKED` (так поводиться Auth Emulator; **поза емулятором не перевірено** — [сценарій](firebase-staging-checklist.md), крок 2a; повторний вхід коректний в обох випадках);
+   - email + пароль: `linkWithCredential(auth.currentUser, EmailAuthProvider.credential(email, password))`, **потім одразу** `signInWithEmailAndPassword(auth, email, password)` (той самий UID). Додавання пароля Firebase вважає зміною акаунта й відкликає попередні сесії; токен, повернений прив'язкою, зберігає час анонімного входу, тож backend відхиляє його як `SESSION_REVOKED` (так поводиться Auth Emulator; **поза емулятором не перевірено** — [сценарій](firebase-staging-checklist.md), частина A, рядок `info A2a`; повторний вхід коректний в обох випадках);
    - потім `POST /api/me/sync` (з чекбоксом розсилки, якщо це завершення реєстрації — крок 4).
 
    Загальне правило: на `401 SESSION_REVOKED` одразу після прив'язки або зміни пароля — повторний вхід (`signInWithEmailAndPassword` / `reauthenticateWithCredential`), а не вихід.
@@ -354,7 +354,7 @@ Brevo використовується лише для листів маркет
 
 ## 7. Firebase-проєкти: staging і production
 
-Два **окремі** Firebase-проєкти, наприклад `massage-staging` і `massage-production`. Окремі проєкти — окремі користувачі, ключі, налаштування. Токен staging відхиляється production-бекендом і навпаки (`aud`/`iss`), а службовий ключ іншого проєкту не пройде перевірку конфігурації (`project_id` ≠ `FIREBASE_PROJECT_ID`).
+Два **окремі** Firebase-проєкти. Staging — `massage-fr` (створено; Google, Email/Password і Anonymous увімкнено, вхід за посиланням з email вимкнено). Production — окремий проєкт, ще не створено. Окремі проєкти — окремі користувачі, ключі, налаштування. Токен staging відхиляється production-бекендом і навпаки (`aud`/`iss`), а службовий ключ іншого проєкту не пройде перевірку конфігурації (`project_id` ≠ `FIREBASE_PROJECT_ID`).
 
 Кроки для кожного проєкту (робить власник у консолі Firebase):
 
@@ -388,13 +388,34 @@ Brevo використовується лише для листів маркет
 ### Admin SDK в AWS (staging), безпечне підключення
 
 **Зараз (рекомендовано): JSON-ключ у SSM, як і рядки підключення до БД.**
-1. `aws ssm put-parameter --type SecureString --name /massage-staging/booking/firebase-service-account --value file://<тимчасовий файл>` (той самий безпечний спосіб, що для `database-url`; файл одразу видалити).
+1. Покласти JSON-ключ у SSM так, щоб вміст не потрапив у термінал, історію чи Git; локальний файл видаляється лише після підтвердженого запису:
+   ```bash
+   export AWS_PROFILE=massage AWS_REGION=eu-west-3
+   PARAM=/massage-staging/booking/firebase-service-account
+   KEY="$(ls -t ~/Downloads/massage-fr-*.json | head -1)"; chmod 600 "$KEY"
+   # Перевірка файлу без виводу вмісту.
+   jq -e '.type == "service_account" and .project_id == "massage-fr"
+          and .client_email == "booking-api-staging@massage-fr.iam.gserviceaccount.com"
+          and (.private_key | startswith("-----BEGIN PRIVATE KEY-----"))' "$KEY" >/dev/null && echo "file ok"
+   # Запис (без --overwrite: наявний параметр не перезапишеться).
+   aws ssm put-parameter --name "$PARAM" --type SecureString --tier Standard \
+     --value "file://$KEY" --query Version --output text --no-cli-pager
+   # Метадані без розшифрування.
+   aws ssm get-parameter --name "$PARAM" --query 'Parameter.{Type:Type,Version:Version,Modified:LastModifiedDate}' --no-cli-pager
+   # Звірка вмісту за SHA-256: значення йде лише в pipe, виводиться "match" або "MISMATCH".
+   L="$(shasum -a 256 < "$KEY" | cut -c1-64)"
+   R="$(aws ssm get-parameter --name "$PARAM" --with-decryption --query Parameter.Value --output text | perl -pe 'chomp if eof' | shasum -a 256 | cut -c1-64)"
+   [ "$L" = "$R" ] && echo match || echo MISMATCH
+   # Видалення файлу — лише після match.
+   [ "$L" = "$R" ] && rm "$KEY" && echo deleted; unset L R KEY
+   ```
+   Для ротації — `put-parameter` з `--overwrite`. Ключ ~2,4 KB — вміщується в Standard (4 KB).
 2. Task definition API: `environment` — `REQUIRE_FIREBASE_AUTH=true`, `FIREBASE_PROJECT_ID=<staging project>`, `FIREBASE_CREDENTIALS=service-account-json`; `secrets` — `FIREBASE_SERVICE_ACCOUNT_JSON` з ARN параметра.
 3. Execution role API: `ssm:GetParameters` і на цей параметр.
 4. Egress 443 у SG API вже дозволено (`api_https`).
 5. Ротація: новий ключ → `put-parameter --overwrite` → новий деплой → видалити старий ключ у Google Cloud.
 
-Ці зміни Terraform (`infra/environments/staging/ecs.tf`, `ecs_iam.tf`) **ще не внесено й не застосовано** — це окремий крок перед деплоєм цієї версії з увімкненою автентифікацією. Без них нова версія стартує, але `/api/me` не буде (і `/health/*` працюватиме як зараз).
+Ці зміни внесено в Terraform staging (`infra/environments/staging/ecs.tf`, `ecs_iam.tf`, змінна `firebase_project_id`, за замовчуванням `massage-fr`), але **ще не застосовано**. Порядок: спершу SSM-параметр, потім `apply`. Інакше наступна задача API не стартує: ECS не знайде секрет. Ключ отримує лише execution role API; задача міграції його не бачить.
 
 **Пізніше (без довгоживучого ключа): Workload Identity Federation AWS → Google Cloud** з `FIREBASE_CREDENTIALS=application-default` і конфігурацією `external_account` у `GOOGLE_APPLICATION_CREDENTIALS`. Для ECS Fargate облікові дані задачі надходять через container credentials endpoint, а не IMDS; підтримку цього шляху в google-auth-library треба перевірити окремо. Не перевірено в цьому етапі.
 
@@ -432,10 +453,10 @@ HTTP-маршруту для зміни ролі немає; профіль не
 
    | Перевірка | Хто і коли | Що доводить | Чого **не** доводить |
    |---|---|---|---|
-   | `GET /api/me` **без токена** → `401 AUTH_REQUIRED` з `WWW-Authenticate: Bearer` | Автоматично, кожен деплой: workflow `Staging deploy`, крок «Check authentication over HTTPS» (вхід `verify_auth`, за замовчуванням `true`; `false` — лише для відкату на образ без автентифікації) | Задеплоєно образ з auth-маршрутами, і вони вимагають токен. Разом із `REQUIRE_FIREBASE_AUTH=true` — що конфігурацію Firebase задано (інакше задача не стартує) | Що токени Firebase приймаються, що службовий ключ і роль IAM правильні, що профіль створюється і читається. Firebase цим запитом не викликається; health checks теж ніколи не звертаються до Firebase |
-   | Запит зі **справжнім Firebase ID token** staging-проєкту: `POST /api/me/sync`, потім `GET /api/me` → `200` з профілем | Вручну, після першого деплою з Firebase і після змін ключа/IAM: [сценарій ручної перевірки](firebase-staging-checklist.md), крок 1 | Підпис і `aud`/`iss` реального проєкту; доступ Admin SDK до Firebase (перевірка блокування й відкликання викликає `getUser` службовим акаунтом); створення профілю в БД і його читання | — |
+   | `GET /api/me` **без токена** → `401 AUTH_REQUIRED` з `WWW-Authenticate: Bearer` | Автоматично, кожен деплой: workflow `Staging deploy`, крок «Check authentication over HTTPS» (вхід `verify_auth`, за замовчуванням `true`; `false` — лише для відкату на образ без автентифікації) | Задеплоєно образ з auth-маршрутами, і вони вимагають токен. Разом із `REQUIRE_FIREBASE_AUTH=true` — що конфігурацію Firebase задано й вона синтаксично коректна (інакше процес не стартує: немає параметра SSM, не JSON, чужий `project_id`) | Що токени Firebase приймаються, що службовий ключ і роль IAM правильні, що профіль створюється і читається. Firebase цим запитом не викликається; health checks теж ніколи не звертаються до Firebase. Тому **відкликаний ключ або відсутня роль IAM не роблять задачу unhealthy і не викликають відкат ECS**: їх видно лише з авторизованого запиту (`503 AUTH_UNAVAILABLE`) |
+   | Запит зі **справжнім Firebase ID token** staging-проєкту: `POST /api/me/sync`, потім `GET /api/me` → `200` з профілем | Вручну, після першого деплою з Firebase і після змін ключа/IAM: [сценарій](firebase-staging-checklist.md), частина A (Firebase REST, `curl`, `jq`) | Підпис і `aud`/`iss` реального проєкту; доступ Admin SDK до Firebase (перевірка блокування й відкликання викликає `getUser` службовим акаунтом); створення профілю в БД і його читання | — |
 
-   Далі — решта [сценарію ручної перевірки](firebase-staging-checklist.md) (Google, email/пароль, гість → акаунт, відновлення пароля, маркетинг, права) і призначення першого адміністратора (розділ 9).
+   Частина A сценарію перевіряє також email/пароль, прив'язку гостя, профіль і відкликання сесій. **Реальний вхід Google, листи Firebase, маркетинг і права адміністратора ще не перевірено** — частина B, разом з інтеграцією frontend.
 7. Пауза staging (`desired_count=0`), як в `infra/staging-deploy.md`.
 
 ## 11. Що перевірено і де
@@ -455,11 +476,11 @@ HTTP-маршруту для зміни ролі немає; профіль не
 | Команда призначення ролі | — | так (усі відмови й `--apply`) | — |
 | Підписка: double opt-in, нейтральні відповіді, одноразові посилання, доказ згоди, обмеження БД | так | так | реальні листи Brevo не перевірено |
 | Чекбокс при реєстрації (email/пароль і Google), без чекбокса, повторні й паралельні `sync`, відписка й подальший `sync`, повторна підписка лише явною дією, помилка відправки | так | так (email/пароль, Google, паралельні) | — |
-| Відновлення: помилка доставки, прострочене й загублене посилання; явне повторне надсилання з лімітом і `retryAfterSeconds` | так | правила ліміту й заміни посилання в PostgreSQL | реальна доставка Brevo — [сценарій](firebase-staging-checklist.md), крок 6 |
+| Відновлення: помилка доставки, прострочене й загублене посилання; явне повторне надсилання з лімітом і `retryAfterSeconds` | так | правила ліміту й заміни посилання в PostgreSQL | реальна доставка Brevo — [сценарій](firebase-staging-checklist.md), частина B |
 | `emailVerified` не дає згоди; legacy-згоди не переносяться | так | так | — |
 | Публічні маршрути й health без токена, без викликів Firebase; `REQUIRE_FIREBASE_AUTH` | так | — | — |
 | Перевірка автентифікації в деплої (`check-auth.sh`, без токена) | тести скрипта | — | на staging — при наступному деплої |
-| Інтеграція зі справжнім Firebase (токен staging-проєкту, ключ, IAM) | — | — | лише вручну: [сценарій](firebase-staging-checklist.md) |
+| Інтеграція зі справжнім Firebase (токен staging-проєкту, ключ, IAM) | — | — | [сценарій](firebase-staging-checklist.md): частина A — Firebase REST у вікні запуску; Google — частина B, ще не перевірено |
 | Секрети й токени не потрапляють у відповіді й логи | так | так | — |
 
 Локально: `npm run emulator:auth -w @massage/booking` (firebase-tools 15.34.1 через `npx`, Java не потрібна), потім `FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099 npm run test:integration`. CI запускає емулятор у job `integration`.

@@ -247,3 +247,14 @@ variable "github_deploy_environment" {
     error_message = "github_deploy_environment must be 1-64 characters [A-Za-z0-9_-]."
   }
 }
+
+variable "firebase_project_id" {
+  description = "Firebase project of this environment (staging only; production uses its own project). Its ID tokens are accepted by the API; the service account key in SSM must belong to it."
+  type        = string
+  default     = "massage-fr"
+
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]$", var.firebase_project_id)) && !startswith(var.firebase_project_id, "demo-")
+    error_message = "firebase_project_id must be a real Firebase project ID (6-30 lowercase letters, digits, hyphens; not a demo- emulator project)."
+  }
+}

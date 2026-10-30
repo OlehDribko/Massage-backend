@@ -1,72 +1,163 @@
-# Ручна перевірка реального Firebase (staging)
+# Перевірка реального Firebase (staging)
 
-Що перевіряє: те, чого не можуть перевірити ні модульні тести, ні Auth Emulator. Це підписи Google, справжній вхід Google, листи Firebase і Brevo, службовий ключ та IAM. Перевірка виконується вручну після першого деплою з Firebase і після кожної зміни ключа, IAM або налаштувань Firebase. Лише staging-проєкт; production не чіпати.
+Модульні тести й Auth Emulator не перевіряють трьох речей: справжній підпис токенів проєкту `massage-fr`, службовий ключ із SSM і права IAM. Їх перевіряють запити зі справжнім ID token. Лише staging; production не чіпати.
 
-## Підготовка
+Перевірка ділиться на дві частини:
+- **Частина A** — зараз, у вікні короткого запуску (`infra/staging-deploy.md`, «Короткий запуск з Firebase-автентифікацією»). Тільки Firebase REST, `curl` і `jq`, без окремих застосунків.
+- **Частина B** — пізніше, разом з інтеграцією frontend.
 
-- Задеплоєно staging з `REQUIRE_FIREBASE_AUTH=true`. Крок деплою «Check authentication over HTTPS» зелений, тобто `GET /api/me` без токена повертає `401`. Це **лише** доказ наявності auth-маршруту, а не інтеграції.
-- Web-клієнт staging (frontend або мінімальна тестова сторінка) з конфігурацією staging-проєкту.
-- Тестові дані:
-  - дві тестові поштові скриньки (A, B);
-  - тестовий Google-акаунт;
-  - свіже вікно браузера в приватному режимі для кожного сценарію.
-- Маркетинг (крок 6) потребує `ENABLE_MARKETING_SUBSCRIPTION=true` і Brevo на staging. Без них очікується `outcome: "unavailable"`.
+## Частина A: Firebase REST (зараз)
 
-### Як надсилати запити з токеном
+Що перевіряється: гість, email/пароль (зокрема прив'язка гостя), профіль, відкликання сесій, відмова для недійсного токена.
 
-Токен ніде не записується: ні в чат, ні в issue, ні в історію shell.
+### Правила для секретів
+- Пароль тестового акаунта генерується (`openssl rand`) і живе лише у змінній скрипта. Ніхто його не вводить і не бачить.
+- ID tokens і пароль передаються в `curl` лише через конфігурацію на stdin (`curl -K -`, рядки формує вбудований `printf` оболонки). Тому вони не потрапляють ні в аргументи процесів (`ps`), ні в історію команд. Скрипт не вмикає `set -x`.
+- Скрипт виводить лише кроки, HTTP-статуси, коди помилок і несекретні поля профілю. Відповіді Firebase REST, що містять `idToken`/`refreshToken`, не виводяться.
+- Web API key (`Project settings → General → Web API key`) не є секретом: він вбудовується в кожен frontend. Його кладуть у файл `~/.config/massage/firebase-staging-web-api-key` (права `600`, поза репозиторієм), щоб не передавати в чаті й аргументах.
+- Тестовий акаунт: `fbcheck-<випадково>@example.com` (зарезервований домен, листи не надсилаються). Наприкінці акаунт видаляється у Firebase, навіть якщо перевірка впала (`trap`). Рядок `UserProfile` у staging-БД лишається як тестові дані.
+
+### Скрипт
+
+Зберегти як файл поза репозиторієм. Запуск: `API=<STAGING_API_BASE_URL> bash <файл>`. Для прогону на Auth Emulator додатково задати `IDP_BASE=http://127.0.0.1:9099/identitytoolkit.googleapis.com/v1`.
+
+Код виходу: `0` — усі перевірки пройшли; інакше перший рядок `FAIL:` пояснює причину. Будь-який `FAIL` зупиняє перевірку, після чого staging повертається на паузу.
 
 ```bash
-API=https://<staging-api>          # STAGING_API_BASE_URL
-read -rs TOKEN                     # вставити ID token, отриманий у браузері: await auth.currentUser.getIdToken()
-curl -s -X POST "$API/api/me/sync" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{}'
-curl -s "$API/api/me" -H "Authorization: Bearer $TOKEN"
-unset TOKEN
+#!/usr/bin/env bash
+# Real Firebase check (part A). Prints steps, statuses and non-secret fields only.
+set -euo pipefail
+set +x
+umask 077
+
+API="${API:?set API to the staging base URL}"
+IDP="${IDP_BASE:-https://identitytoolkit.googleapis.com/v1}"
+KEY_FILE="${KEY_FILE:-$HOME/.config/massage/firebase-staging-web-api-key}"
+WEB_KEY="$(tr -d '[:space:]' < "$KEY_FILE")"
+EMAIL="fbcheck-$(openssl rand -hex 4)@example.com"
+PASS="$(openssl rand -hex 16)"
+TOKEN=""
+STATUS=""
+BODY=""
+
+fail() { echo "FAIL: $*"; exit 1; }
+ok() { echo "ok   $*"; }
+# Escapes a value for a double-quoted curl config string.
+q() { local s=${1//\\/\\\\}; printf '%s' "${s//\"/\\\"}"; }
+
+# Identity Toolkit call; key, token and password go through stdin only.
+idp() {
+  local out
+  out="$(printf 'url = "%s/accounts:%s?key=%s"\nheader = "Content-Type: application/json"\ndata = "%s"\nwrite-out = "\\n%%{http_code}"\n' \
+    "$IDP" "$1" "$(q "$WEB_KEY")" "$(q "$2")" | curl -sS -K -)"
+  STATUS="${out##*$'\n'}"
+  BODY="${out%$'\n'*}"
+}
+token_from_body() { jq -r '.idToken // empty' <<<"$BODY"; }
+
+# Backend call: api METHOD PATH TOKEN [JSON]
+api() {
+  local cfg out
+  cfg="$(printf 'url = "%s%s"\nrequest = "%s"\nwrite-out = "\\n%%{http_code}"' "$API" "$2" "$1")"
+  if [ -n "$3" ]; then cfg="$cfg"$'\n'"header = \"Authorization: Bearer $(q "$3")\""; fi
+  if [ -n "${4:-}" ]; then cfg="$cfg"$'\n'"header = \"Content-Type: application/json\""$'\n'"data = \"$(q "$4")\""; fi
+  out="$(printf '%s\n' "$cfg" | curl -sS -K -)"
+  STATUS="${out##*$'\n'}"
+  BODY="${out%$'\n'*}"
+}
+code() { jq -r '.code // empty' <<<"$BODY" 2>/dev/null || true; }
+field() { jq -r "$1" <<<"$BODY"; }
+
+cleanup() {
+  if [ -n "$TOKEN" ]; then
+    idp delete "{\"idToken\":\"$(q "$TOKEN")\"}" || true
+    echo "cleanup: Firebase test user delete -> $STATUS"
+  fi
+}
+trap cleanup EXIT
+
+# A1. Guest
+idp signUp '{"returnSecureToken":true}'
+[ "$STATUS" = 200 ] || fail "anonymous signUp -> $STATUS (Anonymous provider / Web API key)"
+TOKEN="$(token_from_body)"
+api POST /api/me/sync "$TOKEN"
+[ "$STATUS" = 200 ] || fail "guest sync -> $STATUS $(code) (INVALID_TOKEN: project id; AUTH_UNAVAILABLE: key/IAM)"
+PROFILE_ID="$(field .profile.id)"
+[ "$(field .profile.authState)" = anonymous ] || fail "guest authState"
+field '.bookingReadiness.blockers | index("anonymous_session") != null' | grep -qx true || fail "guest blockers"
+ok "A1 guest: sync 200, profile created, authState anonymous"
+api GET /api/me "$TOKEN"
+[ "$STATUS" = 200 ] && [ "$(field .profile.id)" = "$PROFILE_ID" ] || fail "guest GET /api/me -> $STATUS"
+ok "A1 guest: GET /api/me 200, same profile"
+
+# A2. Link the guest to email/password (same UID); 2a: token returned by the link.
+# A second later than the guest sign-in, so the session times differ (as in real use).
+sleep 1
+idp update "{\"idToken\":\"$(q "$TOKEN")\",\"email\":\"$EMAIL\",\"password\":\"$(q "$PASS")\",\"returnSecureToken\":true}"
+[ "$STATUS" = 200 ] || fail "link password -> $STATUS"
+LINKED="$(token_from_body)"
+[ -n "$LINKED" ] && TOKEN="$LINKED"
+api POST /api/me/sync "$TOKEN"
+echo "info A2a token returned by linking: sync -> $STATUS $(code)   (Auth Emulator: 401 SESSION_REVOKED)"
+
+# A3. Sign in again with email/password (frontend contract after linking)
+sleep 1
+idp signInWithPassword "{\"email\":\"$EMAIL\",\"password\":\"$(q "$PASS")\",\"returnSecureToken\":true}"
+[ "$STATUS" = 200 ] || fail "signInWithPassword -> $STATUS"
+TOKEN="$(token_from_body)"
+api POST /api/me/sync "$TOKEN"
+[ "$STATUS" = 200 ] || fail "registered sync -> $STATUS $(code)"
+[ "$(field .profile.id)" = "$PROFILE_ID" ] || fail "profile changed after linking"
+[ "$(field .profile.authState)" = registered ] || fail "authState after linking"
+[ "$(field .profile.emailVerified)" = false ] || fail "emailVerified must be false"
+ok "A3 email/password: same profile, registered, email not verified"
+
+# A4. Profile
+api PATCH /api/me "$TOKEN" '{"name":"Firebase Check","phone":"+33612345678"}'
+[ "$STATUS" = 200 ] || fail "PATCH profile -> $STATUS $(code)"
+[ "$(field .profile.phone)" = "+33612345678" ] || fail "phone not stored in E.164"
+[ "$(field '.bookingReadiness.blockers | join(",")')" = email_not_verified ] || fail "blockers after PATCH"
+ok "A4 profile: name and phone saved, only blocker email_not_verified"
+api PATCH /api/me "$TOKEN" '{"role":"admin"}'
+[ "$STATUS" = 400 ] && [ "$(code)" = VALIDATION_FAILED ] || fail "role change must be refused -> $STATUS"
+ok "A4 profile: role change refused (400 VALIDATION_FAILED)"
+
+# A5. Missing and invalid tokens
+api GET /api/me ""
+[ "$STATUS" = 401 ] && [ "$(code)" = AUTH_REQUIRED ] || fail "no token -> $STATUS"
+api GET /api/me "not-a-real-token"
+[ "$STATUS" = 401 ] && [ "$(code)" = INVALID_TOKEN ] || fail "invalid token -> $STATUS"
+ok "A5 no token 401 AUTH_REQUIRED, invalid token 401 INVALID_TOKEN"
+
+# A6. Revoke all sessions
+sleep 2
+api POST /api/me/sessions/revoke "$TOKEN"
+[ "$STATUS" = 204 ] || fail "revoke -> $STATUS $(code)"
+api GET /api/me "$TOKEN"
+[ "$STATUS" = 401 ] && [ "$(code)" = SESSION_REVOKED ] || fail "revoked token -> $STATUS $(code)"
+sleep 1
+idp signInWithPassword "{\"email\":\"$EMAIL\",\"password\":\"$(q "$PASS")\",\"returnSecureToken\":true}"
+[ "$STATUS" = 200 ] || fail "sign in after revoke -> $STATUS"
+TOKEN="$(token_from_body)"
+api GET /api/me "$TOKEN"
+[ "$STATUS" = 200 ] && [ "$(field .profile.id)" = "$PROFILE_ID" ] || fail "after re-sign-in -> $STATUS"
+ok "A6 revoke 204, old token 401 SESSION_REVOKED, new sign-in 200 same profile"
+
+echo "PASS (test user is deleted on exit)"
 ```
 
-У нотатки перевірки записувати лише HTTP-статус, `code` і потрібні поля профілю. Ніколи не записувати токен чи заголовки.
+### Що записати
+- Рядки `ok` і `info A2a` (без токенів). `info A2a` показує, як реальний Firebase поводиться з токеном, отриманим одразу після прив'язки пароля. Результат перенести в `docs/auth-and-profiles.md`, розділ 5. Повторний вхід лишається в контракті frontend за будь-якого результату.
+- Рядок `cleanup: … -> 200`.
 
-## Сценарій
+## Частина B: разом з інтеграцією frontend (ще не перевірено)
 
-Позначення: ☐ — виконати; результат «так/ні» плюс коментар.
+| Сценарій | Чому не в частині A |
+|---|---|
+| **Реальний вхід Google**, прив'язка гостя до Google, конфлікт облікових даних (`credential-already-in-use`) | Потрібен браузерний клієнт з OAuth; окремий тестовий застосунок не погоджено |
+| Листи Firebase: підтвердження email (`emailVerified: true` після `getIdToken(true)` + `sync`), скидання пароля, відкликання старого токена після нового пароля (очікується `401 SESSION_REVOKED`) | Потрібні реальна скринька й перехід за посиланням |
+| Маркетинг: чекбокс, лист Brevo, повторне надсилання, підтвердження, відписка | На staging маркетинг вимкнено (`outcome: "unavailable"`) |
+| Права адміністратора (`docs/auth-and-profiles.md`, розділ 9) | Відкладено |
+| Заблокований акаунт (`403 ACCOUNT_DISABLED`) | Потрібна дія в консолі Firebase; мапінг перевірено на емуляторі |
 
-| # | Дія | Очікування |
-|---|---|---|
-| **1** | **Інтеграція (справжній токен).** Гостьовий вхід у клієнті, потім `POST /api/me/sync` і `GET /api/me` з його токеном | ☐ `200` для обох. Профіль створено, `isAnonymous: true`, `bookingReadiness.blockers` містить `anonymous_session`. Це доводить: підпис реального проєкту, доступ Admin SDK (`getUser` службовим акаунтом), запис і читання в БД. `401 INVALID_TOKEN` означає не той проєкт (`FIREBASE_PROJECT_ID`); `503 AUTH_UNAVAILABLE` означає ключ або IAM |
-| 1a | Оновити сторінку, повторити `sync` | ☐ Той самий `profile.id`, нового гостя не створено (`authStateReady` до `signInAnonymously`) |
-| **2** | **Гість → email/пароль (скринька A).** У гостьовій сесії з кроку 1 зробити `linkWithCredential(EmailAuthProvider.credential(...))` | ☐ Firebase прийняв прив'язку, UID не змінився |
-| 2a | ⚠️ **Перевірено лише на емуляторі.** Одразу після прив'язки надіслати `sync` з токеном, **поверненим прив'язкою** (до повторного входу) | ☐ Записати фактичний результат: `200` чи `401 SESSION_REVOKED`. В Auth Emulator це `SESSION_REVOKED`, бо додавання пароля відкликає сесії, а токен зберігає анонімний `auth_time`. Як поводиться реальний Firebase, невідомо. Frontend у будь-якому разі робить повторний вхід (2b), тому цей крок лише уточнює документацію |
-| 2b | `signInWithEmailAndPassword` (A), потім `sync` | ☐ `200`, **той самий** `profile.id`, `isAnonymous: false`, `emailVerified: false`, blocker `email_not_verified` |
-| 2c | `sendEmailVerification`; перейти за посиланням із листа; `getIdToken(true)`, потім `sync` | ☐ Лист Firebase прийшов (мова, відправник і шаблон правильні). Після переходу `emailVerified: true` |
-| **3** | **Google.** Нова гостьова сесія, `linkWithPopup(GoogleAuthProvider)`, потім `sync` | ☐ Той самий `profile.id`, що в гостя; `emailVerified: true`; email Google-акаунта. Повторний вхід не потрібен |
-| 3a | Чисте вікно: одразу `signInWithPopup(Google)` тим самим акаунтом | ☐ Той самий профіль, що в 3 (новий не створено) |
-| 3b | Гостьова сесія; прив'язати облікові дані, що вже належать акаунту з 2 або 3 | ☐ Помилка Firebase `credential-already-in-use` / `email-already-in-use`. Профілі не злиті, гостьовий профіль окремий |
-| **4** | **Відновлення пароля.** Перед кроком зберегти токен сесії A (у змінній shell, як вище). Потім `sendPasswordResetEmail(A)`, перейти за посиланням, задати новий пароль | ☐ Лист Firebase прийшов |
-| 4a | Запит зі старим токеном A | ☐ Очікувано `401 SESSION_REVOKED` (зміна пароля відкликає сесії; на реальному Firebase не перевірено) |
-| 4b | Вхід з новим паролем, потім `sync` | ☐ Той самий `profile.id`, дані профілю збережено |
-| 4c | `sendPasswordResetEmail` для неіснуючої адреси | ☐ Інтерфейс показує те саме повідомлення, що й для існуючої (захист від перелічення) |
-| **5** | **Профіль клієнта.** `PATCH /api/me` з `{"name":"…","phone":"+33…"}` для акаунта A | ☐ `200`, телефон у форматі E.164, `bookingReadiness.ready: true`, `blockers: []` |
-| 5a | `PATCH /api/me` з `{"role":"admin"}` або `{"email":"…"}` | ☐ `400 VALIDATION_FAILED`, нічого не змінено |
-| **6** | **Маркетинг.** Реєстрація скриньки B (email/пароль) з чекбоксом: `sync` з `{"marketingOptIn":true,"marketingConsentTextVersion":"<поточна>"}` | ☐ `marketingOptIn.outcome: "confirmation_sent"`. Лист Brevo прийшов. Поки email B не підтверджено у Firebase, `marketing: null` (статус чужої адреси не показується) |
-| 6' | Підтвердити email B у Firebase (як 2c), потім `sync` без тіла | ☐ `marketing: {"subscribed": false, "pendingConfirmation": true, …}` |
-| 6a | Повторити `sync` з чекбоксом двічі | ☐ `outcome: "no_action"`, другого листа немає |
-| 6b | `POST /api/me/marketing/subscription` («надіслати ще раз») у межах 10 хв | ☐ `202 {"outcome":"no_action","retryAfterSeconds":…}`, листа немає |
-| 6c | Перейти за посиланням підтвердження | ☐ `subscribed: true`, `consentSource: "signup_checkbox"`, є `consentGivenAt` і `consentTextVersion`. Прийшов лист «підписку підтверджено» з посиланням відписки |
-| 6d | Відписка за посиланням з листа (або `DELETE /api/me/marketing/subscription`) | ☐ `subscribed: false`, є `unsubscribedAt`. Службові листи Firebase і далі приходять |
-| 6e | `sync` з чекбоксом | ☐ `no_action`, статус лишається `false` |
-| 6f | Явна повторна підписка `POST /api/me/marketing/subscription`, потім підтвердження | ☐ Новий лист; після підтвердження `subscribed: true`, `consentSource: "account_request"`, `unsubscribedAt: null` |
-| **7** | **Права адміністратора.** Призначити акаунт A адміністратором командою з `docs/auth-and-profiles.md`, розділ 9 (спершу dry-run) | ☐ Dry-run показує зміну. `--apply` призначає роль. Для гостя або непідтвердженого email команда відмовляє (код виходу `2`) |
-| 7a | `GET /api/me` акаунтом A | ☐ `role: "admin"`, blocker `not_a_client` (адміністратор не бронює для себе) |
-| 7b | Акаунт B (клієнт) | ☐ `role: "client"`; змінити собі роль через API неможливо (5a) |
-| **8** | **Блокування й вихід.** Вимкнути акаунт B у консолі Firebase (Authentication → Users → Disable), потім запит з його токеном | ☐ `403 ACCOUNT_DISABLED`. Після ввімкнення знову працює |
-| 8a | `POST /api/me/sessions/revoke` акаунтом A, потім запит зі старим токеном | ☐ `204`, далі `401 SESSION_REVOKED` |
-| **9** | **Чужий проєкт.** Токен з Auth Emulator або іншого Firebase-проєкту | ☐ `401 INVALID_TOKEN` |
-
-Бізнес-маршрути з правами клієнта й адміністратора (бронювання, послуги, графік) ще не існують. Їхні політики перевірено модульними тестами. Ручна перевірка цих прав з'явиться разом із самими маршрутами.
-
-## Після перевірки
-
-- Результати (так/ні, коди відповідей, без токенів) додати в PR або нотатку релізу.
-- Результат кроку 2a перенести в `docs/auth-and-profiles.md`, розділ 5, крок про прив'язку пароля. Повторний вхід лишається в контракті.
-- Тестових користувачів видалити в консолі Firebase staging. Профілі в БД staging залишаються; це тестові дані.
-- Призупинити staging (`infra/staging-deploy.md`, «Пауза»).
+Поведінку повторного входу після прив'язки пароля поза емулятором перевіряє частина A (`info A2a`).
