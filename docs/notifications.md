@@ -238,7 +238,7 @@ HTTP-запит ─> транзакція календаря: Booking + OutboxEv
 ## 10. Розгортання (не виконано)
 
 1. **Міграція** `20261031120000_booking_notifications` застосовується звичайним `Staging deploy` разом з образом цієї версії. Вона лише додає таблиці (розділ 12).
-2. **Секрет у SSM:** `BREVO_API_KEY` — новий параметр; task definition API отримує його та змінні з розділу 7. Окремого ECS-сервісу, ролі БД чи лог-групи не потрібно.
+2. **Секрет у SSM:** `/massage-staging/booking/brevo-api-key` — новий параметр. Terraform підключає його до task definition API разом зі змінними розділу 7 **лише** при `enable_booking_notifications = true` (за замовчуванням `false`: без параметра API стартує як звичайно) — [infra/staging-deploy.md](../infra/staging-deploy.md), «Постійний запуск staging». Окремого ECS-сервісу, ролі БД чи лог-групи не потрібно.
 3. **Brevo:** підтверджений відправник або автентифікований домен; перевірка ідемпотентності на тестовій адресі.
 4. **Staging:** `NOTIFICATIONS_ENVIRONMENT=staging`, allowlist з погодженими тестовими адресами, `ENABLE_BOOKING_NOTIFICATIONS=true`.
 

@@ -29,6 +29,12 @@ locals {
     key => "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter${name}"
   }
 
+  # Booking notifications run inside the API. Their Brevo key is wired (task
+  # secret and execution-role permission) only while they are enabled, so a
+  # missing parameter never blocks the API start when they are off.
+  brevo_api_key_parameter     = "${local.ssm_parameter_prefix}/brevo-api-key"
+  brevo_api_key_parameter_arn = "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter${local.brevo_api_key_parameter}"
+
   # API (runtime) and migration task: image repository, log group, secrets.
   # Only the API verifies Firebase ID tokens; the migration task never gets
   # the Firebase key.
@@ -36,10 +42,13 @@ locals {
     api = {
       repository = aws_ecr_repository.booking["booking_api"].arn
       log_group  = aws_cloudwatch_log_group.booking["api"].arn
-      parameters = [
-        local.booking_parameter_arns.database_url,
-        local.booking_parameter_arns.firebase_service_account,
-      ]
+      parameters = concat(
+        [
+          local.booking_parameter_arns.database_url,
+          local.booking_parameter_arns.firebase_service_account,
+        ],
+        var.enable_booking_notifications ? [local.brevo_api_key_parameter_arn] : [],
+      )
     }
     migrate = {
       repository = aws_ecr_repository.booking["booking_migrate"].arn

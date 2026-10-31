@@ -333,7 +333,7 @@ Dockerfile має дві цілі — `runtime` (API) і `migrate` (однора
 - окремі результати сканування й lifecycle;
 - теги однакові для обох — git SHA коміту, без префіксів `runtime-`/`migrate-`.
 
-Репозиторіїв для ще не реалізованих сервісів (AI, Payments, Notifications) немає.
+Окремих репозиторіїв для модулів немає й не плануємо: застосунок — модульний моноліт ([docs/architecture.md](../docs/architecture.md)), Notifications працює в образі `booking-api`.
 
 **Спільні для staging і production.** Образ збирається один раз, перевіряється в staging і потрапляє в production **за digest** (`…/massage/booking-api@sha256:…`), без повторної збірки. Тому:
 - назви репозиторіїв задає окрема змінна `ecr_namespace` (`massage`), незалежна від `name_prefix` (`massage-staging`), а ресурси мають тег `Environment = shared`;
