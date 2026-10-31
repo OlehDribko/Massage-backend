@@ -413,7 +413,10 @@ describe("creating a booking", () => {
         history: [{ type: "created" }],
       },
     });
-    expect(created.text).not.toMatch(/email.*sent|notification/i);
+    // The booking never claims an email was sent; with booking emails off on
+    // this server the separate notification state is null.
+    expect(created.body).toMatchObject({ booking: { notification: null } });
+    expect(created.text).not.toMatch(/email.*sent|delivered/i);
   });
 
   it("is idempotent per Idempotency-Key: a retry returns the same booking, no second booking or event", async () => {

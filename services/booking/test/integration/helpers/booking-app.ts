@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import request from "supertest";
 import { z } from "zod";
-import { createApplication } from "../../../src/bootstrap.js";
+import { createApplication, type NotificationsRuntime } from "../../../src/bootstrap.js";
 import { loadConfig } from "../../../src/config/config.js";
 import { createDatabase, type Database } from "../../../src/shared/database/database.js";
 import { createFakeIdentityProvider, identity } from "../../helpers/fake-identity.js";
@@ -26,7 +26,10 @@ export type BookingStack = {
   close: () => Promise<void>;
 };
 
-export const startBookingStack = async (instances = 2): Promise<BookingStack> => {
+export const startBookingStack = async (
+  instances = 2,
+  options: { notifications?: NotificationsRuntime } = {},
+): Promise<BookingStack> => {
   assertDockerAvailable();
   const db = await startPostgres(CURRENT_INIT_DIR);
   await runMigrations(db);
@@ -59,6 +62,7 @@ export const startBookingStack = async (instances = 2): Promise<BookingStack> =>
         logger: createCapturingLogger().logger,
         database,
         isShuttingDown: () => false,
+        notifications: options.notifications,
         overrides: { identityProvider: identities.provider, now: () => new Date(clock) },
       }),
     );

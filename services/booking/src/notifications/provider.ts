@@ -34,8 +34,9 @@ export type SendOutcome =
       retryAfterMs: number | null;
     }
   /**
-   * Provider-wide problem (wrong key, missing permission, account issue):
-   * not this message's fault. The worker pauses and keeps the message pending.
+   * Provider-wide problem (wrong key, missing permission, account issue).
+   * A retry in minutes would not help: the delivery fails at once with this
+   * code (no automatic retries); the fix is a configuration change.
    */
   | { kind: "configuration"; code: "provider_auth" | "provider_forbidden" | "provider_account" };
 

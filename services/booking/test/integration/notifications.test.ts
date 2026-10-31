@@ -3,10 +3,10 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { localDateTimeToInstant } from "../../src/modules/schedule/zoned-time.js";
 import { DEFAULT_TUNING, type WorkerTuning } from "../../src/notifications/config.js";
-import { claimDeliveries, completeDelivery } from "../../src/notifications/store.js";
+import { createDispatcher, type Dispatcher, type Timers } from "../../src/notifications/dispatcher.js";
+import { claimDeliveries, completeDelivery, nextWorkAt } from "../../src/notifications/store.js";
 import { createWorker, type Worker } from "../../src/notifications/worker.js";
 import { createDatabase, type Database } from "../../src/shared/database/database.js";
-import { killRunningChildren, startTsProcess } from "../helpers/child-process.js";
 import { createFakeEmailProvider } from "../helpers/fake-email-provider.js";
 import { createCapturingLogger } from "../helpers/logs.js";
 import {
@@ -20,8 +20,10 @@ import {
   type BookingStack,
 } from "./helpers/booking-app.js";
 
-// Notifications worker against real PostgreSQL. Events come from the real
+// Booking notifications against real PostgreSQL. Events come from the real
 // booking API (the producer); the email provider is a fake (no real email).
+// Most tests drive single passes (worker.tick) on a fake clock; the
+// "in-process" tests run the real dispatcher woken by the API.
 
 const STUDIO = "studio@example.invalid";
 const CLIENT = "anna@example.invalid";
@@ -33,14 +35,12 @@ const workerDatabases: Database[] = [];
 let workerNow = Date.parse("2027-03-01T07:00:00Z");
 const now = () => new Date(workerNow);
 
-const TUNING: WorkerTuning = {
-  ...DEFAULT_TUNING,
-  pollIntervalMs: 10,
-  maxAttempts: 3,
-  retryBaseMs: 1_000,
-  retryCapMs: 10_000,
-  configurationPauseMs: 300_000,
-};
+// The production schedule: 3 attempts, retries after 1 and 5 minutes
+// (+10 % jitter with random 0.5 below: 66 s and 330 s).
+const TUNING: WorkerTuning = DEFAULT_TUNING;
+
+/** Hook the API calls after every booking write (set by the in-process tests). */
+let onBookingWrite: () => void = () => undefined;
 
 const paris = (date: string, hhmm: string): string => {
   const [h = "0", m = "0"] = hhmm.split(":");
@@ -118,17 +118,23 @@ const deliveries = async () => {
 const resetAll = () => resetCalendar(stack.db);
 
 beforeAll(async () => {
-  stack = await startBookingStack(1);
+  stack = await startBookingStack(1, {
+    notifications: {
+      wake: () => {
+        onBookingWrite();
+      },
+    },
+  });
   users = await createUsers(stack);
 });
 
 afterAll(async () => {
-  await killRunningChildren();
   await Promise.all(workerDatabases.map((database) => database.close()));
   await stack.close();
 });
 
 beforeEach(async () => {
+  onBookingWrite = () => undefined;
   await resetAll();
   stack.setNow("2027-03-01T06:00:00Z");
   workerNow = Date.parse("2027-03-01T07:00:00Z");
@@ -150,7 +156,7 @@ describe("planning and sending", () => {
     const fake = createFakeEmailProvider({ now });
     const { worker, logs } = makeWorker(fake);
 
-    expect(await worker.tick()).toBe(2);
+    expect((await worker.tick()).handled).toBe(2);
     expect(fake.sent.map((email) => [email.to, email.subject])).toEqual([
       [CLIENT, "Votre rendez-vous est confirmé"],
       [STUDIO, "Nouveau rendez-vous : Massage 60, mardi 2 mars 2027 à 09:00"],
@@ -164,7 +170,7 @@ describe("planning and sending", () => {
     expect(await countRows(stack.db, `SELECT count(*)::int AS n FROM "NotificationEvent" WHERE status = 'planned'`)).toBe(1);
 
     for (let i = 0; i < 3; i += 1) {
-      expect(await worker.tick()).toBe(0);
+      expect(await worker.tick()).toEqual({ planned: 0, handled: 0 });
     }
     expect(fake.sent).toHaveLength(2);
     expect(await countRows(stack.db, `SELECT count(*)::int AS n FROM "NotificationDelivery"`)).toBe(2);
@@ -333,12 +339,58 @@ describe("retries and provider errors", () => {
 
     workerNow += 60_000;
     await worker.tick();
-    expect((await deliveries())[0]?.attempts).toBe(1); // not due yet
-    workerNow += 120_000;
+    expect((await deliveries())[0]?.attempts).toBe(1); // 1 minute passed, Retry-After asked for 2
+    workerNow += 60_000;
     await worker.tick();
-    workerNow += 180_000;
+    const [second] = await deliveries();
+    expect(second).toMatchObject({ status: "pending", attempts: 2 });
+    expect((second?.nextAttemptAt.getTime() ?? 0) - workerNow).toBe(330_000); // 5 min + jitter
+    workerNow += 330_000;
     await worker.tick();
     expect((await deliveries())[0]).toMatchObject({ status: "accepted", attempts: 3 });
+    expect(clientCalls).toBe(3);
+  });
+
+  it("a Retry-After beyond 10 minutes is not shortened: automatic processing ends with a fixed reason", async () => {
+    await book(users.clientA, paris("2027-03-02", "09:00"));
+    const fake = createFakeEmailProvider({ now });
+    fake.setBehavior((email) =>
+      email.to === CLIENT ? { kind: "retryable", code: "rate_limited", retryAfterMs: 10 * 60_000 + 1 } : "accept",
+    );
+    const { worker } = makeWorker(fake);
+    await worker.tick();
+    expect(await deliveries()).toMatchObject([
+      { recipientRole: "client", status: "failed", resultCode: "retry_after_too_long", lastErrorCode: "rate_limited", attempts: 1 },
+      { recipientRole: "studio", status: "accepted" },
+    ]);
+    // No attempt earlier than asked, and none later either: it stays failed.
+    workerNow += 24 * 3_600_000;
+    expect(await worker.tick()).toEqual({ planned: 0, handled: 0 });
+    expect(fake.calls()).toBe(2);
+  });
+
+  it("a Retry-After of exactly 10 minutes is waited for in full", async () => {
+    await book(users.clientA, paris("2027-03-02", "09:00"));
+    const fake = createFakeEmailProvider({ now });
+    let first = true;
+    fake.setBehavior((email) => {
+      if (email.to === CLIENT && first) {
+        first = false;
+        return { kind: "retryable", code: "rate_limited", retryAfterMs: 10 * 60_000 };
+      }
+      return "accept";
+    });
+    const { worker } = makeWorker(fake);
+    await worker.tick();
+    const [client] = await deliveries();
+    expect(client).toMatchObject({ status: "pending", attempts: 1 });
+    expect((client?.nextAttemptAt.getTime() ?? 0) - workerNow).toBe(10 * 60_000);
+    workerNow += 10 * 60_000 - 1;
+    await worker.tick();
+    expect((await deliveries())[0]?.attempts).toBe(1); // not before the provider's time
+    workerNow += 1;
+    await worker.tick();
+    expect((await deliveries())[0]).toMatchObject({ status: "accepted", attempts: 2 });
   });
 
   it("stops after the attempt limit with a visible failed state", async () => {
@@ -348,9 +400,10 @@ describe("retries and provider errors", () => {
     const { worker } = makeWorker(fake);
     for (let i = 0; i < 6; i += 1) {
       await worker.tick();
-      workerNow += 60_000;
+      workerNow += 10 * 60_000;
     }
     expect((await deliveries())[0]).toMatchObject({ status: "failed", resultCode: "attempts_exhausted", lastErrorCode: "timeout", attempts: 3 });
+    expect(fake.calls()).toBe(4); // 3 to the client, 1 to the studio
   });
 
   it("a permanent rejection fails only that delivery", async () => {
@@ -364,27 +417,22 @@ describe("retries and provider errors", () => {
     ]);
   });
 
-  it("a provider configuration error pauses the worker and keeps everything pending without using attempts", async () => {
+  it("a provider configuration error is not retried: one attempt, failed, visible in the log", async () => {
     await book(users.clientA, paris("2027-03-02", "09:00"));
-    await book(users.clientB, paris("2027-03-02", "15:00"));
     const fake = createFakeEmailProvider({ now });
     fake.setBehavior(() => ({ kind: "configuration", code: "provider_auth" }));
     const { worker, logs } = makeWorker(fake);
     await worker.tick();
-    expect(fake.calls()).toBe(1);
-    const afterError = await deliveries();
-    expect(afterError.every((delivery) => delivery.status === "pending" && delivery.attempts === 0)).toBe(true);
-    expect(afterError.filter((delivery) => delivery.lastErrorCode === "provider_auth")).toHaveLength(1);
+    expect(await deliveries()).toMatchObject([
+      { recipientRole: "client", status: "failed", resultCode: "provider_auth", attempts: 1 },
+      { recipientRole: "studio", status: "failed", resultCode: "provider_auth", attempts: 1 },
+    ]);
     expect(logs.raw()).toContain("provider_auth");
 
-    workerNow += 60_000;
-    expect(await worker.tick()).toBe(0); // still paused
-    expect(fake.calls()).toBe(1);
-
     fake.setBehavior(() => "accept");
-    workerNow += TUNING.configurationPauseMs;
-    await worker.tick();
-    expect((await deliveries()).every((delivery) => delivery.status === "accepted")).toBe(true);
+    workerNow += 60 * 60_000;
+    expect(await worker.tick()).toEqual({ planned: 0, handled: 0 });
+    expect(fake.calls()).toBe(2);
   });
 });
 
@@ -488,7 +536,7 @@ describe("leases, crashes and concurrency", () => {
     fake.setBehavior((email) => (email.to === CLIENT ? { kind: "retryable", code: "network", retryAfterMs: null } : "accept"));
     await makeWorker(fake, { id: "first" }).worker.tick();
     fake.setBehavior(() => "accept");
-    workerNow += 60_000;
+    workerNow += 2 * 60_000;
     await makeWorker(fake, { id: "second", database: workerDb() }).worker.tick();
     expect((await deliveries()).map((delivery) => [delivery.recipientRole, delivery.status, delivery.attempts])).toEqual([
       ["client", "accepted", 2],
@@ -496,20 +544,155 @@ describe("leases, crashes and concurrency", () => {
     ]);
   });
 
+  it("at most three attempts per recipient, also across restarts and an interrupted last attempt", async () => {
+    await book(users.clientA, paris("2027-03-02", "09:00"));
+    const fake = createFakeEmailProvider({ now });
+    fake.setBehavior((email) => (email.to === CLIENT ? { kind: "retryable", code: "provider_unavailable", retryAfterMs: null } : "accept"));
+    await makeWorker(fake, { id: "process-1" }).worker.tick(); // attempt 1
+    workerNow += 10 * 60_000;
+    await makeWorker(fake, { id: "process-2", database: workerDb() }).worker.tick(); // attempt 2, after a restart
+    workerNow += 10 * 60_000;
+    // Attempt 3 is claimed by a process that stops before recording a result.
+    const db = workerDb();
+    const [third] = await claimDeliveries(db.prisma, { now: now(), owner: "process-3", leaseMs: TUNING.leaseMs, limit: 1, maxAttempts: TUNING.maxAttempts });
+    expect(third).toMatchObject({ recipientRole: "client", attempts: 3 });
+
+    workerNow += TUNING.leaseMs + 1;
+    await makeWorker(fake, { id: "process-4", database: workerDb() }).worker.tick();
+    const [client] = await deliveries();
+    expect(client).toMatchObject({ status: "failed", resultCode: "interrupted", attempts: 3 });
+    expect(fake.sent.filter((email) => email.to === CLIENT)).toHaveLength(0);
+    expect(fake.calls()).toBe(3); // client: 2 (the 3rd never reached the provider), studio: 1
+  });
+});
+
+describe("in-process sending (dispatcher woken by the API)", () => {
+  type Fake = ReturnType<typeof createFakeEmailProvider>;
+
+  const startDispatcher = (fake: Fake, options: { timers?: Timers; database?: Database } = {}) => {
+    const database = options.database ?? workerDb();
+    const { worker } = makeWorker(fake, { database });
+    const counted = { passes: 0, checks: 0 };
+    const dispatcher: Dispatcher = createDispatcher({
+      tick: () => {
+        counted.passes += 1;
+        return worker.tick();
+      },
+      nextWorkAt: () => {
+        counted.checks += 1;
+        return nextWorkAt(database.prisma);
+      },
+      stopWorker: worker.stop,
+      logger: createCapturingLogger().logger,
+      now,
+      ...(options.timers === undefined ? {} : { timers: options.timers }),
+    });
+    return { dispatcher, counted };
+  };
+
+  /** Records timers instead of running them. */
+  const recordedTimers = () => {
+    const delays: number[] = [];
+    const timers: Timers = {
+      schedule: (_callback, delayMs) => {
+        delays.push(delayMs);
+        return () => undefined;
+      },
+    };
+    return { timers, delays };
+  };
+
+  it("a booking wakes the sender; the HTTP response does not wait for the email", async () => {
+    const fake = createFakeEmailProvider({ now });
+    const release = fake.hold();
+    const { dispatcher } = startDispatcher(fake);
+    onBookingWrite = dispatcher.wake;
+
+    // The provider is held: the booking still answers 201 at once.
+    await book(users.clientA, paris("2027-03-02", "09:00"));
+    expect(fake.sent).toHaveLength(0);
+    release();
+    await dispatcher.idle();
+    expect(fake.sent.map((email) => email.to)).toEqual([CLIENT, STUDIO]);
+    await dispatcher.stop();
+  });
+
+  it("no database access once all work is done: no timer, nothing runs later", async () => {
+    const fake = createFakeEmailProvider({ now });
+    const { timers, delays } = recordedTimers();
+    const { dispatcher, counted } = startDispatcher(fake, { timers });
+    onBookingWrite = dispatcher.wake;
+    await book(users.clientA, paris("2027-03-02", "09:00"));
+    await dispatcher.idle();
+    expect(fake.sent).toHaveLength(2);
+    expect(dispatcher.scheduledAt()).toBeNull();
+    expect(delays).toEqual([]);
+
+    const before = { ...counted };
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(counted).toEqual(before);
+    await dispatcher.stop();
+  });
+
+  it("a temporary error leaves exactly one timer, at the retry time stored in the database", async () => {
+    const fake = createFakeEmailProvider({ now });
+    fake.setBehavior((email) => (email.to === CLIENT ? { kind: "retryable", code: "network", retryAfterMs: null } : "accept"));
+    const { timers, delays } = recordedTimers();
+    const { dispatcher } = startDispatcher(fake, { timers });
+    onBookingWrite = dispatcher.wake;
+    await book(users.clientA, paris("2027-03-02", "09:00"));
+    await dispatcher.idle();
+    const [client] = await deliveries();
+    expect(client).toMatchObject({ status: "pending", attempts: 1 });
+    expect(dispatcher.scheduledAt()).toEqual(client?.nextAttemptAt);
+    expect(delays).toEqual([66_000]);
+    await dispatcher.stop();
+  });
+
+  it("start-up recovery: work committed while no sender ran is picked up on start", async () => {
+    await book(users.clientA, paris("2027-03-02", "09:00")); // no sender running (hook is a no-op)
+    await book(users.clientB, paris("2027-03-02", "15:00"));
+    const fake = createFakeEmailProvider({ now });
+    const { dispatcher } = startDispatcher(fake);
+    dispatcher.start();
+    await dispatcher.idle();
+    expect(fake.sent).toHaveLength(4);
+    await dispatcher.stop();
+  });
+
+  it("start-up recovery respects a lease still held by another process, and takes it over once it expires", async () => {
+    await book(users.clientA, paris("2027-03-02", "09:00"));
+    const fake = createFakeEmailProvider({ now });
+    await makeWorker(fake, { tuning: { ...TUNING, batchSize: 0 } }).worker.tick(); // plan only
+    await claimDeliveries(workerDb().prisma, { now: now(), owner: "other-process", leaseMs: TUNING.leaseMs, limit: 1, maxAttempts: 3 });
+
+    const { timers, delays } = recordedTimers();
+    const { dispatcher } = startDispatcher(fake, { timers });
+    dispatcher.start();
+    await dispatcher.idle();
+    expect(fake.sent.map((email) => email.to)).toEqual([STUDIO]); // the client's delivery is leased
+    expect(delays).toEqual([TUNING.leaseMs]); // timer at the lease expiry
+
+    workerNow += TUNING.leaseMs + 1;
+    dispatcher.wake(); // what the timer would do
+    await dispatcher.idle();
+    expect(fake.sent.map((email) => email.to)).toEqual([STUDIO, CLIENT]);
+    await dispatcher.stop();
+  });
+
   it("graceful stop: the email in flight is finished, nothing new is claimed, nothing is left leased", async () => {
     await book(users.clientA, paris("2027-03-02", "09:00"));
     await book(users.clientB, paris("2027-03-02", "15:00"));
     const fake = createFakeEmailProvider({ now });
     const release = fake.hold();
-    const { worker } = makeWorker(fake, { tuning: { ...TUNING, batchSize: 4 } });
-    const running = worker.run();
+    const { dispatcher } = startDispatcher(fake);
+    dispatcher.start();
     while (fake.calls() === 0) {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
-    const stopping = worker.stop();
+    const stopping = dispatcher.stop();
     release();
     await stopping;
-    await running;
 
     expect(fake.calls()).toBe(1);
     const states = (await deliveries()).map((delivery) => delivery.status);
@@ -520,28 +703,76 @@ describe("leases, crashes and concurrency", () => {
   });
 });
 
-describe("worker process", () => {
-  it("with sending disabled (the default) it exits without touching the database or a provider", async () => {
-    const child = startTsProcess("src/notifications/main.ts", { DATABASE_URL: "postgresql://nobody@127.0.0.1:1/none" });
-    const exit = await child.exited;
-    expect(exit.code).toBe(0);
-    expect(child.output()).toContain("booking notifications are disabled");
+describe("notification status in the booking API", () => {
+  const notificationOf = (response: request.Response): unknown => {
+    const body: unknown = response.body;
+    return z.object({ booking: z.object({ notification: z.unknown() }) }).parse(body).booking.notification;
+  };
+  const adminNotificationsOf = (response: request.Response): unknown => {
+    const body: unknown = response.body;
+    return z.object({ booking: z.object({ notifications: z.unknown() }) }).parse(body).booking.notifications;
+  };
+
+  it("the client sees only their own email's state; the admin sees both recipients next to the booking", async () => {
+    stack.setNow("2027-03-01T07:00:00Z");
+    const id = await book(users.clientA, paris("2027-03-02", "09:00"));
+    const own = await request(stack.app).get(`/api/bookings/${id}`).set(bearer(users.clientA)).expect(200);
+    expect(notificationOf(own)).toEqual({ event: "created", status: "pending", reason: null });
+
+    const fake = createFakeEmailProvider({ now });
+    fake.setBehavior((email) => (email.to === STUDIO ? { kind: "rejected", code: "provider_rejected" } : "accept"));
+    await makeWorker(fake).worker.tick();
+
+    const after = await request(stack.app).get(`/api/bookings/${id}`).set(bearer(users.clientA)).expect(200);
+    expect(notificationOf(after)).toEqual({ event: "created", status: "accepted", reason: null });
+    const list = await request(stack.app).get("/api/bookings").set(bearer(users.clientA)).expect(200);
+    expect(JSON.stringify(list.body)).toContain('"status":"accepted"');
+    // Nothing about the studio or the provider reaches the client.
+    expect(JSON.stringify(after.body)).not.toContain("studio");
+    expect(JSON.stringify(after.body)).not.toContain("provider");
+
+    // Another client: the booking does not exist for them (no status either).
+    await request(stack.app).get(`/api/bookings/${id}`).set(bearer(users.clientB)).expect(404);
+    // A client cannot use the admin routes.
+    await request(stack.app).get(`/api/admin/bookings/${id}`).set(bearer(users.clientA)).expect(403);
+
+    const admin = await request(stack.app).get(`/api/admin/bookings/${id}`).set(bearer(users.admin)).expect(200);
+    expect(adminNotificationsOf(admin)).toMatchObject([
+      {
+        event: "created",
+        client: { status: "accepted", reason: null, attempts: 1 },
+        studio: { status: "failed", reason: "provider_rejected", attempts: 1 },
+      },
+    ]);
+    const day = await request(stack.app).get("/api/admin/bookings?date=2027-03-02").set(bearer(users.admin)).expect(200);
+    expect(JSON.stringify(day.body)).toContain('"reason":"provider_rejected"');
+    // Admin views carry fixed codes only: no addresses of recipients, no provider ids.
+    expect(JSON.stringify(admin.body)).not.toContain(STUDIO);
+    expect(JSON.stringify(admin.body)).not.toContain("fake-");
   });
 
-  it("refuses to start on staging without an allowlist", async () => {
-    const child = startTsProcess("src/notifications/main.ts", {
-      ENABLE_BOOKING_NOTIFICATIONS: "true",
-      NOTIFICATIONS_ENVIRONMENT: "staging",
-      DATABASE_URL: "postgresql://nobody@127.0.0.1:1/none",
-      DATABASE_SSL_MODE: "disable",
-      NOTIFICATION_STUDIO_EMAIL: STUDIO,
-      BREVO_API_KEY: "xkeysib-SENTINEL",
-      EMAIL_FROM_NAME: "Studio",
-      EMAIL_FROM_EMAIL: "noreply@example.invalid",
-    });
-    const exit = await child.exited;
-    expect(exit.code).toBe(1);
-    expect(child.output()).toContain("NOTIFICATION_RECIPIENT_ALLOWLIST: required");
-    expect(child.output()).not.toContain("SENTINEL");
+  it("a failed email does not change the booking; an interrupted attempt is not shown as sending forever", async () => {
+    stack.setNow("2027-03-01T07:00:00Z");
+    const id = await book(users.clientA, paris("2027-03-02", "09:00"));
+    const fake = createFakeEmailProvider({ now });
+    fake.setBehavior((email) => (email.to === CLIENT ? { kind: "retryable", code: "timeout", retryAfterMs: null } : "accept"));
+    const { worker } = makeWorker(fake);
+    for (let i = 0; i < 3; i += 1) {
+      await worker.tick();
+      workerNow += 10 * 60_000;
+    }
+    const failed = await request(stack.app).get(`/api/bookings/${id}`).set(bearer(users.clientA)).expect(200);
+    expect(failed.body).toMatchObject({ booking: { status: "confirmed", notification: { status: "failed", reason: "not_sent" } } });
+
+    // Reschedule; the new email's attempt is claimed by a process that stops.
+    await request(stack.app).post(`/api/bookings/${id}/reschedule`).set(bearer(users.clientA)).send({ startsAt: paris("2027-03-03", "14:00") }).expect(200);
+    await makeWorker(fake, { tuning: { ...TUNING, batchSize: 0 } }).worker.tick(); // plan only
+    await claimDeliveries(workerDb().prisma, { now: now(), owner: "stopped", leaseMs: TUNING.leaseMs, limit: 2, maxAttempts: 3 });
+    stack.setNow(new Date(workerNow + 1_000).toISOString());
+    const sending = await request(stack.app).get(`/api/bookings/${id}`).set(bearer(users.clientA)).expect(200);
+    expect(notificationOf(sending)).toEqual({ event: "rescheduled", status: "sending", reason: null });
+    stack.setNow(new Date(workerNow + TUNING.leaseMs + 1).toISOString());
+    const interrupted = await request(stack.app).get(`/api/bookings/${id}`).set(bearer(users.clientA)).expect(200);
+    expect(notificationOf(interrupted)).toEqual({ event: "rescheduled", status: "interrupted", reason: null });
   });
 });

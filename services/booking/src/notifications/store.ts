@@ -4,7 +4,7 @@ import type { Prisma, PrismaClient } from "../generated/prisma/client.js";
 import { parseBookingEvent } from "./event-contract.js";
 
 /**
- * Persistence of the notifications worker. It reads OutboxEvent (the agreed
+ * Persistence of booking notifications. It reads OutboxEvent (the agreed
  * integration point) and writes only NotificationEvent and
  * NotificationDelivery; it never creates or changes outbox events and never
  * touches catalogue, profile or booking tables.
@@ -13,6 +13,9 @@ import { parseBookingEvent } from "./event-contract.js";
 const recipientEmailSchema = z.email();
 
 export type PlannedEvent = { eventId: string; status: "planned" | "invalid"; reasonCode: string | null };
+
+/** `fetched` < limit means no unplanned event was left when the batch was read. */
+export type PlanResult = { planned: PlannedEvent[]; fetched: number };
 
 /**
  * Records deliveries for outbox events not yet examined, in position order.
@@ -23,7 +26,7 @@ export type PlannedEvent = { eventId: string; status: "planned" | "invalid"; rea
 export const planNewEvents = async (
   prisma: PrismaClient,
   { now, studioEmail, limit }: { now: Date; studioEmail: string; limit: number },
-): Promise<PlannedEvent[]> => {
+): Promise<PlanResult> => {
   const events = await prisma.outboxEvent.findMany({
     where: { notification: { is: null } },
     orderBy: { position: "asc" },
@@ -84,7 +87,7 @@ export const planNewEvents = async (
       planned.push(result);
     }
   }
-  return planned;
+  return { planned, fetched: events.length };
 };
 
 const claimedRowSchema = z.object({
@@ -154,8 +157,10 @@ export const claimDeliveries = async (
 };
 
 /**
- * Deliveries whose attempts are used up while no worker holds them (e.g. a
- * worker died after its last claim): terminal failed, visible.
+ * Deliveries whose attempts are used up while no process holds them:
+ * terminal failed, visible. `interrupted` = the last attempt was claimed by a
+ * process that stopped before recording a result (its lease expired), so it
+ * is unknown whether the provider got it; `attempts_exhausted` otherwise.
  */
 export const failExhausted = async (
   prisma: PrismaClient,
@@ -163,7 +168,8 @@ export const failExhausted = async (
 ): Promise<number> => {
   const result = await prisma.$executeRaw`
     UPDATE "NotificationDelivery"
-    SET status = 'failed', "resultCode" = 'attempts_exhausted', "completedAt" = ${now},
+    SET "resultCode" = CASE WHEN status = 'in_progress' THEN 'interrupted' ELSE 'attempts_exhausted' END,
+        status = 'failed', "completedAt" = ${now},
         "leaseOwner" = NULL, "leaseToken" = NULL, "leaseExpiresAt" = NULL, "updatedAt" = ${now}
     WHERE attempts >= ${maxAttempts}
       AND ((status = 'pending' AND "nextAttemptAt" <= ${now})
@@ -230,6 +236,35 @@ export const completeDelivery = async (
 };
 
 export const newWorkerId = (): string => `worker-${randomUUID()}`;
+
+const nextWorkSchema = z.object({ at: z.date().nullable(), unplanned: z.boolean() });
+
+/**
+ * When there will next be something to do, read from the database only:
+ * - `unplanned`: an outbox event without notifications (plan now);
+ * - `at`: the earliest moment a chain head becomes claimable: a pending
+ *   delivery's nextAttemptAt or an in-progress one's lease expiry (also
+ *   leases of other processes). Deliveries waiting behind an earlier one of
+ *   the same chain do not count: they follow their head.
+ * null and false: no unfinished work, so nothing needs a timer.
+ */
+export const nextWorkAt = async (prisma: PrismaClient): Promise<z.output<typeof nextWorkSchema>> => {
+  const rows = await prisma.$queryRaw<unknown[]>`
+    SELECT
+      (SELECT min(CASE WHEN d.status = 'pending' THEN d."nextAttemptAt" ELSE d."leaseExpiresAt" END)
+         FROM "NotificationDelivery" d
+        WHERE d.status IN ('pending', 'in_progress')
+          AND NOT EXISTS (
+            SELECT 1 FROM "NotificationDelivery" e
+            WHERE e."bookingId" = d."bookingId"
+              AND e."recipientRole" = d."recipientRole"
+              AND e."eventPosition" < d."eventPosition"
+              AND e.status IN ('pending', 'in_progress'))) AS at,
+      EXISTS (
+        SELECT 1 FROM "OutboxEvent" o
+        WHERE NOT EXISTS (SELECT 1 FROM "NotificationEvent" n WHERE n."eventId" = o.id)) AS unplanned`;
+  return nextWorkSchema.parse(rows[0]);
+};
 
 /** Whether the outbox already holds a later event of the same booking. */
 export const hasNewerEvent = async (
