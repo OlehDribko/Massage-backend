@@ -9,7 +9,9 @@ export type OwnProfileChanges = {
 export type ProfileRepository = {
   /**
    * Creates the profile for this identity if absent, then applies the
-   * identity fields unless a newer token has already been applied.
+   * identity fields unless a newer token has already been applied. Writes
+   * only when something changes (new profile, newer token, or the same token
+   * time with different claims); otherwise a single read.
    * Idempotent and safe under concurrent calls for the same identity.
    */
   syncIdentity: (identity: VerifiedIdentity, defaultName: string | null) => Promise<UserProfile>;
@@ -25,23 +27,49 @@ export const createProfileRepository = (prisma: PrismaClient): ProfileRepository
       emailVerified: identity.emailVerified,
       isAnonymous: identity.isAnonymous,
       signInProvider: identity.signInProvider,
-      identityIssuedAt: identity.issuedAt,
     };
+    const issuedAt = identity.issuedAt;
 
-    // INSERT … ON CONFLICT DO NOTHING: concurrent first requests of the same
-    // user create exactly one row and none of them fails.
-    await prisma.userProfile.createMany({
-      data: [{ firebaseUid: identity.uid, name: defaultName, ...identityFields }],
-      skipDuplicates: true,
-    });
+    // Write only what changes the profile: a newer token, or the same token
+    // time with different claims. A token older than the one already applied
+    // (e.g. a request that raced a refresh after email verification) never
+    // rolls the profile back. The condition is part of the UPDATE itself, so
+    // it holds under concurrent requests (no read-then-write race).
+    const applyIfNewer = () =>
+      prisma.userProfile.updateMany({
+        where: {
+          firebaseUid: identity.uid,
+          OR: [{ identityIssuedAt: { lt: issuedAt } }, { identityIssuedAt: issuedAt, NOT: identityFields }],
+        },
+        data: { ...identityFields, identityIssuedAt: issuedAt },
+      });
 
-    // A token older than the one already applied (e.g. a request that raced
-    // a refresh after email verification) must not roll the profile back.
-    await prisma.userProfile.updateMany({
-      where: { firebaseUid: identity.uid, identityIssuedAt: { lte: identity.issuedAt } },
-      data: identityFields,
-    });
+    const existing = await prisma.userProfile.findUnique({ where: { firebaseUid: identity.uid } });
+    if (existing === null) {
+      // INSERT … ON CONFLICT DO NOTHING: concurrent first requests of the same
+      // user create exactly one row and none of them fails; a concurrent
+      // creator with an older token is then overwritten by the newer one.
+      await prisma.userProfile.createMany({
+        data: [{ firebaseUid: identity.uid, name: defaultName, ...identityFields, identityIssuedAt: issuedAt }],
+        skipDuplicates: true,
+      });
+      await applyIfNewer();
+      return prisma.userProfile.findUniqueOrThrow({ where: { firebaseUid: identity.uid } });
+    }
 
+    // Usual case: the same (or an older) token as last time and nothing to
+    // change: one read, no write (no row churn on every authenticated request).
+    const newer = existing.identityIssuedAt.getTime() < issuedAt.getTime();
+    const sameTimeOtherClaims =
+      existing.identityIssuedAt.getTime() === issuedAt.getTime() &&
+      (existing.email !== identityFields.email ||
+        existing.emailVerified !== identityFields.emailVerified ||
+        existing.isAnonymous !== identityFields.isAnonymous ||
+        existing.signInProvider !== identityFields.signInProvider);
+    if (!newer && !sameTimeOtherClaims) {
+      return existing;
+    }
+    await applyIfNewer();
     return prisma.userProfile.findUniqueOrThrow({ where: { firebaseUid: identity.uid } });
   },
 
