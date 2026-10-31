@@ -88,6 +88,11 @@ model MarketingSubscription {
   // The outstanding confirmation request, if any: its single-use nonce and
   // what the user agreed to when asking.
   confirmationNonce       String?
+  // Anchor of the resend limit (next attempt allowed after it + cooldown).
+  // Usually the time the last confirmation email was handed to the provider;
+  // after a provider 429 it is set so that the limit ends at Retry-After: then
+  // no email was sent (confirmationNonce is null) and it can be in the future.
+  // Never shown as a send date.
   confirmationSentAt      DateTime?
   confirmationSource      MarketingConsentSource?
   confirmationTextVersion String?

@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import type { MailOutcome, MarketingMailer } from "../src/modules/email/service/email.service.js";
 import { createActionTokenService } from "../src/modules/email/tokens/action-token.service.js";
-import { MARKETING_CONSENT_TEXT_VERSION, type ConsentRequest } from "../src/modules/marketing/consent.js";
+import { MARKETING_CONSENT_TEXT_VERSION, toMarketingStatus, type ConsentRequest } from "../src/modules/marketing/consent.js";
 import { createMarketingRouter } from "../src/modules/marketing/marketing.routes.js";
 import { CONFIRMATION_COOLDOWN_MS, createMarketingService, rateLimitBlockMs } from "../src/modules/marketing/marketing.service.js";
 import { createInMemoryMarketingRepository } from "./helpers/in-memory-repositories.js";
@@ -273,11 +273,35 @@ describe("marketing subscription", () => {
     expect(attempts).toHaveLength(2);
   });
 
-  it("a Retry-After that is not valid (absent, zero, above 24 h) falls back to the usual cooldown", () => {
+  it("a missing or non-positive Retry-After falls back to the usual cooldown; a long one is kept as is", () => {
     expect(rateLimitBlockMs(null)).toBe(CONFIRMATION_COOLDOWN_MS);
     expect(rateLimitBlockMs(0)).toBe(CONFIRMATION_COOLDOWN_MS);
-    expect(rateLimitBlockMs(48 * 3_600_000)).toBe(CONFIRMATION_COOLDOWN_MS);
+    expect(rateLimitBlockMs(Number.NaN)).toBe(CONFIRMATION_COOLDOWN_MS);
     expect(rateLimitBlockMs(90_000)).toBe(90_000);
+    expect(rateLimitBlockMs(48 * 3_600_000)).toBe(48 * 3_600_000);
+  });
+
+  it("429 with a Retry-After of 2 days: no attempt before it, the anchor lies in the future but is never shown as a send date", async () => {
+    const { app, service, repo, attempts, setOutcome, advance } = setup();
+    setOutcome({ kind: "rate_limited", retryAfterMs: 48 * 3_600_000 });
+    await subscribe(app, "days@example.invalid");
+    setOutcome({ kind: "accepted" });
+
+    const row = repo.byEmail("days@example.invalid");
+    expect(row?.confirmationNonce).toBeNull(); // no email was sent
+    expect(toMarketingStatus(row ?? null)).toMatchObject({ pendingConfirmation: false });
+    expect(JSON.stringify(toMarketingStatus(row ?? null))).not.toContain(row?.confirmationSentAt?.toISOString() ?? "-");
+    expect(await service.resendAvailableInSeconds("days@example.invalid")).toBe(48 * 3_600);
+
+    advance(24 * 3_600_000);
+    await subscribe(app, "days@example.invalid");
+    advance(24 * 3_600_000 - 1);
+    await subscribe(app, "days@example.invalid");
+    expect(attempts).toHaveLength(1); // not one minute, nor 10 minutes, nor a day early
+
+    advance(2);
+    await subscribe(app, "days@example.invalid");
+    expect(attempts).toHaveLength(2);
   });
 
   it("sign-up checkbox after a 429: blocked until the limit ends, then possible again (only that case)", async () => {

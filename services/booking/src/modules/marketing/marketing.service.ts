@@ -13,18 +13,14 @@ import type { MarketingRepository, RequestMode } from "./marketing.repository.js
 /** One confirmation email per address per this interval (explicit requests). */
 export const CONFIRMATION_COOLDOWN_MS = 10 * 60 * 1000;
 
-/** A Retry-After above this is not plausible for an email API and is not used. */
-export const MAX_RATE_LIMIT_BLOCK_MS = 24 * 60 * 60 * 1000;
-
 /**
  * How long an address may not get a new confirmation attempt after Brevo's
- * 429: the provider's Retry-After when valid (positive, at most 24 h),
- * otherwise the usual cooldown.
+ * 429: the provider's Retry-After whenever it is a valid positive duration,
+ * however long (never shortened: no attempt before the provider's time),
+ * otherwise (absent, zero, unparseable) the usual cooldown.
  */
 export const rateLimitBlockMs = (retryAfterMs: number | null): number =>
-  retryAfterMs !== null && Number.isFinite(retryAfterMs) && retryAfterMs > 0 && retryAfterMs <= MAX_RATE_LIMIT_BLOCK_MS
-    ? retryAfterMs
-    : CONFIRMATION_COOLDOWN_MS;
+  retryAfterMs !== null && Number.isFinite(retryAfterMs) && retryAfterMs > 0 ? retryAfterMs : CONFIRMATION_COOLDOWN_MS;
 
 const uuidSchema = z.uuid();
 
@@ -189,6 +185,8 @@ export const createMarketingService = ({
    * Seconds until an explicit request may send a new confirmation email for
    * this address (0 when it may send now or there is nothing pending). Only
    * for the owner of the address: the public form stays neutral.
+   * confirmationSentAt is read here as the anchor of the resend limit only
+   * (after a 429 it can lie in the future and no email was sent).
    */
   const resendAvailableInSeconds = async (email: string): Promise<number> => {
     const subscription = await repository.findByEmail(email);

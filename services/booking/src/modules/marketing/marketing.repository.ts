@@ -35,7 +35,9 @@ export type MarketingRepository = {
    * The provider refused the email for rate limiting (429): no email exists,
    * so the pending confirmation is cleared (no link to confirm), but the
    * resend limit stays: confirmationSentAt is set to `cooldownAnchor`, so the
-   * usual cooldown check blocks new requests until anchor + cooldown.
+   * usual cooldown check blocks new requests until anchor + cooldown. The
+   * anchor can be in the future (a long Retry-After) and then does not mean
+   * an email was sent; nothing shows it as a send date.
    */
   throttleConfirmation: (id: string, nonce: string, cooldownAnchor: Date) => Promise<void>;
   /** Subscribes if the nonce is the current one, recording the consent. */
