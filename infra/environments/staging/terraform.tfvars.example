@@ -12,14 +12,14 @@ booking_api_image        = "000000000000.dkr.ecr.eu-west-3.amazonaws.com/massage
 booking_migrate_image    = "000000000000.dkr.ecr.eu-west-3.amazonaws.com/massage/booking-migrate@sha256:<64 hex>"
 booking_image_commit_sha = "<40-character commit SHA>"
 
-# Notifications worker (notifications.tf). Image: the booking-api digest of
-# the commit to run (Terraform-owned, not updated by the deploy workflow).
-# Addresses are approved test mailboxes only; keep them out of Git.
-booking_notifications_image      = "000000000000.dkr.ecr.eu-west-3.amazonaws.com/massage/booking-api@sha256:<64 hex>"
-notification_studio_email        = "studio-test@example.invalid"
-notification_recipient_allowlist = ["studio-test@example.invalid", "client-test@example.invalid"]
-email_from_name                  = "<sender name>"
-email_from_email                 = "<verified sender address>"
+# Booking notifications inside the API (off by default). When true, the SSM
+# parameter /<name_prefix>/booking/brevo-api-key must exist first. Addresses
+# are approved test mailboxes only; keep them out of Git.
+# enable_booking_notifications     = true
+# notification_studio_email        = "studio-test@example.invalid"
+# notification_recipient_allowlist = ["studio-test@example.invalid", "client-test@example.invalid"]
+# email_from_name                  = "<sender name>"
+# email_from_email                 = "<verified sender address>"
 
 # Defaults, change only if needed:
 # region                   = "eu-west-3"
@@ -35,7 +35,7 @@ email_from_email                 = "<verified sender address>"
 # api_memory               = 512
 # log_retention_days       = 14
 # vpc_link_az_ids          = ["euw3-az1", "euw3-az3"]
-# api_throttling_rate_limit  = 1
+# api_throttling_rate_limit  = 2
 # api_throttling_burst_limit = 10
 # github_deploy_environment  = "staging"
 # firebase_project_id        = "massage-fr"  # staging Firebase project

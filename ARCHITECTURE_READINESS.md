@@ -5,6 +5,8 @@
 > Незакомічені зміни: лише неперевірений (untracked) `BACKEND_HANDOFF.md` (попередній звіт). Код з моменту handoff не змінювався: SHA той самий, `git status` чистий щодо `src/`, `prisma/` і конфігурацій.
 > Звіт самодостатній і призначений для узгодження плану з іншим AI-помічником.
 
+> **Історичний документ.** Частину рішень замінено рішенням «модульний моноліт» (2026-10-31): див. [docs/architecture.md](docs/architecture.md). Не діють: окремі сервіси й `packages/*` (розділ 4), relay → SQS і `notifications-worker` як окремий ECS-сервіс (розділи 3.5, 5 — етап 9, 7), незалежний деплой API та worker (розділ 5), схема БД на сервіс. Листи про бронювання надсилає модуль Notifications у процесі API ([docs/notifications.md](docs/notifications.md)). Решта документа — контекст першого етапу.
+
 ## Позначки достовірності
 
 | Позначка | Значення |
@@ -202,6 +204,8 @@
 
 ### 3.5 Brevo та Notifications
 
+> **Замінено рішенням «модульний моноліт» (2026-10-31, [docs/architecture.md](docs/architecture.md)).** Relay, SQS і окремий worker не реалізуються; актуальна схема — [docs/notifications.md](docs/notifications.md).
+
 **Повторно використовується [К]:**
 - конфігурація `BrevoClient` (`timeoutInSeconds`, `maxRetries`);
 - `sendTransactionalEmail` (повертає `messageId`);
@@ -255,6 +259,8 @@
 ---
 
 ## 4. Запропонована структура репозиторію
+
+> **Замінено рішенням «модульний моноліт» (2026-10-31, [docs/architecture.md](docs/architecture.md)).** Один застосунок `services/booking` з модулями; `packages/*` і окремі сервіси не плануються.
 
 **[Р]** npm workspaces (без Nx/Turborepo — на цьому розмірі вони не потрібні):
 
@@ -328,7 +334,9 @@ Massage-backend/
 | 9 | **Notifications** | 8 | Outbox у Booking, SQS + DLQ (Terraform), `notifications-worker` як окремий ECS service без вхідних правил, журнал доставки, перенесений Brevo-адаптер; згодом webhook | 8 | Повтор повідомлення не дає другого листа; помилка Brevo не ламає бізнес-операцію; DLQ з алармом |
 | 10 | **Бронювання** (каталог, розклад, винятки, доступність, створення з захистом від конкурентного й повторного створення) | 8 | Окреме проєктування | — | — |
 
-**Незалежний деплой API та worker:** окремі ECR-репозиторії, окремі ECS services і task definitions, окремі workflow-задачі. Тригер — зміни в `services/<svc>/**`, у будь-якому `packages/**`, від якого сервіс залежить (на старті достатньо правила «будь-яка зміна `packages/**` або `package-lock.json` перезбирає всі сервіси»), чи в кореневих `tsconfig.base.json`/`eslint.config.js`. **[Р]** Пізніше можна додати визначення змінених сервісів через `npm query`.
+> **Замінено рішенням «модульний моноліт» (2026-10-31, [docs/architecture.md](docs/architecture.md)).** Окремого worker немає, деплой спільний.
+
+**Незалежний деплой API та worker (не діє):** окремі ECR-репозиторії, окремі ECS services і task definitions, окремі workflow-задачі. Тригер — зміни в `services/<svc>/**`, у будь-якому `packages/**`, від якого сервіс залежить (на старті достатньо правила «будь-яка зміна `packages/**` або `package-lock.json` перезбирає всі сервіси»), чи в кореневих `tsconfig.base.json`/`eslint.config.js`. **[Р]** Пізніше можна додати визначення змінених сервісів через `npm query`.
 
 **Міграції та відкат:**
 - окремий one-off ECS task з роллю migrator і direct-endpoint;
@@ -406,7 +414,7 @@ Massage-backend/
 - ALB (вимагає щонайменше дві AZ — дві публічні підмережі).
 - CloudWatch Logs з обмеженим терміном зберігання.
 - Секрети: Secrets Manager або SSM Parameter Store SecureString.
-- SQS/DLQ і worker — лише з етапу Notifications.
+- ~~SQS/DLQ і worker — лише з етапу Notifications.~~ Не плануються (модульний моноліт, [docs/architecture.md](docs/architecture.md)).
 - Режим staging [?]: працює постійно чи з плановим `desiredCount = 0`. ALB тарифікується погодинно навіть без задач.
 
 ### Кошторис — перелік оплачуваних компонентів (без тарифів)

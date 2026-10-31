@@ -395,77 +395,32 @@ aws ssm describe-parameters --region eu-west-3 \
 
 Вартість вікна до 2 год: ≈ $0.05 (≈ $0.52 на добу під час роботи).
 
-## Постійний запуск з Notifications (на кілька днів)
+## Постійний запуск staging (листи — модуль API)
 
-API з бронюваннями і worker листів працюють цілодобово, доки власник окремо не попросить зупинку. Автоматичної паузи й таймера немає.
+Модульний моноліт ([docs/architecture.md](../docs/architecture.md)): на staging працює **один** ECS-сервіс `booking-api` і за потреби одноразова задача міграцій. Окремого worker повідомлень немає: листи надсилає модуль Notifications у процесі API, лише після записів бронювання, під час старту та за таймером конкретної повторної спроби ([docs/notifications.md](../docs/notifications.md)). API працює, доки власник окремо не попросить зупинку; автоматичної паузи немає (рішення власника).
 
-### Компоненти
+> **Замінено.** Попередня версія цього розділу (PR #26) описувала окремий ECS-сервіс `booking-notifications` з опитуванням БД кожні 5 с, роль БД `booking_notifier` і throttling 1 rps. Від цього відмовились: `notifications.tf` видалено, throttling — знову 2 rps. Якщо worker уже був створений у AWS, наступний `terraform plan` має явно показати видалення його ресурсів.
 
-| Компонент | Що це | Хто керує образом / `desired_count` |
+### Листи в API (Terraform)
+
+| Змінна Terraform | За замовчуванням | Дія |
 |---|---|---|
-| `booking-api` | ECS-сервіс, 0.25 vCPU / 0.5 GB, за API Gateway | workflow `Staging deploy` / workflow і ручна зупинка |
-| `booking-notifications` | ECS-сервіс (`notifications.tf`), той самий образ `booking-api`, команда `node dist/notifications/main.js`, 0.25 vCPU / 0.5 GB, без вхідного трафіку | **Terraform** (`booking_notifications_image`) / оператор (`update-service`) |
+| `enable_booking_notifications` | `false` | Вимкнено: task definition API не отримує ні змінних Notifications, ні секрету `BREVO_API_KEY`, а execution role — права на нього. Відсутній параметр SSM запуск API не блокує |
+| `notification_studio_email`, `notification_recipient_allowlist`, `email_from_name`, `email_from_email` | порожні | Обов'язкові лише при `true`; precondition вимагає, щоб адреса студії була в allowlist. Значення — у `terraform.tfvars` (Git його ігнорує); вони потрапляють у task definition і state |
 
-- Workflow деплою worker не оновлює, а роль деплою не може передати його ролі ECS. Новий образ для worker — `terraform apply` з новим digest.
-- `NOTIFICATIONS_ENVIRONMENT=staging`: без `notification_recipient_allowlist` worker не стартує. Листи на інші адреси отримують `skipped` і не надсилаються.
-- Адреси (allowlist, студія, відправник) задаються в `terraform.tfvars`, який Git ігнорує. Вони потрапляють у task definition і state, але не в Git.
+Порядок увімкнення (кожен крок — окреме погодження):
+1. **[власник]** SecureString `/massage-staging/booking/brevo-api-key` (спосіб — розділ «Секрети»).
+2. `terraform plan` з `enable_booking_notifications = true` і адресами → перевірка → `apply`. Це створює нову ревізію task definition API; запущені задачі не змінюються.
+3. `Staging deploy`: бере нову ревізію за основу й підставляє образ. Окремої ролі БД не потрібно: `booking_app` уже має права на таблиці Notifications (їх видає раннер міграцій).
 
-### Секрети й роль БД (власник)
-
-| Параметр SSM (`SecureString`) | Значення |
-|---|---|
-| `/massage-staging/booking/brevo-api-key` | окремий API-ключ Brevo для staging |
-| `/massage-staging/booking/notifications-database-url` | URL ролі `booking_notifier`, **direct endpoint** Neon (не pooler), TLS |
-
-Створення — тим самим способом через файл, що й для інших параметрів (розділ «Секрети»).
-
-Роль `booking_notifier` створюється **SQL-ом**, а не в Neon Console: ролі з Console/API отримують членство в `neon_superuser`. Порядок: після міграції `20261031120000_booking_notifications`.
-
-```sql
--- як власник БД (neondb_owner), psql:
-CREATE ROLE booking_notifier LOGIN;
-\password booking_notifier
-GRANT CONNECT ON DATABASE neondb TO booking_notifier;
-GRANT USAGE ON SCHEMA public TO booking_notifier;
-
--- як booking_migrator (власник таблиць):
-GRANT SELECT ON TABLE "OutboxEvent" TO booking_notifier;
-GRANT SELECT, INSERT, UPDATE ON TABLE "NotificationEvent", "NotificationDelivery" TO booking_notifier;
-
--- перевірка: true, true, true, false, false, false, false
-SELECT has_table_privilege('booking_notifier', '"OutboxEvent"', 'SELECT'),
-       has_table_privilege('booking_notifier', '"NotificationDelivery"', 'UPDATE'),
-       has_table_privilege('booking_notifier', '"NotificationEvent"', 'INSERT'),
-       has_table_privilege('booking_notifier', '"OutboxEvent"', 'UPDATE'),
-       has_table_privilege('booking_notifier', '"NotificationDelivery"', 'DELETE'),
-       has_table_privilege('booking_notifier', '"Booking"', 'SELECT'),
-       pg_has_role('booking_notifier', 'neon_superuser', 'MEMBER');
-```
-
-Раннер міграцій права `booking_notifier` не змінює: він видає права лише `booking_app`.
-
-### Старт і зупинка worker
-
-```sh
-export AWS_PROFILE=massage AWS_REGION=eu-west-3
-# старт (після apply, міграцій і обох параметрів SSM)
-aws ecs update-service --cluster massage-staging --service booking-notifications --desired-count 1 \
-  --query 'service.desiredCount'
-# зупинка всього staging — лише за окремим повідомленням власника
-for s in booking-notifications booking-api; do
-  aws ecs update-service --cluster massage-staging --service "$s" --desired-count 0 --query 'service.desiredCount'
-done
-aws ecs wait services-stable --cluster massage-staging --services booking-notifications booking-api
-```
-
-Після зупинки виконайте «Перевірку паузи» (нижче) і перевірте `booking-notifications`: desired 0, running 0, ENI з SG `massage-staging-notifications` — 0.
+`NOTIFICATIONS_ENVIRONMENT=staging`: без allowlist API не стартує; листи на інші адреси отримують `skipped`.
 
 ### Помилки під час запуску
 
 Без нескінченних повторів:
-- **Деплой API червоний** (міграція, rollout, readiness, auth): повторно не запускати. API → `desired-count 0`, звіт про фактичний стан. Worker не стартує.
-- **Worker:** перші 10 хв після старту — спостереження. Якщо задача зупинилась з помилкою двічі (`stoppedReason`, exit code) або в лозі `invalid notifications configuration` чи `email provider configuration error` → `desired-count 0` для worker. API лишається працювати, звіт.
-- Після успішного старту ECS сам перезапускає задачу, що впала (з наростаючою затримкою). Помилки БД і Brevo під час роботи задачу не валять: worker логує їх і повторює за розкладом (до 8 спроб на лист).
+- **Деплой API червоний** (міграція, rollout, readiness, auth): повторно не запускати. API → `desired-count 0`, звіт про фактичний стан.
+- **Помилка конфігурації листів** (наприклад, немає параметра SSM при `true` або невалідні адреси): задача API не стартує, circuit breaker повертає попередню ревізію, workflow червоний → як вище.
+- Збої Brevo чи БД під час роботи API не зупиняють: лист отримує до 3 спроб, далі `failed`.
 
 ### Кошторис постійного запуску (eu-west-3, AWS Pricing API, 2026-10-30)
 
@@ -474,21 +429,18 @@ aws ecs wait services-stable --cluster massage-staging --services booking-notifi
 | Стаття | Розрахунок | За добу |
 |---|---|---|
 | Fargate API | (0.25 × 0.0486 + 0.5 × 0.0053) × 24 | 0.355 |
-| Fargate worker | те саме | 0.355 |
-| Public IPv4 (2 задачі) | 2 × 0.005 × 24 | 0.240 |
+| Public IPv4 (1 задача) | 0.005 × 24 | 0.120 |
 | Route 53 hosted zone (Cloud Map) | $0.50 / 30 | 0.017 |
 | Cloud Map: 1 екземпляр | $0.10 / 30 | 0.003 |
-| ECR ≈ 1 GB (6 образів) | $0.10 / 30 | 0.003 |
+| ECR ≈ 1 GB | $0.10 / 30 | 0.003 |
 | HTTP API + Cloud Map + логи при ≈ 2 000 запитів/добу | | ≈ 0.007 |
-| CloudWatch Logs worker | у простої worker не логує; health checks API — debug | < 0.001 |
 | SSM Standard, `aws/ssm`, IAM, SG, VPC link, кластер | | 0 |
-| **Разом, базово** | | **≈ $0.98** |
+| **Разом, базово** | | **≈ $0.50** |
 
 Змінні:
-- **Запити** до публічного URL: при потоці на межі throttling (1 rps, 86 400/добу) додається ≈ $0.10 (HTTP API) + ≈ $0.09 (Cloud Map, якщо один виклик на запит) + ≈ $0.05 (логи) → **≈ $1.22**. Тому `api_throttling_rate_limit` знижено з 2 до 1 rps: з 2 rps найгірший випадок ≈ $1.46.
+- **Запити** до публічного URL на межі throttling (2 rps, 172 800/добу): ≈ +$0.20 (HTTP API) + ≈ $0.17 (Cloud Map, якщо один виклик на запит) + ≈ $0.08 (логи) → **≈ $0.95** у найгіршому випадку.
 - **Деплої:** перекриття двох задач API кілька хвилин і задача міграції — < $0.01 за деплой.
-- **Трафік до Neon** (Франкфурт, через інтернет): опитування worker раз на 5 с — орієнтовно < 0.1 GB/добу, у межах безкоштовних 100 GB/міс. вихідного трафіку AWS.
-- **Neon (поза AWS):** worker опитує БД кожні 5 с, тож compute не засинає. Це compute-години Neon — перевіряйте використання в Neon Console.
+- **Neon (поза AWS):** у простої API до БД не звертається (пул закриває з'єднання через 30 с, health check контейнера — `/health/live` без БД, листи — без опитування), тож compute засинає. `/health/ready` робить `SELECT 1`: не спрямовуйте на нього зовнішні монітори.
 
 ## Пауза staging
 
