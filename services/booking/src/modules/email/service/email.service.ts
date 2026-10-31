@@ -15,13 +15,16 @@ export type EmailServiceConfig = {
  * Result of one marketing email, sent inside an HTTP request:
  * - accepted: accepted by Brevo for sending (also when Brevo recognises the
  *   idempotency key of an earlier accepted attempt); not "delivered";
- * - not_sent: certainly not accepted (rejected, configuration, 429 rate limit:
- *   the request was refused and not processed); safe to try again;
+ * - not_sent: certainly not accepted (rejected, configuration); safe to try
+ *   again;
+ * - rate_limited (429): refused and not processed; retry only after the
+ *   provider's Retry-After (retryAfterMs, when given);
  * - uncertain: timeout, network error or 5xx: Brevo may have accepted it.
  */
 export type MailOutcome =
   | { kind: "accepted" }
-  | { kind: "not_sent"; code: "provider_rejected" | "provider_auth" | "provider_forbidden" | "provider_account" | "rate_limited" }
+  | { kind: "not_sent"; code: "provider_rejected" | "provider_auth" | "provider_forbidden" | "provider_account" }
+  | { kind: "rate_limited"; retryAfterMs: number | null }
   | { kind: "uncertain"; code: "provider_unavailable" | "timeout" | "network" };
 
 /** Marketing emails; links and idempotency keys are built by the caller. */
@@ -77,7 +80,7 @@ export const createBrevoMarketingMailer = ({
           return { kind: "not_sent", code: failure.code };
         case "retryable":
           return failure.code === "rate_limited"
-            ? { kind: "not_sent", code: "rate_limited" }
+            ? { kind: "rate_limited", retryAfterMs: failure.retryAfterMs }
             : { kind: "uncertain", code: failure.code };
       }
     }

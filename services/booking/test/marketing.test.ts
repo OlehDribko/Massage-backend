@@ -5,9 +5,9 @@ import { describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import type { MailOutcome, MarketingMailer } from "../src/modules/email/service/email.service.js";
 import { createActionTokenService } from "../src/modules/email/tokens/action-token.service.js";
-import { MARKETING_CONSENT_TEXT_VERSION } from "../src/modules/marketing/consent.js";
+import { MARKETING_CONSENT_TEXT_VERSION, type ConsentRequest } from "../src/modules/marketing/consent.js";
 import { createMarketingRouter } from "../src/modules/marketing/marketing.routes.js";
-import { CONFIRMATION_COOLDOWN_MS, createMarketingService } from "../src/modules/marketing/marketing.service.js";
+import { CONFIRMATION_COOLDOWN_MS, createMarketingService, rateLimitBlockMs } from "../src/modules/marketing/marketing.service.js";
 import { createInMemoryMarketingRepository } from "./helpers/in-memory-repositories.js";
 import { createCapturingLogger } from "./helpers/logs.js";
 
@@ -59,6 +59,7 @@ const setup = (options: { failSends?: boolean } = {}) => {
   });
   return {
     app,
+    service,
     repo,
     sent,
     attempts,
@@ -224,18 +225,74 @@ describe("marketing subscription", () => {
     expect(logs.raw()).not.toContain("c@example.invalid");
   });
 
-  it("429: the provider refused the request; nothing is kept, an immediate retry sends with a new key", async () => {
-    const { app, repo, sent, attempts, setOutcome, logs } = setup();
-    setOutcome({ kind: "not_sent", code: "rate_limited" });
+  it("429 without Retry-After: the resend limit stays; an immediate repeat does not call the provider", async () => {
+    const { app, repo, sent, attempts, setOutcome, advance, logs } = setup();
+    setOutcome({ kind: "rate_limited", retryAfterMs: null });
     expect((await subscribe(app, "r@example.invalid")).status).toBe(503);
-    expect(repo.byEmail("r@example.invalid")).toMatchObject({ confirmationSentAt: null, confirmationNonce: null });
+    // No email, so no confirmation is pending; the limit is kept.
+    expect(repo.byEmail("r@example.invalid")).toMatchObject({ confirmationNonce: null, confirmationSource: null });
+    expect(repo.byEmail("r@example.invalid")?.confirmationSentAt).toBeInstanceOf(Date);
     expect(logs.raw()).toContain("rate_limited");
 
     setOutcome({ kind: "accepted" });
+    expect((await subscribe(app, "r@example.invalid")).status).toBe(202); // neutral, unchanged contract
+    advance(CONFIRMATION_COOLDOWN_MS - 1);
     expect((await subscribe(app, "r@example.invalid")).status).toBe(202);
-    expect(sent).toHaveLength(1);
+    expect(attempts).toHaveLength(1); // no provider call during the block
+
+    advance(2);
+    expect((await subscribe(app, "r@example.invalid")).status).toBe(202);
     expect(attempts).toHaveLength(2);
-    expect(attempts[0]).not.toBe(attempts[1]); // a new claim is a new operation
+    expect(sent).toHaveLength(1);
+    expect(attempts[1]).not.toBe(attempts[0]); // a new legitimate attempt: new key
+  });
+
+  it("429 with Retry-After: no provider call before it, a retry is allowed once it has passed", async () => {
+    const { app, attempts, setOutcome, advance } = setup();
+    setOutcome({ kind: "rate_limited", retryAfterMs: 120_000 });
+    expect((await subscribe(app, "ra@example.invalid")).status).toBe(503);
+    setOutcome({ kind: "accepted" });
+    advance(119_999);
+    await subscribe(app, "ra@example.invalid");
+    expect(attempts).toHaveLength(1);
+    advance(2);
+    await subscribe(app, "ra@example.invalid");
+    expect(attempts).toHaveLength(2);
+  });
+
+  it("429 with a Retry-After longer than the cooldown: blocked for the provider's time, not just the cooldown", async () => {
+    const { app, attempts, setOutcome, advance } = setup();
+    setOutcome({ kind: "rate_limited", retryAfterMs: 30 * 60_000 });
+    await subscribe(app, "long@example.invalid");
+    setOutcome({ kind: "accepted" });
+    advance(CONFIRMATION_COOLDOWN_MS + 1);
+    await subscribe(app, "long@example.invalid");
+    expect(attempts).toHaveLength(1);
+    advance(30 * 60_000 - CONFIRMATION_COOLDOWN_MS);
+    await subscribe(app, "long@example.invalid");
+    expect(attempts).toHaveLength(2);
+  });
+
+  it("a Retry-After that is not valid (absent, zero, above 24 h) falls back to the usual cooldown", () => {
+    expect(rateLimitBlockMs(null)).toBe(CONFIRMATION_COOLDOWN_MS);
+    expect(rateLimitBlockMs(0)).toBe(CONFIRMATION_COOLDOWN_MS);
+    expect(rateLimitBlockMs(48 * 3_600_000)).toBe(CONFIRMATION_COOLDOWN_MS);
+    expect(rateLimitBlockMs(90_000)).toBe(90_000);
+  });
+
+  it("sign-up checkbox after a 429: blocked until the limit ends, then possible again (only that case)", async () => {
+    const { service, attempts, setOutcome, advance } = setup();
+    const SIGNUP: ConsentRequest = { source: "signup_checkbox", textVersion: MARKETING_CONSENT_TEXT_VERSION };
+    setOutcome({ kind: "rate_limited", retryAfterMs: 60_000 });
+    expect(await service.requestSubscription("s@example.invalid", SIGNUP, "signup")).toBe("delivery_failed");
+    setOutcome({ kind: "accepted" });
+    expect(await service.requestSubscription("s@example.invalid", SIGNUP, "signup")).toBe("no_action");
+    advance(60_001);
+    expect(await service.requestSubscription("s@example.invalid", SIGNUP, "signup")).toBe("confirmation_sent");
+    // An email that was actually sent is never repeated by the sign-up checkbox.
+    advance(CONFIRMATION_COOLDOWN_MS + 1);
+    expect(await service.requestSubscription("s@example.invalid", SIGNUP, "signup")).toBe("no_action");
+    expect(attempts).toHaveLength(2);
   });
 
   it("unknown outcome (timeout, 5xx): the claim and its cooldown stay, so a repeat cannot send a second email", async () => {

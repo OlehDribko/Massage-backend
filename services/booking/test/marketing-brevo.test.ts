@@ -38,9 +38,9 @@ describe("marketing mailer (Brevo)", () => {
     expect(bodies).toHaveLength(1);
   });
 
-  it("429 is handled on its own: refused and not processed, so 'not sent' (one call, no retry)", async () => {
+  it("429 is handled on its own: refused and not processed, with the provider's Retry-After (one call, no retry)", async () => {
     const { mailer, bodies } = mailerWith(() => json(429, { message: "slow down" }, { "retry-after": "30" }));
-    expect(await mailer.sendConfirmationRequest("a@example.invalid", "https://x.invalid/", KEY)).toEqual({ kind: "not_sent", code: "rate_limited" });
+    expect(await mailer.sendConfirmationRequest("a@example.invalid", "https://x.invalid/", KEY)).toEqual({ kind: "rate_limited", retryAfterMs: 30_000 });
     expect(bodies).toHaveLength(1);
   });
 

@@ -13,14 +13,29 @@ import type { MarketingRepository, RequestMode } from "./marketing.repository.js
 /** One confirmation email per address per this interval (explicit requests). */
 export const CONFIRMATION_COOLDOWN_MS = 10 * 60 * 1000;
 
+/** A Retry-After above this is not plausible for an email API and is not used. */
+export const MAX_RATE_LIMIT_BLOCK_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * How long an address may not get a new confirmation attempt after Brevo's
+ * 429: the provider's Retry-After when valid (positive, at most 24 h),
+ * otherwise the usual cooldown.
+ */
+export const rateLimitBlockMs = (retryAfterMs: number | null): number =>
+  retryAfterMs !== null && Number.isFinite(retryAfterMs) && retryAfterMs > 0 && retryAfterMs <= MAX_RATE_LIMIT_BLOCK_MS
+    ? retryAfterMs
+    : CONFIRMATION_COOLDOWN_MS;
+
 const uuidSchema = z.uuid();
 
 /**
  * - confirmation_sent: a confirmation email was accepted by the provider
  *   (not a promise of delivery to the inbox);
- * - delivery_failed: the provider certainly did not accept the email
- *   (rejected, configuration, rate limit); nothing changed, the request can
- *   be repeated;
+ * - delivery_failed: the provider certainly did not accept the email.
+ *   Rejected or configuration: nothing changed, the request can be repeated.
+ *   Rate limit (429): no email and no pending confirmation, but new attempts
+ *   for this address are blocked until Retry-After (or the cooldown) ends;
+ *   repeats before that answer no_action without calling the provider;
  * - no_action: nothing to do (already subscribed, confirmation already sent
  *   recently, or the sign-up checkbox after an earlier unsubscribe). Not
  *   distinguished, so the answer reveals nothing about the address. Also
@@ -104,6 +119,14 @@ export const createMarketingService = ({
         await repository.releaseConfirmation(subscription.id, nonce);
         logger.error({ code: outcome.code }, "marketing confirmation email not sent");
         return "delivery_failed";
+      case "rate_limited": {
+        // Keep the resend limit: the cooldown check then blocks every request
+        // (and every new claim) until sentAt + blockMs, without the provider.
+        const blockMs = rateLimitBlockMs(outcome.retryAfterMs);
+        await repository.throttleConfirmation(subscription.id, nonce, new Date(sentAt + blockMs - CONFIRMATION_COOLDOWN_MS));
+        logger.error({ code: "rate_limited", blockMs }, "marketing confirmation email refused by rate limit; resend blocked");
+        return "delivery_failed";
+      }
       case "uncertain":
         logger.warn({ code: outcome.code }, "marketing confirmation email outcome unknown; cooldown kept");
         return "no_action";
@@ -139,7 +162,10 @@ export const createMarketingService = ({
           idempotencyKeyFor("marketing_subscription_confirmed", subscription.id, nonce),
         );
         if (outcome.kind !== "accepted") {
-          logger.error({ code: outcome.code }, "subscription confirmed email not accepted");
+          logger.error(
+            { code: outcome.kind === "rate_limited" ? "rate_limited" : outcome.code },
+            "subscription confirmed email not accepted",
+          );
         }
       }
       return "subscribed";

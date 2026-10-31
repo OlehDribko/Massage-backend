@@ -31,6 +31,13 @@ export type MarketingRepository = {
   claimConfirmation: (id: string, claim: ConfirmationClaim) => Promise<boolean>;
   /** Undoes a claim whose email could not be sent, so the request can be retried. */
   releaseConfirmation: (id: string, nonce: string) => Promise<void>;
+  /**
+   * The provider refused the email for rate limiting (429): no email exists,
+   * so the pending confirmation is cleared (no link to confirm), but the
+   * resend limit stays: confirmationSentAt is set to `cooldownAnchor`, so the
+   * usual cooldown check blocks new requests until anchor + cooldown.
+   */
+  throttleConfirmation: (id: string, nonce: string, cooldownAnchor: Date) => Promise<void>;
   /** Subscribes if the nonce is the current one, recording the consent. */
   confirm: (id: string, nonce: string, at: Date) => Promise<boolean>;
   /** Idempotent; also cancels an outstanding confirmation. */
@@ -55,12 +62,17 @@ export const createMarketingRepository = (prisma: PrismaClient): MarketingReposi
   findById: (id) => prisma.marketingSubscription.findUnique({ where: { id } }),
 
   claimConfirmation: async (id, claim) => {
+    // Sign-up: once per address, unless the only earlier attempt was refused
+    // by the provider's rate limit (no nonce left) and its block has ended.
     const allowed =
       claim.mode === "signup"
         ? {
             unsubscribedAt: null,
             consentGivenAt: null,
-            confirmationSentAt: null,
+            OR: [
+              { confirmationSentAt: null },
+              { confirmationNonce: null, confirmationSentAt: { lt: claim.cooldownSince } },
+            ],
           }
         : {
             OR: [{ confirmationSentAt: null }, { confirmationSentAt: { lt: claim.cooldownSince } }],
@@ -81,6 +93,13 @@ export const createMarketingRepository = (prisma: PrismaClient): MarketingReposi
     await prisma.marketingSubscription.updateMany({
       where: { id, confirmationNonce: nonce },
       data: clearedConfirmation,
+    });
+  },
+
+  throttleConfirmation: async (id, nonce, cooldownAnchor) => {
+    await prisma.marketingSubscription.updateMany({
+      where: { id, confirmationNonce: nonce },
+      data: { ...clearedConfirmation, confirmationSentAt: cooldownAnchor },
     });
   },
 
