@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
-import { describeError, type Logger } from "../../logging/logger.js";
+import { idempotencyKeyFor } from "../../integrations/brevo/idempotency.js";
+import type { Logger } from "../../logging/logger.js";
 import type { MarketingMailer } from "../email/service/email.service.js";
 import {
   invalidActionToken,
@@ -17,11 +18,15 @@ const uuidSchema = z.uuid();
 /**
  * - confirmation_sent: a confirmation email was accepted by the provider
  *   (not a promise of delivery to the inbox);
- * - delivery_failed: the email could not be handed to the provider; nothing
- *   changed, the request can be repeated;
+ * - delivery_failed: the provider certainly did not accept the email
+ *   (rejected, configuration, rate limit); nothing changed, the request can
+ *   be repeated;
  * - no_action: nothing to do (already subscribed, confirmation already sent
  *   recently, or the sign-up checkbox after an earlier unsubscribe). Not
- *   distinguished, so the answer reveals nothing about the address.
+ *   distinguished, so the answer reveals nothing about the address. Also
+ *   when the outcome of sending is unknown (timeout, network, 5xx): the email
+ *   may have been accepted, so the claim and its cooldown stay and a repeat
+ *   inside the cooldown sends nothing (no duplicate confirmation emails).
  */
 export type RequestOutcome = "confirmation_sent" | "delivery_failed" | "no_action";
 
@@ -84,13 +89,24 @@ export const createMarketingService = ({
       "/marketing/confirm",
       tokens.createToken("marketing_confirm", subscription.id, nonce),
     );
-    try {
-      await mailer.sendConfirmationRequest(subscription.email, confirmUrl);
-      return "confirmation_sent";
-    } catch (error) {
-      await repository.releaseConfirmation(subscription.id, nonce);
-      logger.error({ error: describeError(error) }, "failed to send marketing confirmation email");
-      return "delivery_failed";
+    // One key per claim (subscription + nonce): a repeat of this operation is
+    // recognised by Brevo; a later legitimate request (after the cooldown or
+    // a new subscription after an unsubscribe) has a new nonce and a new key.
+    const outcome = await mailer.sendConfirmationRequest(
+      subscription.email,
+      confirmUrl,
+      idempotencyKeyFor("marketing_confirmation_request", subscription.id, nonce),
+    );
+    switch (outcome.kind) {
+      case "accepted":
+        return "confirmation_sent";
+      case "not_sent":
+        await repository.releaseConfirmation(subscription.id, nonce);
+        logger.error({ code: outcome.code }, "marketing confirmation email not sent");
+        return "delivery_failed";
+      case "uncertain":
+        logger.warn({ code: outcome.code }, "marketing confirmation email outcome unknown; cooldown kept");
+        return "no_action";
     }
   };
 
@@ -115,10 +131,15 @@ export const createMarketingService = ({
           "/unsubscribe",
           tokens.createToken("marketing_unsubscribe", subscription.id),
         );
-        try {
-          await mailer.sendSubscriptionConfirmed(subscription.email, unsubscribeUrl);
-        } catch (error) {
-          logger.error({ error: describeError(error) }, "failed to send subscription confirmed email");
+        // Sent once per successful confirmation (repository.confirm is true
+        // only once per nonce); the key ties it to that confirmation.
+        const outcome = await mailer.sendSubscriptionConfirmed(
+          subscription.email,
+          unsubscribeUrl,
+          idempotencyKeyFor("marketing_subscription_confirmed", subscription.id, nonce),
+        );
+        if (outcome.kind !== "accepted") {
+          logger.error({ code: outcome.code }, "subscription confirmed email not accepted");
         }
       }
       return "subscribed";

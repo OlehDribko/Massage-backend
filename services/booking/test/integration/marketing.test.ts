@@ -29,11 +29,11 @@ const sent: { email: string; url: string }[] = [];
 const mailer: MarketingMailer = {
   sendConfirmationRequest: (email, url) => {
     sent.push({ email, url });
-    return Promise.resolve();
+    return Promise.resolve({ kind: "accepted" });
   },
   sendSubscriptionConfirmed: (email, url) => {
     sent.push({ email, url });
-    return Promise.resolve();
+    return Promise.resolve({ kind: "accepted" });
   },
 };
 
@@ -142,7 +142,7 @@ describe("marketing subscription in PostgreSQL", () => {
     const SIGNUP: ConsentRequest = { source: "signup_checkbox", textVersion: MARKETING_CONSENT_TEXT_VERSION };
     const ACCOUNT: ConsentRequest = { source: "account_request", textVersion: MARKETING_CONSENT_TEXT_VERSION };
     let clock = Date.parse("2026-10-28T12:00:00Z");
-    const failing: MarketingMailer = { ...mailer, sendConfirmationRequest: () => Promise.reject(new Error("down")) };
+    const failing: MarketingMailer = { ...mailer, sendConfirmationRequest: () => Promise.resolve({ kind: "not_sent", code: "provider_rejected" }) };
     const before = sent.length;
 
     expect(await service(() => clock, failing).requestSubscription("rec@example.invalid", SIGNUP, "signup")).toBe("delivery_failed");

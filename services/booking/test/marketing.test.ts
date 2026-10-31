@@ -3,7 +3,7 @@ import jwt from "jsonwebtoken";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
-import type { MarketingMailer } from "../src/modules/email/service/email.service.js";
+import type { MailOutcome, MarketingMailer } from "../src/modules/email/service/email.service.js";
 import { createActionTokenService } from "../src/modules/email/tokens/action-token.service.js";
 import { MARKETING_CONSENT_TEXT_VERSION } from "../src/modules/marketing/consent.js";
 import { createMarketingRouter } from "../src/modules/marketing/marketing.routes.js";
@@ -14,24 +14,27 @@ import { createCapturingLogger } from "./helpers/logs.js";
 const SECRET = "marketing-test-secret-0123456789abcdef";
 const FRONTEND = "https://front.example.invalid";
 
-type Sent = { kind: "confirm" | "confirmed"; email: string; url: string };
+type Sent = { kind: "confirm" | "confirmed"; email: string; url: string; key: string };
 
 const tokenFrom = (url: string): string => new URL(url).searchParams.get("token") ?? "";
 
 const setup = (options: { failSends?: boolean } = {}) => {
   const sent: Sent[] = [];
   let clock = Date.parse("2026-10-27T10:00:00Z");
+  // Outcome of the next confirmation requests; "accepted" records the mail.
+  let outcome: MailOutcome = options.failSends === true ? { kind: "not_sent", code: "provider_rejected" } : { kind: "accepted" };
+  const attempts: string[] = [];
   const mailer: MarketingMailer = {
-    sendConfirmationRequest: (email, url) => {
-      if (options.failSends === true) {
-        return Promise.reject(new Error("BREVO_SENTINEL provider down"));
+    sendConfirmationRequest: (email, url, key) => {
+      attempts.push(key);
+      if (outcome.kind === "accepted") {
+        sent.push({ kind: "confirm", email, url, key });
       }
-      sent.push({ kind: "confirm", email, url });
-      return Promise.resolve();
+      return Promise.resolve(outcome);
     },
-    sendSubscriptionConfirmed: (email, url) => {
-      sent.push({ kind: "confirmed", email, url });
-      return Promise.resolve();
+    sendSubscriptionConfirmed: (email, url, key) => {
+      sent.push({ kind: "confirmed", email, url, key });
+      return Promise.resolve({ kind: "accepted" });
     },
   };
   const repo = createInMemoryMarketingRepository();
@@ -58,6 +61,10 @@ const setup = (options: { failSends?: boolean } = {}) => {
     app,
     repo,
     sent,
+    attempts,
+    setOutcome: (next: MailOutcome) => {
+      outcome = next;
+    },
     logs,
     advance: (ms: number) => {
       clock += ms;
@@ -212,9 +219,55 @@ describe("marketing subscription", () => {
       confirmationSentAt: null,
       confirmationNonce: null,
     });
-    expect(logs.raw()).toContain("failed to send marketing confirmation email");
-    expect(logs.raw()).not.toContain("BREVO_SENTINEL");
+    expect(logs.raw()).toContain("marketing confirmation email not sent");
+    expect(logs.raw()).toContain("provider_rejected");
     expect(logs.raw()).not.toContain("c@example.invalid");
+  });
+
+  it("429: the provider refused the request; nothing is kept, an immediate retry sends with a new key", async () => {
+    const { app, repo, sent, attempts, setOutcome, logs } = setup();
+    setOutcome({ kind: "not_sent", code: "rate_limited" });
+    expect((await subscribe(app, "r@example.invalid")).status).toBe(503);
+    expect(repo.byEmail("r@example.invalid")).toMatchObject({ confirmationSentAt: null, confirmationNonce: null });
+    expect(logs.raw()).toContain("rate_limited");
+
+    setOutcome({ kind: "accepted" });
+    expect((await subscribe(app, "r@example.invalid")).status).toBe(202);
+    expect(sent).toHaveLength(1);
+    expect(attempts).toHaveLength(2);
+    expect(attempts[0]).not.toBe(attempts[1]); // a new claim is a new operation
+  });
+
+  it("unknown outcome (timeout, 5xx): the claim and its cooldown stay, so a repeat cannot send a second email", async () => {
+    const { app, repo, attempts, setOutcome, advance, logs } = setup();
+    setOutcome({ kind: "uncertain", code: "timeout" });
+    const first = await subscribe(app, "t@example.invalid");
+    expect(first.status).toBe(202); // neutral answer; the email may have been accepted
+    expect(repo.byEmail("t@example.invalid")?.confirmationNonce).not.toBeNull();
+    expect(logs.raw()).toContain("outcome unknown");
+
+    setOutcome({ kind: "accepted" });
+    await subscribe(app, "t@example.invalid");
+    expect(attempts).toHaveLength(1); // inside the cooldown: no second send
+
+    advance(CONFIRMATION_COOLDOWN_MS + 1);
+    await subscribe(app, "t@example.invalid");
+    expect(attempts).toHaveLength(2);
+    expect(attempts[1]).not.toBe(attempts[0]); // after the cooldown: a legitimate new email, new key
+  });
+
+  it("idempotency keys: stable for one operation, different for a re-subscription after unsubscribing", async () => {
+    const { app, sent } = setup();
+    await subscribe(app, "k@example.invalid");
+    await confirm(app, tokenFrom(sent[0]?.url ?? ""));
+    await unsubscribe(app, tokenFrom(sent[1]?.url ?? ""));
+    await subscribe(app, "k@example.invalid");
+    await confirm(app, tokenFrom(sent[2]?.url ?? ""));
+
+    const keys = sent.map((mail) => mail.key);
+    expect(keys.every((key) => /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(key))).toBe(true);
+    expect(new Set(keys).size).toBe(4); // request, confirmed, new request, new confirmed: all distinct
+    expect(sent.map((mail) => mail.kind)).toEqual(["confirm", "confirmed", "confirm", "confirmed"]);
   });
 
   it("validates input strictly", async () => {
