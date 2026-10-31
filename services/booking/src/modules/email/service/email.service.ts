@@ -1,57 +1,109 @@
 import { BrevoClient } from "@getbrevo/brevo";
+import { classifyBrevoError } from "../../../integrations/brevo/brevo-errors.js";
 import { emailTemplates } from "../templates/email.templates.js";
-import { mapBrevoError } from "../errors/email.errors.js";
 import type { SendTransactionalEmailType } from "../types/email.types.js";
 
 export type EmailServiceConfig = {
   brevoApiKey: string;
   fromName: string;
   fromEmail: string;
+  /** Tests only: a fake transport (no network, no real email). */
+  fetchImpl?: typeof fetch;
 };
 
-/** Marketing emails; links are built by the caller. */
+/**
+ * Result of one marketing email, sent inside an HTTP request:
+ * - accepted: accepted by Brevo for sending (also when Brevo recognises the
+ *   idempotency key of an earlier accepted attempt); not "delivered";
+ * - not_sent: certainly not accepted (rejected, configuration); safe to try
+ *   again;
+ * - rate_limited (429): refused and not processed; retry only after the
+ *   provider's Retry-After (retryAfterMs, when given);
+ * - uncertain: timeout, network error or 5xx: Brevo may have accepted it.
+ */
+export type MailOutcome =
+  | { kind: "accepted" }
+  | { kind: "not_sent"; code: "provider_rejected" | "provider_auth" | "provider_forbidden" | "provider_account" }
+  | { kind: "rate_limited"; retryAfterMs: number | null }
+  | { kind: "uncertain"; code: "provider_unavailable" | "timeout" | "network" };
+
+/** Marketing emails; links and idempotency keys are built by the caller. */
 export type MarketingMailer = {
-  sendConfirmationRequest: (email: string, confirmUrl: string) => Promise<void>;
-  sendSubscriptionConfirmed: (email: string, unsubscribeUrl: string) => Promise<void>;
+  sendConfirmationRequest: (email: string, confirmUrl: string, idempotencyKey: string) => Promise<MailOutcome>;
+  sendSubscriptionConfirmed: (email: string, unsubscribeUrl: string, idempotencyKey: string) => Promise<MailOutcome>;
 };
 
-/** Brevo transactional API. Created only when marketing is enabled. */
+/**
+ * Limit of one Brevo call. It bounds only this call, not the whole HTTP
+ * request (database, Firebase and the network to the client add to it).
+ */
+export const MARKETING_BREVO_TIMEOUT_MS = 10_000;
+
+/**
+ * Brevo transactional API. Created only when marketing is enabled.
+ * No SDK retries (maxRetries 0): a retry inside the HTTP request would make it
+ * long and could send a second email; repeats are decided by the caller.
+ */
 export const createBrevoMarketingMailer = ({
   brevoApiKey,
   fromName,
   fromEmail,
+  fetchImpl,
 }: EmailServiceConfig): MarketingMailer => {
   const brevo = new BrevoClient({
     apiKey: brevoApiKey,
-    timeoutInSeconds: 30,
-    maxRetries: 3,
+    timeoutInSeconds: MARKETING_BREVO_TIMEOUT_MS / 1000,
+    maxRetries: 0,
+    ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
   });
 
-  const send = async ({ to, subject, htmlContent }: SendTransactionalEmailType): Promise<void> => {
+  const send = async (
+    { to, subject, htmlContent }: SendTransactionalEmailType,
+    idempotencyKey: string,
+  ): Promise<MailOutcome> => {
     try {
       await brevo.transactionalEmails.sendTransacEmail({
         subject,
         htmlContent,
         sender: { name: fromName, email: fromEmail },
         to,
+        headers: { idempotencyKey },
       });
+      return { kind: "accepted" };
     } catch (error) {
-      throw mapBrevoError(error);
+      const failure = classifyBrevoError(error);
+      switch (failure.kind) {
+        case "duplicate":
+          return { kind: "accepted" };
+        case "rejected":
+        case "configuration":
+          return { kind: "not_sent", code: failure.code };
+        case "retryable":
+          return failure.code === "rate_limited"
+            ? { kind: "rate_limited", retryAfterMs: failure.retryAfterMs }
+            : { kind: "uncertain", code: failure.code };
+      }
     }
   };
 
   return {
-    sendConfirmationRequest: (email, confirmUrl) =>
-      send({
-        to: [{ email }],
-        subject: "Confirmez votre inscription aux offres",
-        htmlContent: emailTemplates.marketingConfirmationRequest(confirmUrl),
-      }),
-    sendSubscriptionConfirmed: (email, unsubscribeUrl) =>
-      send({
-        to: [{ email }],
-        subject: "Votre inscription aux offres est confirmée",
-        htmlContent: emailTemplates.offersSubscriptionConfirmation(unsubscribeUrl),
-      }),
+    sendConfirmationRequest: (email, confirmUrl, idempotencyKey) =>
+      send(
+        {
+          to: [{ email }],
+          subject: "Confirmez votre inscription aux offres",
+          htmlContent: emailTemplates.marketingConfirmationRequest(confirmUrl),
+        },
+        idempotencyKey,
+      ),
+    sendSubscriptionConfirmed: (email, unsubscribeUrl, idempotencyKey) =>
+      send(
+        {
+          to: [{ email }],
+          subject: "Votre inscription aux offres est confirmée",
+          htmlContent: emailTemplates.offersSubscriptionConfirmation(unsubscribeUrl),
+        },
+        idempotencyKey,
+      ),
   };
 };

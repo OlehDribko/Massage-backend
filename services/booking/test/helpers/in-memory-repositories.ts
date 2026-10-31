@@ -119,7 +119,10 @@ export const createInMemoryMarketingRepository = () => {
       }
       const allowed =
         claim.mode === "signup"
-          ? row.unsubscribedAt === null && row.consentGivenAt === null && row.confirmationSentAt === null
+          ? row.unsubscribedAt === null &&
+            row.consentGivenAt === null &&
+            (row.confirmationSentAt === null ||
+              (row.confirmationNonce === null && row.confirmationSentAt < claim.cooldownSince))
           : row.confirmationSentAt === null || row.confirmationSentAt < claim.cooldownSince;
       if (!allowed) {
         return Promise.resolve(false);
@@ -135,6 +138,12 @@ export const createInMemoryMarketingRepository = () => {
     releaseConfirmation: (id, nonce) => {
       if (rows.get(id)?.confirmationNonce === nonce) {
         update(id, cleared);
+      }
+      return Promise.resolve();
+    },
+    throttleConfirmation: (id, nonce, cooldownAnchor) => {
+      if (rows.get(id)?.confirmationNonce === nonce) {
+        update(id, { ...cleared, confirmationSentAt: cooldownAnchor });
       }
       return Promise.resolve();
     },

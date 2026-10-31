@@ -1,3 +1,5 @@
+import type { BrevoFailure } from "../integrations/brevo/brevo-errors.js";
+
 /**
  * Replaceable email provider. The worker depends only on this interface;
  * Brevo is one implementation (brevo-provider.ts), tests use a fake.
@@ -17,28 +19,14 @@ export type OutgoingEmail = {
 };
 
 /**
- * What one provider call means for the delivery. Codes are fixed and safe to
- * store and log (never provider text).
+ * What one provider call means for the delivery: accepted, or one of the
+ * shared failure outcomes (integrations/brevo/brevo-errors.ts). Codes are
+ * fixed and safe to store and log (never provider text).
+ * - accepted: accepted for sending, not "delivered to the mailbox";
+ * - configuration (wrong key, permission, account): a retry in minutes would
+ *   not help, the delivery fails at once with this code.
  */
-export type SendOutcome =
-  /** Accepted for sending. Not "delivered to the mailbox". */
-  | { kind: "accepted"; providerMessageId: string | null }
-  /** The provider reports this idempotency key as already processed: accepted by an earlier attempt. */
-  | { kind: "duplicate" }
-  /** Permanent for this message: retrying the same message cannot succeed. */
-  | { kind: "rejected"; code: "provider_rejected" }
-  /** Temporary: retry later (retryAfterMs from Retry-After, when given). */
-  | {
-      kind: "retryable";
-      code: "rate_limited" | "provider_unavailable" | "timeout" | "network";
-      retryAfterMs: number | null;
-    }
-  /**
-   * Provider-wide problem (wrong key, missing permission, account issue).
-   * A retry in minutes would not help: the delivery fails at once with this
-   * code (no automatic retries); the fix is a configuration change.
-   */
-  | { kind: "configuration"; code: "provider_auth" | "provider_forbidden" | "provider_account" };
+export type SendOutcome = { kind: "accepted"; providerMessageId: string | null } | BrevoFailure;
 
 export type EmailProvider = {
   /** Never throws for provider errors; returns an outcome. */

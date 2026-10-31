@@ -29,11 +29,11 @@ const sent: { email: string; url: string }[] = [];
 const mailer: MarketingMailer = {
   sendConfirmationRequest: (email, url) => {
     sent.push({ email, url });
-    return Promise.resolve();
+    return Promise.resolve({ kind: "accepted" });
   },
   sendSubscriptionConfirmed: (email, url) => {
     sent.push({ email, url });
-    return Promise.resolve();
+    return Promise.resolve({ kind: "accepted" });
   },
 };
 
@@ -142,7 +142,7 @@ describe("marketing subscription in PostgreSQL", () => {
     const SIGNUP: ConsentRequest = { source: "signup_checkbox", textVersion: MARKETING_CONSENT_TEXT_VERSION };
     const ACCOUNT: ConsentRequest = { source: "account_request", textVersion: MARKETING_CONSENT_TEXT_VERSION };
     let clock = Date.parse("2026-10-28T12:00:00Z");
-    const failing: MarketingMailer = { ...mailer, sendConfirmationRequest: () => Promise.reject(new Error("down")) };
+    const failing: MarketingMailer = { ...mailer, sendConfirmationRequest: () => Promise.resolve({ kind: "not_sent", code: "provider_rejected" }) };
     const before = sent.length;
 
     expect(await service(() => clock, failing).requestSubscription("rec@example.invalid", SIGNUP, "signup")).toBe("delivery_failed");
@@ -162,6 +162,35 @@ describe("marketing subscription in PostgreSQL", () => {
     await expect(marketing.confirm(tokenOf(before))).rejects.toMatchObject({ statusCode: 400 });
     expect(await marketing.confirm(tokenOf(sent.length - 1))).toBe("subscribed");
     expect(await rowOf("rec@example.invalid")).toMatchObject({ subscribed: true, source: "account_request" });
+  });
+
+  it("429: the resend block is stored in the database; no provider call until it ends, sign-up and explicit requests alike", async () => {
+    const SIGNUP: ConsentRequest = { source: "signup_checkbox", textVersion: MARKETING_CONSENT_TEXT_VERSION };
+    const ACCOUNT: ConsentRequest = { source: "account_request", textVersion: MARKETING_CONSENT_TEXT_VERSION };
+    let clock = Date.parse("2026-10-28T12:00:00Z");
+    let calls = 0;
+    let limited = true;
+    const counting: MarketingMailer = {
+      ...mailer,
+      sendConfirmationRequest: (email, url, key) => {
+        calls += 1;
+        return limited ? Promise.resolve({ kind: "rate_limited", retryAfterMs: 90_000 }) : mailer.sendConfirmationRequest(email, url, key);
+      },
+    };
+    const marketing = service(() => clock, counting);
+
+    expect(await marketing.requestSubscription("limited@example.invalid", SIGNUP, "signup")).toBe("delivery_failed");
+    expect(await rowOf("limited@example.invalid")).toMatchObject({ subscribed: false, pending: false });
+    limited = false;
+    expect(await marketing.requestSubscription("limited@example.invalid", SIGNUP, "signup")).toBe("no_action");
+    expect(await marketing.requestSubscription("limited@example.invalid", ACCOUNT, "explicit")).toBe("no_action");
+    expect(await marketing.resendAvailableInSeconds("limited@example.invalid")).toBe(90);
+    expect(calls).toBe(1);
+
+    clock += 90_001;
+    expect(await marketing.requestSubscription("limited@example.invalid", SIGNUP, "signup")).toBe("confirmation_sent");
+    expect(calls).toBe(2);
+    expect(await rowOf("limited@example.invalid")).toMatchObject({ pending: true });
   });
 
   it("the database refuses a subscription without consent evidence", async () => {

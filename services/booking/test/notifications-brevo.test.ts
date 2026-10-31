@@ -1,7 +1,8 @@
 import { BrevoError, BrevoTimeoutError } from "@getbrevo/brevo";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { classifyBrevoError, createBrevoProvider } from "../src/notifications/brevo-provider.js";
+import { classifyBrevoError } from "../src/integrations/brevo/brevo-errors.js";
+import { createBrevoProvider } from "../src/notifications/brevo-provider.js";
 import type { OutgoingEmail } from "../src/notifications/provider.js";
 
 // The real Brevo SDK with a fake transport: no network, no email is sent.

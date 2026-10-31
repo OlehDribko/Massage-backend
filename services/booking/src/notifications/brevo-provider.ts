@@ -1,6 +1,6 @@
-import { BrevoClient, BrevoError, BrevoTimeoutError } from "@getbrevo/brevo";
-import { z } from "zod";
-import type { EmailProvider, SendOutcome } from "./provider.js";
+import { BrevoClient } from "@getbrevo/brevo";
+import { classifyBrevoError } from "../integrations/brevo/brevo-errors.js";
+import type { EmailProvider } from "./provider.js";
 
 /**
  * Brevo transactional email (POST /v3/smtp/email) behind EmailProvider.
@@ -15,58 +15,8 @@ import type { EmailProvider, SendOutcome } from "./provider.js";
  *
  * The SDK's own retries are off (maxRetries 0): the worker owns retries,
  * backoff and the lease, and the request timeout is shorter than the lease.
+ * Error classification is shared with marketing (integrations/brevo).
  */
-const errorBodySchema = z.object({ code: z.string().optional() }).passthrough();
-
-const retryAfterMs = (error: BrevoError): number | null => {
-  const header = error.rawResponse?.headers.get("retry-after") ?? null;
-  if (header === null) {
-    return null;
-  }
-  const seconds = Number(header);
-  if (Number.isFinite(seconds) && seconds >= 0) {
-    return Math.round(seconds * 1000);
-  }
-  const date = Date.parse(header);
-  return Number.isNaN(date) ? null : Math.max(0, date - Date.now());
-};
-
-/** Maps a failed Brevo call to an outcome; exported for unit tests. */
-export const classifyBrevoError = (error: unknown): SendOutcome => {
-  if (error instanceof BrevoTimeoutError) {
-    return { kind: "retryable", code: "timeout", retryAfterMs: null };
-  }
-  if (!(error instanceof BrevoError) || error.statusCode === undefined) {
-    return { kind: "retryable", code: "network", retryAfterMs: null };
-  }
-  const status = error.statusCode;
-  const body = errorBodySchema.safeParse(error.body);
-  const code = body.success ? body.data.code : undefined;
-
-  if (status === 401) {
-    return { kind: "configuration", code: "provider_auth" };
-  }
-  if (status === 403) {
-    return { kind: "configuration", code: "provider_forbidden" };
-  }
-  if (status === 402) {
-    return { kind: "configuration", code: "provider_account" };
-  }
-  if (status === 429) {
-    return { kind: "retryable", code: "rate_limited", retryAfterMs: retryAfterMs(error) };
-  }
-  if (status >= 500 || status === 408) {
-    return { kind: "retryable", code: "provider_unavailable", retryAfterMs: retryAfterMs(error) };
-  }
-  if (status === 400 && code === "duplicate_parameter") {
-    return { kind: "duplicate" };
-  }
-  // Other 4xx: this message cannot be sent as is. Brevo's codes (e.g.
-  // invalid_parameter) do not say which field; recipients are validated
-  // before sending, so no recipient-specific code is guessed here.
-  return { kind: "rejected", code: "provider_rejected" };
-};
-
 export const createBrevoProvider = ({
   apiKey,
   senderName,

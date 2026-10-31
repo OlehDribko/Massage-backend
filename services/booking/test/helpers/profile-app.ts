@@ -33,14 +33,14 @@ export const createProfileTestApp = (
   const mailer: MarketingMailer = {
     sendConfirmationRequest: (email, url) => {
       if (mail.failing) {
-        return Promise.reject(new Error("PROVIDER_SENTINEL down"));
+        return Promise.resolve({ kind: "not_sent", code: "provider_rejected" });
       }
       sent.push({ kind: "confirm", email, url });
-      return Promise.resolve();
+      return Promise.resolve({ kind: "accepted" });
     },
     sendSubscriptionConfirmed: (email, url) => {
       sent.push({ kind: "confirmed", email, url });
-      return Promise.resolve();
+      return Promise.resolve({ kind: "accepted" });
     },
   };
   const marketingService =

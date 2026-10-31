@@ -48,9 +48,9 @@ const mails: { email: string; url: string }[] = [];
 const mailer: MarketingMailer = {
   sendConfirmationRequest: (email, url) => {
     mails.push({ email, url });
-    return Promise.resolve();
+    return Promise.resolve({ kind: "accepted" });
   },
-  sendSubscriptionConfirmed: () => Promise.resolve(),
+  sendSubscriptionConfirmed: () => Promise.resolve({ kind: "accepted" }),
 };
 
 const profileResponseSchema = z.object({ profile: z.object({ id: z.uuid() }) });
