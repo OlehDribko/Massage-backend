@@ -1,4 +1,5 @@
 import { Router, type Request, type RequestHandler } from "express";
+import type { NotificationStatusReader } from "../../notifications/status.js";
 import { AppError } from "../../shared/errors/app-error.js";
 import { withValidatedBody } from "../../shared/http/validated-body.js";
 import { requireActor } from "../access/require-access.js";
@@ -13,6 +14,7 @@ import {
   rescheduleBookingSchema,
 } from "./booking.schema.js";
 import type { BookingService } from "./booking.service.js";
+import type { BookingWithClient } from "./booking.service.js";
 import { toAdminBookingView, toClientBookingView } from "./booking.view.js";
 
 const bookingIdFrom = (req: Request): string => {
@@ -53,14 +55,28 @@ export const createClientBookingRouter = ({
   guards,
   rules,
   now,
+  notificationStatus,
 }: {
   bookings: BookingService;
   guards: Guards;
   rules: BookingRules;
   now: () => Date;
+  /** Absent when booking emails are off: views then carry `notification: null`. */
+  notificationStatus?: NotificationStatusReader | undefined;
 }): Router => {
   const router = Router();
-  const view = (booking: Parameters<typeof toClientBookingView>[0]) => toClientBookingView(booking, now(), rules);
+  // Statuses are read when the client opens or refreshes a page; no push.
+  const views = async (list: BookingWithClient[]) => {
+    const statuses = await notificationStatus?.forClient(list.map((booking) => booking.id));
+    return list.map((booking) => toClientBookingView(booking, now(), rules, statuses?.get(booking.id) ?? null));
+  };
+  const view = async (booking: BookingWithClient) => {
+    const [result] = await views([booking]);
+    if (result === undefined) {
+      throw new Error("booking view missing");
+    }
+    return result;
+  };
 
   router.post(
     "/",
@@ -71,17 +87,17 @@ export const createClientBookingRouter = ({
       if (!result.changed) {
         res.setHeader("Idempotent-Replayed", "true");
       }
-      res.status(result.changed ? 201 : 200).json({ booking: view(result.booking) });
+      res.status(result.changed ? 201 : 200).json({ booking: await view(result.booking) });
     }),
   );
 
   router.get("/", guards.requireProfile, async (req, res) => {
     const own = await bookings.listOwn(requireActor(req));
-    res.status(200).json({ bookings: own.map(view) });
+    res.status(200).json({ bookings: await views(own) });
   });
 
   router.get("/:bookingId", guards.requireProfile, async (req, res) => {
-    res.status(200).json({ booking: view(await bookings.getOwn(requireActor(req), bookingIdFrom(req))) });
+    res.status(200).json({ booking: await view(await bookings.getOwn(requireActor(req), bookingIdFrom(req))) });
   });
 
   router.post(
@@ -89,7 +105,7 @@ export const createClientBookingRouter = ({
     guards.requireBookingClient,
     withValidatedBody(rescheduleBookingSchema, async (body, res, _next, req) => {
       const result = await bookings.reschedule(requireActor(req), bookingIdFrom(req), body.startsAt);
-      res.status(200).json({ booking: view(result.booking), changed: result.changed });
+      res.status(200).json({ booking: await view(result.booking), changed: result.changed });
     }),
   );
 
@@ -98,7 +114,7 @@ export const createClientBookingRouter = ({
     guards.requireProfile,
     withValidatedBody(clientCancelSchema, async (_body, res, _next, req) => {
       const result = await bookings.cancelOwn(requireActor(req), bookingIdFrom(req));
-      res.status(200).json({ booking: view(result.booking), changed: result.changed });
+      res.status(200).json({ booking: await view(result.booking), changed: result.changed });
     }),
   );
 
@@ -110,13 +126,25 @@ export const createAdminBookingRouter = ({
   bookings,
   rules,
   now,
+  notificationStatus,
 }: {
   bookings: BookingService;
   rules: BookingRules;
   now: () => Date;
+  notificationStatus?: NotificationStatusReader | undefined;
 }): Router => {
   const router = Router();
-  const view = (booking: Parameters<typeof toAdminBookingView>[0]) => toAdminBookingView(booking, now(), rules);
+  const views = async (list: BookingWithClient[]) => {
+    const statuses = await notificationStatus?.forAdmin(list.map((booking) => booking.id));
+    return list.map((booking) => toAdminBookingView(booking, now(), rules, statuses?.get(booking.id) ?? []));
+  };
+  const view = async (booking: BookingWithClient) => {
+    const [result] = await views([booking]);
+    if (result === undefined) {
+      throw new Error("booking view missing");
+    }
+    return result;
+  };
 
   // Bookings starting on a local date (studio time zone), all statuses.
   router.get("/", async (req, res) => {
@@ -128,18 +156,18 @@ export const createAdminBookingRouter = ({
       });
     }
     const list = await bookings.listForDate(parsed.data);
-    res.status(200).json({ date: parsed.data, timeZone: rules.timeZone, bookings: list.map(view) });
+    res.status(200).json({ date: parsed.data, timeZone: rules.timeZone, bookings: await views(list) });
   });
 
   router.get("/:bookingId", async (req, res) => {
-    res.status(200).json({ booking: view(await bookings.getAny(bookingIdFrom(req))) });
+    res.status(200).json({ booking: await view(await bookings.getAny(bookingIdFrom(req))) });
   });
 
   router.post(
     "/:bookingId/cancel",
     withValidatedBody(adminCancelSchema, async (body, res, _next, req) => {
       const result = await bookings.cancelByAdmin(requireActor(req), bookingIdFrom(req), body?.reason ?? null);
-      res.status(200).json({ booking: view(result.booking), changed: result.changed });
+      res.status(200).json({ booking: await view(result.booking), changed: result.changed });
     }),
   );
 

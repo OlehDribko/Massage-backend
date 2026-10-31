@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { loadNotificationConfig, type NotificationConfig } from "../notifications/config.js";
 import { parseDatabaseUrl } from "../shared/database/database-url.js";
 
 const nonEmpty = z.string().trim().min(1, "must not be empty");
@@ -183,6 +184,8 @@ export type AppConfig = {
   /** REQUIRE_FIREBASE_AUTH: when true, `firebase` is always present. */
   authRequired: boolean;
   marketing: MarketingConfig | undefined;
+  /** Booking emails (src/notifications), sent from this process when enabled. */
+  notifications: NotificationConfig;
 };
 
 export type ConfigResult =
@@ -241,6 +244,11 @@ export const loadConfig = (env: EnvSource): ConfigResult => {
     return { ok: false, errors: marketing.errors };
   }
 
+  const notifications = loadNotificationConfig(env);
+  if (!notifications.ok) {
+    return { ok: false, errors: notifications.errors };
+  }
+
   return {
     ok: true,
     config: {
@@ -259,6 +267,7 @@ export const loadConfig = (env: EnvSource): ConfigResult => {
       firebase: firebase.value,
       authRequired: base.data.REQUIRE_FIREBASE_AUTH,
       marketing: marketing.value,
+      notifications: notifications.config,
     },
   };
 };
