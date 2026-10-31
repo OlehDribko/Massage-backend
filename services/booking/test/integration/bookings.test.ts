@@ -8,7 +8,7 @@ import {
   countRows,
   createUsers,
   resetCalendar,
-  serviceIdOf,
+  insertService,
   startBookingStack,
   type BookingStack,
 } from "./helpers/booking-app.js";
@@ -36,11 +36,11 @@ const WEEKLY = {
 
 const asAdmin = () => bearer(users.admin);
 
-const createService = async (body: object = { name: "Massage 60", durationMinutes: 60, priceCents: 6500 }) => {
-  const response = await request(stack.app).post("/api/admin/services").set(asAdmin()).send(body);
-  expect(response.status).toBe(201);
-  return serviceIdOf(response);
-};
+const createService = (service: { name?: string; durationMinutes?: number; priceCents?: number } = {}) =>
+  insertService(stack.db, service);
+
+/** A catalogue change as a data migration would make it (migrator role). */
+const catalogSql = (sql: string) => stack.db.query("migrator", sql);
 
 const setWeekly = (body: object = WEEKLY) => request(stack.app).put("/api/admin/schedule/weekly").set(asAdmin()).send(body);
 
@@ -94,23 +94,21 @@ describe("access: guests, clients and admins", () => {
 
     const list = await request(stack.app).get("/api/services");
     expect(list.status).toBe(200);
+    // Only what the frontend needs; no description (texts live in the frontend).
     expect(list.body).toEqual({
-      services: [{ id: serviceId, name: "Massage 60", description: null, durationMinutes: 60, priceCents: 6500, currency: "EUR" }],
+      services: [{ id: serviceId, name: "Massage 60", durationMinutes: 60, priceCents: 6500, currency: "EUR" }],
+    });
+    expect((await request(stack.app).get(`/api/services/${serviceId}`)).body).toEqual({
+      service: { id: serviceId, name: "Massage 60", durationMinutes: 60, priceCents: 6500, currency: "EUR" },
     });
     expect((await availability(serviceId, "2027-03-02")).status).toBe(200);
 
-    expect((await request(stack.app).post("/api/admin/services").send({})).status).toBe(401);
     for (const token of [users.clientA, users.guest, users.unverified]) {
-      const response = await request(stack.app)
-        .post("/api/admin/services")
-        .set(bearer(token))
-        .send({ name: "x", durationMinutes: 30, priceCents: 1 });
-      expect(response.status).toBe(403);
-      expect(response.body).toMatchObject({ code: "FORBIDDEN" });
       expect((await request(stack.app).put("/api/admin/schedule/weekly").set(bearer(token)).send(WEEKLY)).status).toBe(403);
-      expect((await request(stack.app).get("/api/admin/bookings?date=2027-03-02").set(bearer(token))).status).toBe(403);
+      const forbidden = await request(stack.app).get("/api/admin/bookings?date=2027-03-02").set(bearer(token));
+      expect(forbidden.status).toBe(403);
+      expect(forbidden.body).toMatchObject({ code: "FORBIDDEN" });
     }
-    expect((await request(stack.app).patch(`/api/admin/services/${serviceId}`).set(bearer(users.clientA)).send({ priceCents: 1 })).status).toBe(403);
   });
 
   it("only a booking-ready client books; guests, unverified, incomplete profiles and admins are refused", async () => {
@@ -149,19 +147,37 @@ describe("access: guests, clients and admins", () => {
 });
 
 describe("catalogue", () => {
-  it("validates money in whole cents and positive minutes; rejects unknown fields", async () => {
-    for (const body of [
-      { name: "x", durationMinutes: 60, priceCents: 65.5 },
-      { name: "x", durationMinutes: 0, priceCents: 100 },
-      { name: "x", durationMinutes: -30, priceCents: 100 },
-      { name: "x", durationMinutes: 60, priceCents: -1 },
-      { name: "", durationMinutes: 60, priceCents: 100 },
-      { name: "x", durationMinutes: 60, priceCents: 100, currency: "USD" },
-      { name: "x", durationMinutes: 60, priceCents: 100, imageUrl: "https://example.invalid/a.jpg" },
+  it("there are no admin catalogue routes: services are not created, changed or deleted through the API", async () => {
+    const serviceId = await createService();
+    for (const [method, path] of [
+      ["get", "/api/admin/services"],
+      ["post", "/api/admin/services"],
+      ["get", `/api/admin/services/${serviceId}`],
+      ["patch", `/api/admin/services/${serviceId}`],
+      ["delete", `/api/admin/services/${serviceId}`],
+    ] satisfies ["get" | "post" | "patch" | "delete", string][]) {
+      const response = await request(stack.app)[method](path).set(asAdmin()).send({ name: "x", durationMinutes: 30, priceCents: 1 });
+      expect(response.status).toBe(404);
+    }
+    expect((await request(stack.app).get("/api/services")).body).toEqual({
+      services: [{ id: serviceId, name: "Massage 60", durationMinutes: 60, priceCents: 6500, currency: "EUR" }],
+    });
+  });
+
+  it("catalogue rows without a description are valid; the database refuses invalid names, durations, prices and currencies", async () => {
+    await catalogSql(`INSERT INTO "Service" ("id", "name", "durationMinutes", "priceCents", "updatedAt") VALUES (gen_random_uuid(), 'No text', 30, 0, now())`);
+    expect(await countRows(stack.db, `SELECT count(*)::int AS n FROM "Service" WHERE name = 'No text' AND description IS NULL AND currency = 'EUR'`)).toBe(1);
+    for (const values of [
+      `'', 60, 100, 'EUR'`,
+      `'x', 4, 100, 'EUR'`,
+      `'x', 481, 100, 'EUR'`,
+      `'x', 60, -1, 'EUR'`,
+      `'x', 60, 10000001, 'EUR'`,
+      `'x', 60, 100, 'USD'`,
     ]) {
-      const response = await request(stack.app).post("/api/admin/services").set(asAdmin()).send(body);
-      expect(response.status).toBe(400);
-      expect(response.body).toMatchObject({ code: "VALIDATION_FAILED" });
+      await expect(
+        catalogSql(`INSERT INTO "Service" ("id", "name", "durationMinutes", "priceCents", "currency", "updatedAt") VALUES (gen_random_uuid(), ${values}, now())`),
+      ).rejects.toThrow(/check constraint/);
     }
   });
 
@@ -170,11 +186,7 @@ describe("catalogue", () => {
     await setWeekly();
     const id = bookingIdOf(await book(users.clientA, serviceId, paris("2027-03-02", "09:00")));
 
-    const edit = await request(stack.app)
-      .patch(`/api/admin/services/${serviceId}`)
-      .set(asAdmin())
-      .send({ name: "Deep tissue (new)", durationMinutes: 90, priceCents: 9900 });
-    expect(edit.status).toBe(200);
+    await catalogSql(`UPDATE "Service" SET name = 'Deep tissue (new)', "durationMinutes" = 90, "priceCents" = 9900, "updatedAt" = now() WHERE id = '${serviceId}'`);
 
     const moved = await reschedule(users.clientA, id, paris("2027-03-03", "10:00"));
     expect(moved.status).toBe(200);
@@ -186,19 +198,18 @@ describe("catalogue", () => {
         payment: "on_site",
       },
     });
+    // New bookings use the new terms, computed by the server.
+    const fresh = await book(users.clientB, serviceId, paris("2027-03-04", "09:00"));
+    expect(fresh.body).toMatchObject({
+      booking: { service: { name: "Deep tissue (new)", durationMinutes: 90, priceCents: 9900 }, endsAt: paris("2027-03-04", "10:30") },
+    });
   });
 
-  it("deleting an unused service removes it; a booked one is archived: not bookable, history kept", async () => {
-    const unused = await createService({ name: "Unused", durationMinutes: 30, priceCents: 3000 });
-    expect((await request(stack.app).delete(`/api/admin/services/${unused}`).set(asAdmin())).body).toEqual({ outcome: "deleted" });
-    expect((await request(stack.app).get(`/api/services/${unused}`)).status).toBe(404);
-
+  it("a service that is not bookable is not public and cannot be booked; existing bookings stay intact; it can be enabled again", async () => {
     const used = await createService();
     await setWeekly();
     const id = bookingIdOf(await book(users.clientA, used, paris("2027-03-02", "09:00")));
-    const removed = await request(stack.app).delete(`/api/admin/services/${used}`).set(asAdmin());
-    expect(removed.status).toBe(200);
-    expect(removed.body).toMatchObject({ outcome: "archived", service: { id: used, bookable: false } });
+    await catalogSql(`UPDATE "Service" SET "archivedAt" = now(), "updatedAt" = now() WHERE id = '${used}'`);
 
     expect((await request(stack.app).get("/api/services")).body).toEqual({ services: [] });
     expect((await request(stack.app).get(`/api/services/${used}`)).status).toBe(404);
@@ -211,10 +222,11 @@ describe("catalogue", () => {
     expect((await request(stack.app).get(`/api/bookings/${id}`).set(bearer(users.clientA))).body).toMatchObject({
       booking: { status: "confirmed", service: { name: "Massage 60", priceCents: 6500 } },
     });
-    // Admin can make it bookable again.
-    expect((await request(stack.app).patch(`/api/admin/services/${used}`).set(asAdmin()).send({ bookable: true })).body).toMatchObject({
-      service: { bookable: true, archivedAt: null },
-    });
+    // A booked service cannot be deleted (the history refers to it).
+    await expect(catalogSql(`DELETE FROM "Service" WHERE id = '${used}'`)).rejects.toThrow(/foreign key/);
+
+    await catalogSql(`UPDATE "Service" SET "archivedAt" = NULL, "updatedAt" = now() WHERE id = '${used}'`);
+    expect((await request(stack.app).get(`/api/services/${used}`)).status).toBe(200);
   });
 });
 

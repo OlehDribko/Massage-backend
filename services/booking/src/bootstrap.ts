@@ -10,7 +10,7 @@ import { createAccessGuards } from "./modules/access/require-access.js";
 import type { IdentityProvider } from "./modules/auth/identity.js";
 import { createAdminBookingRouter, createClientBookingRouter } from "./modules/bookings/booking.routes.js";
 import { createBookingService } from "./modules/bookings/booking.service.js";
-import { createAdminCatalogRouter, createPublicCatalogRouter } from "./modules/catalog/catalog.routes.js";
+import { createPublicCatalogRouter } from "./modules/catalog/catalog.routes.js";
 import { createCatalogService } from "./modules/catalog/catalog.service.js";
 import { createBrevoMarketingMailer, type MarketingMailer } from "./modules/email/service/email.service.js";
 import { createActionTokenService } from "./modules/email/tokens/action-token.service.js";
@@ -98,7 +98,7 @@ export const createApplication = ({
   const now = overrides.now ?? (() => new Date());
   const rules = overrides.bookingRules ?? DEFAULT_BOOKING_RULES;
   const calendar = createCalendarTransaction(database.prisma);
-  const catalog = createCatalogService({ prisma: database.prisma, calendar, now });
+  const catalog = createCatalogService({ prisma: database.prisma });
   api.use(
     "/services/:serviceId/availability",
     createPublicAvailabilityRouter({ prisma: database.prisma, catalog, rules, now }),
@@ -155,7 +155,6 @@ export const createApplication = ({
     // Administration lives in the owning modules; every route needs a
     // verified admin, checked on the server for each request.
     const admin = Router();
-    admin.use("/services", createAdminCatalogRouter(catalog));
     admin.use(
       "/schedule",
       createAdminScheduleRouter({
