@@ -77,7 +77,7 @@ describe("createApplication", () => {
       ["get", "/api/bookings"],
       ["post", "/api/bookings"],
       ["get", "/api/admin/bookings?date=2027-03-02"],
-      ["post", "/api/admin/services"],
+      ["get", "/api/admin/schedule"],
       ["put", "/api/admin/schedule/weekly"],
     ] satisfies ["get" | "post" | "put", string][]) {
       const response = await request(app)[method](path).send({});

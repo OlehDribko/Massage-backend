@@ -135,6 +135,24 @@ export const resetCalendar = async (db: PostgresContainer): Promise<void> => {
 };
 
 const idSchema = z.object({ id: z.uuid() });
+
+/**
+ * Adds a service the way the catalogue is maintained (a data migration run
+ * by the migrator role); there are no admin catalogue routes.
+ */
+export const insertService = async (
+  db: PostgresContainer,
+  service: { name?: string; durationMinutes?: number; priceCents?: number } = {},
+): Promise<string> => {
+  const result = await db.query(
+    "migrator",
+    `INSERT INTO "Service" ("id", "name", "durationMinutes", "priceCents", "updatedAt")
+     VALUES (gen_random_uuid(), '${(service.name ?? "Massage 60").replaceAll("'", "''")}', ${String(service.durationMinutes ?? 60)}, ${String(service.priceCents ?? 6500)}, now())
+     RETURNING "id"`,
+  );
+  const row: unknown = result.rows[0];
+  return idSchema.parse(row).id;
+};
 export const serviceIdOf = (response: request.Response): string => {
   const body: unknown = response.body;
   return z.object({ service: idSchema }).parse(body).service.id;

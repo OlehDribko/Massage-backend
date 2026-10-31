@@ -14,8 +14,8 @@ import {
   bookingIdOf,
   countRows,
   createUsers,
+  insertService,
   resetCalendar,
-  serviceIdOf,
   startBookingStack,
   type BookingStack,
 } from "./helpers/booking-app.js";
@@ -138,11 +138,7 @@ beforeEach(async () => {
   await resetAll();
   stack.setNow("2027-03-01T06:00:00Z");
   workerNow = Date.parse("2027-03-01T07:00:00Z");
-  const created = await request(stack.app)
-    .post("/api/admin/services")
-    .set(bearer(users.admin))
-    .send({ name: "Massage 60", durationMinutes: 60, priceCents: 6500 });
-  serviceId = serviceIdOf(created);
+  serviceId = await insertService(stack.db, { name: "Massage 60", durationMinutes: 60, priceCents: 6500 });
   await request(stack.app)
     .put("/api/admin/schedule/weekly")
     .set(bearer(users.admin))

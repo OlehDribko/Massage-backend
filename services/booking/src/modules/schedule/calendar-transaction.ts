@@ -15,7 +15,8 @@ export type Tx = Prisma.TransactionClient;
  * sufficient. The exclusion constraint "Booking_no_overlap" remains the last
  * line of defence for every writer.
  */
-const CALENDAR_LOCK_KEY = 7_316_442_001;
+/** Also taken by catalogue data migrations (prisma/templates/catalog-data-migration.sql). */
+export const CALENDAR_LOCK_KEY = 7_316_442_001;
 
 export const LOCK_TIMEOUT_MS = 5_000;
 

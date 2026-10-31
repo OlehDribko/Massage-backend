@@ -8,7 +8,7 @@ import {
   countRows,
   createUsers,
   resetCalendar,
-  serviceIdOf,
+  insertService,
   startBookingStack,
   type BookingStack,
 } from "./helpers/booking-app.js";
@@ -59,11 +59,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await resetCalendar(stack.db);
   stack.setNow("2027-03-01T06:00:00Z");
-  const created = await request(stack.app)
-    .post("/api/admin/services")
-    .set(bearer(users.admin))
-    .send({ name: "Massage 60", durationMinutes: 60, priceCents: 6500 });
-  serviceId = serviceIdOf(created);
+  serviceId = await insertService(stack.db, { name: "Massage 60", durationMinutes: 60, priceCents: 6500 });
   await request(stack.app)
     .put("/api/admin/schedule/weekly")
     .set(bearer(users.admin))
@@ -121,8 +117,7 @@ describe("simultaneous requests", () => {
   it("reschedule racing cancel: a consistent end state, never a move after cancellation", async () => {
     for (let round = 0; round < 5; round += 1) {
       await resetCalendar(stack.db);
-      const created = await request(stack.app).post("/api/admin/services").set(bearer(users.admin)).send({ name: "M", durationMinutes: 60, priceCents: 100 });
-      serviceId = serviceIdOf(created);
+      serviceId = await insertService(stack.db, { name: "M", durationMinutes: 60, priceCents: 100 });
       await request(stack.app).put("/api/admin/schedule/weekly").set(bearer(users.admin)).send({ intervals: [{ weekday: 2, start: "09:00", end: "21:00" }] }).expect(200);
 
       const id = bookingIdOf(await book(0, users.clientA, paris("2027-03-02", "09:00")));

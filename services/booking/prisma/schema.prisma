@@ -107,12 +107,16 @@ model MarketingSubscription {
 // See docs/booking.md.
 // ---------------------------------------------------------------------------
 
-// A bookable service. Money in integer euro cents (EUR only), duration in
-// whole minutes. Archived services stay for the history of bookings but
-// cannot be booked any more.
+// A service of the fixed catalogue, maintained by data migrations
+// (prisma/templates/catalog-data-migration.sql); the application only reads
+// it. Money in integer euro cents (EUR only), duration in whole minutes.
+// Archived services (archivedAt set) stay for the history of bookings but
+// cannot be booked; ids are stable keys for the frontend's photos and texts.
 model Service {
   id              String    @id @default(uuid()) @db.Uuid
   name            String
+  // DEPRECATED, unused and not exposed: texts live in the frontend. Kept for
+  // compatibility with older versions; new catalogue rows leave it NULL.
   description     String?
   durationMinutes Int
   priceCents      Int
