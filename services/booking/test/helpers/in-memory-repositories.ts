@@ -31,7 +31,15 @@ export const createInMemoryProfileRepository = () => {
           updatedAt: now,
           ...identityFields,
         });
-      } else if (existing.identityIssuedAt.getTime() <= identity.issuedAt.getTime()) {
+      } else if (
+        existing.identityIssuedAt.getTime() < identity.issuedAt.getTime() ||
+        (existing.identityIssuedAt.getTime() === identity.issuedAt.getTime() &&
+          (existing.email !== identityFields.email ||
+            existing.emailVerified !== identityFields.emailVerified ||
+            existing.isAnonymous !== identityFields.isAnonymous ||
+            existing.signInProvider !== identityFields.signInProvider))
+      ) {
+        // Same rule as the PostgreSQL repository: write only on a real change.
         rows.set(identity.uid, { ...existing, ...identityFields, updatedAt: now });
       }
       const row = rows.get(identity.uid);
