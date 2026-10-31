@@ -21,7 +21,11 @@ export type WorkerTuning = {
   retryDelaysMs: number[];
   /** Up to this share is added at random, so simultaneous failures spread out. */
   retryJitterRatio: number;
-  /** Retry-After from the provider is honoured up to this limit. */
+  /**
+   * Longest Retry-After we wait for. A longer one is never cut short (no
+   * attempt before the provider's time): automatic processing ends with
+   * failed / retry_after_too_long instead.
+   */
   retryAfterCapMs: number;
 };
 
@@ -38,12 +42,15 @@ export const DEFAULT_TUNING: WorkerTuning = {
 
 /**
  * Brevo drops a repeat of an idempotency key only within 30 minutes of the
- * first request (docs/notifications.md). All attempts of one email must fit
- * in that window, so a repeat after a lost response is still recognised.
+ * first request (docs/notifications.md). The retry schedule is sized so that,
+ * with uninterrupted processing, the last attempt starts inside that window.
+ * This is NOT a guarantee: after a restart, a stopped service or a long
+ * database outage an attempt can come later, and a repeat of an email the
+ * provider already accepted can then be sent again (documented residual risk).
  */
 export const PROVIDER_IDEMPOTENCY_WINDOW_MS = 30 * 60_000;
 
-/** Latest possible start of the last attempt, counted from the first. */
+/** Latest scheduled start of the last attempt, counted from the first, without interruptions. */
 export const lastAttemptWithinMs = (tuning: WorkerTuning): number =>
   tuning.retryDelaysMs.reduce(
     (total, delay) => total + tuning.requestTimeoutMs + Math.max(delay * (1 + tuning.retryJitterRatio), tuning.retryAfterCapMs),
@@ -60,7 +67,7 @@ export const tuningErrors = (tuning: WorkerTuning): string[] => {
     errors.push("retryDelaysMs must have one entry per retry (maxAttempts − 1)");
   }
   if (lastAttemptWithinMs(tuning) >= PROVIDER_IDEMPOTENCY_WINDOW_MS) {
-    errors.push("all attempts must fit in the provider's idempotency window");
+    errors.push("the retry schedule must fit in the provider's idempotency window");
   }
   return errors;
 };

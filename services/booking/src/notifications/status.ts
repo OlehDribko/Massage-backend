@@ -40,6 +40,7 @@ export type AdminNotificationReason =
   | "test_environment"
   | "no_valid_address"
   | "temporary_errors"
+  | "provider_retry_after_too_long"
   | "provider_rejected"
   | "provider_configuration"
   | "invalid_event"
@@ -107,6 +108,7 @@ export type EventRow = {
 
 const FAILED_REASONS: Record<string, AdminNotificationReason> = {
   attempts_exhausted: "temporary_errors",
+  retry_after_too_long: "provider_retry_after_too_long",
   interrupted: "processing_interrupted",
   provider_rejected: "provider_rejected",
   provider_auth: "provider_configuration",
@@ -176,6 +178,7 @@ export const clientReason = (status: AdminRecipientStatus): ClientNotificationRe
     case "processing_delayed":
       return null;
     case "temporary_errors":
+    case "provider_retry_after_too_long":
     case "provider_rejected":
     case "provider_configuration":
     case "invalid_event":

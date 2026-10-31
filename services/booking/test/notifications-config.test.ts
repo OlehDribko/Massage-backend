@@ -9,7 +9,7 @@ import {
   loadNotificationConfig,
   tuningErrors,
 } from "../src/notifications/config.js";
-import { retryDelayMs } from "../src/notifications/retry.js";
+import { retryAfterTooLong, retryDelayMs } from "../src/notifications/retry.js";
 
 const ENABLED = {
   ENABLE_BOOKING_NOTIFICATIONS: "true",
@@ -85,10 +85,11 @@ describe("attempts and retry schedule", () => {
     expect(tuningErrors({ ...DEFAULT_TUNING, maxAttempts: 4 })).toHaveLength(1);
   });
 
-  it("all attempts of one email fit in the provider's idempotency window, even with the longest Retry-After", () => {
+  it("without interruptions the retry schedule fits in the provider's idempotency window, even with the longest accepted Retry-After", () => {
+    // A sizing rule, not a guarantee: a restart or an outage can delay an attempt beyond it.
     expect(lastAttemptWithinMs(DEFAULT_TUNING)).toBeLessThan(PROVIDER_IDEMPOTENCY_WINDOW_MS);
     expect(tuningErrors({ ...DEFAULT_TUNING, retryAfterCapMs: 20 * 60_000 })).toContain(
-      "all attempts must fit in the provider's idempotency window",
+      "the retry schedule must fit in the provider's idempotency window",
     );
   });
 
@@ -99,10 +100,19 @@ describe("attempts and retry schedule", () => {
     expect(retryDelayMs(2, null, DEFAULT_TUNING, () => 1)).toBe(360_000);
   });
 
-  it("never earlier than Retry-After, which is honoured up to 10 minutes", () => {
+  it("never earlier than Retry-After; a wait up to 10 minutes is honoured in full", () => {
     expect(retryDelayMs(1, 120_000, DEFAULT_TUNING, () => 0)).toBe(120_000);
     expect(retryDelayMs(1, 1_000, DEFAULT_TUNING, () => 0)).toBe(60_000);
-    expect(retryDelayMs(2, 48 * 3_600_000, DEFAULT_TUNING, () => 0)).toBe(600_000);
+    expect(retryDelayMs(2, 600_000, DEFAULT_TUNING, () => 0)).toBe(600_000);
+    expect(retryAfterTooLong(600_000, DEFAULT_TUNING)).toBe(false);
+    expect(retryAfterTooLong(null, DEFAULT_TUNING)).toBe(false);
+  });
+
+  it("a longer Retry-After is not shortened: it ends automatic processing instead", () => {
+    expect(retryAfterTooLong(600_001, DEFAULT_TUNING)).toBe(true);
+    expect(retryAfterTooLong(48 * 3_600_000, DEFAULT_TUNING)).toBe(true);
+    // Never a delay below what the provider asked for.
+    expect(retryDelayMs(1, 48 * 3_600_000, DEFAULT_TUNING, () => 0)).toBe(48 * 3_600_000);
   });
 });
 

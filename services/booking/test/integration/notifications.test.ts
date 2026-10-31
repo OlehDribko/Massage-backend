@@ -351,6 +351,48 @@ describe("retries and provider errors", () => {
     expect(clientCalls).toBe(3);
   });
 
+  it("a Retry-After beyond 10 minutes is not shortened: automatic processing ends with a fixed reason", async () => {
+    await book(users.clientA, paris("2027-03-02", "09:00"));
+    const fake = createFakeEmailProvider({ now });
+    fake.setBehavior((email) =>
+      email.to === CLIENT ? { kind: "retryable", code: "rate_limited", retryAfterMs: 10 * 60_000 + 1 } : "accept",
+    );
+    const { worker } = makeWorker(fake);
+    await worker.tick();
+    expect(await deliveries()).toMatchObject([
+      { recipientRole: "client", status: "failed", resultCode: "retry_after_too_long", lastErrorCode: "rate_limited", attempts: 1 },
+      { recipientRole: "studio", status: "accepted" },
+    ]);
+    // No attempt earlier than asked, and none later either: it stays failed.
+    workerNow += 24 * 3_600_000;
+    expect(await worker.tick()).toEqual({ planned: 0, handled: 0 });
+    expect(fake.calls()).toBe(2);
+  });
+
+  it("a Retry-After of exactly 10 minutes is waited for in full", async () => {
+    await book(users.clientA, paris("2027-03-02", "09:00"));
+    const fake = createFakeEmailProvider({ now });
+    let first = true;
+    fake.setBehavior((email) => {
+      if (email.to === CLIENT && first) {
+        first = false;
+        return { kind: "retryable", code: "rate_limited", retryAfterMs: 10 * 60_000 };
+      }
+      return "accept";
+    });
+    const { worker } = makeWorker(fake);
+    await worker.tick();
+    const [client] = await deliveries();
+    expect(client).toMatchObject({ status: "pending", attempts: 1 });
+    expect((client?.nextAttemptAt.getTime() ?? 0) - workerNow).toBe(10 * 60_000);
+    workerNow += 10 * 60_000 - 1;
+    await worker.tick();
+    expect((await deliveries())[0]?.attempts).toBe(1); // not before the provider's time
+    workerNow += 1;
+    await worker.tick();
+    expect((await deliveries())[0]).toMatchObject({ status: "accepted", attempts: 2 });
+  });
+
   it("stops after the attempt limit with a visible failed state", async () => {
     await book(users.clientA, paris("2027-03-02", "09:00"));
     const fake = createFakeEmailProvider({ now });

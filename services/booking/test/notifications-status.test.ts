@@ -63,6 +63,7 @@ describe("notification status read model", () => {
   it("failed and skipped results map to fixed reasons; the client sees no provider or configuration details", () => {
     const cases: [Partial<DeliveryRow>, string, string | null][] = [
       [{ status: "failed", resultCode: "attempts_exhausted" }, "temporary_errors", "not_sent"],
+      [{ status: "failed", resultCode: "retry_after_too_long" }, "provider_retry_after_too_long", "not_sent"],
       [{ status: "failed", resultCode: "provider_auth" }, "provider_configuration", "not_sent"],
       [{ status: "failed", resultCode: "provider_rejected" }, "provider_rejected", "not_sent"],
       [{ status: "failed", resultCode: "interrupted" }, "processing_interrupted", null],

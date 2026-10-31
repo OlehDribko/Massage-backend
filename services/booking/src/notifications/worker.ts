@@ -3,7 +3,7 @@ import type { Logger } from "../logging/logger.js";
 import type { WorkerTuning } from "./config.js";
 import { parseBookingEvent } from "./event-contract.js";
 import type { EmailProvider } from "./provider.js";
-import { retryDelayMs } from "./retry.js";
+import { retryAfterTooLong, retryDelayMs } from "./retry.js";
 import {
   claimDeliveries,
   completeDelivery,
@@ -140,6 +140,12 @@ export const createWorker = (deps: WorkerDeps): Worker => {
         await record(delivery, { status: "failed", resultCode: outcome.code, lastErrorCode: outcome.code });
         return;
       case "retryable":
+        // Never earlier than the provider asks; a wait beyond our limit ends
+        // automatic processing (agreed 2026-10-31), attempts left or not.
+        if (retryAfterTooLong(outcome.retryAfterMs, tuning)) {
+          await record(delivery, { status: "failed", resultCode: "retry_after_too_long", lastErrorCode: outcome.code });
+          return;
+        }
         if (delivery.attempts >= tuning.maxAttempts) {
           await record(delivery, { status: "failed", resultCode: "attempts_exhausted", lastErrorCode: outcome.code });
           return;
