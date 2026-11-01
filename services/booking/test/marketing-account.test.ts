@@ -173,7 +173,38 @@ describe("sign-up checkbox (marketingOptIn in POST /api/me/sync)", () => {
       .set(bearer("google"))
       .send({ consentTextVersion: MARKETING_CONSENT_TEXT_VERSION });
     expect(explicit.status).toBe(503);
-    expect(explicit.body).toMatchObject({ code: "CONFIRMATION_EMAIL_NOT_SENT" });
+    // Refused by the provider: nothing is blocked, the default hint.
+    expect(explicit.body).toMatchObject({ code: "CONFIRMATION_EMAIL_NOT_SENT", retryAfterSeconds: 60 });
+    expect(explicit.headers["retry-after"]).toBe("60");
+  });
+
+  it("explicit request after a provider 429: the hint is the stored block; a repeat before it does not call the provider", async () => {
+    const { app, setMarketingRateLimited, sendAttempts, advance } = setup();
+    await sync(app, "google");
+    setMarketingRateLimited(90_000);
+    const body = { consentTextVersion: MARKETING_CONSENT_TEXT_VERSION };
+
+    const refused = await request(app).post("/api/me/marketing/subscription").set(bearer("google")).send(body);
+    expect(refused.status).toBe(503);
+    expect(refused.body).toEqual({
+      message: "The confirmation email could not be sent; retry in 90 seconds",
+      code: "CONFIRMATION_EMAIL_NOT_SENT",
+      retryAfterSeconds: 90,
+    });
+    expect(refused.headers["retry-after"]).toBe("90");
+    expect(sendAttempts()).toBe(1);
+
+    setMarketingRateLimited(undefined);
+    advance(30_000);
+    const early = await request(app).post("/api/me/marketing/subscription").set(bearer("google")).send(body);
+    expect(early.status).toBe(202);
+    expect(early.body).toEqual({ outcome: "no_action", retryAfterSeconds: 60 });
+    expect(sendAttempts()).toBe(1);
+
+    advance(60_001);
+    const later = await request(app).post("/api/me/marketing/subscription").set(bearer("google")).send(body);
+    expect(later.body).toEqual({ outcome: "confirmation_sent" });
+    expect(sendAttempts()).toBe(2);
   });
 
   it("guests and disabled marketing: the sync succeeds with outcome unavailable", async () => {

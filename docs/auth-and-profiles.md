@@ -211,7 +211,7 @@ Content-Type: application/json
 
 | Що сталося | Що бачить frontend | Що робити |
 |---|---|---|
-| Лист не вдалося відправити | `marketingOptIn.outcome: "delivery_failed"` або `503 CONFIRMATION_EMAIL_NOT_SENT` (`Retry-After: 60`); `pendingConfirmation: false` | Кнопка «Надіслати ще раз». Відмова чи помилка конфігурації нічого не записує й ліміт не витрачає. Після 429 ліміт діє до кінця блокування: наступні запити — `no_action` з `retryAfterSeconds` (для власника адреси), без звернення до Brevo |
+| Лист не вдалося відправити | `marketingOptIn.outcome: "delivery_failed"` або `503 CONFIRMATION_EMAIL_NOT_SENT` (`retryAfterSeconds` = заголовок `Retry-After`: після 429 — фактичний залишок блокування адреси, інакше 60); `pendingConfirmation: false` | Кнопка «Надіслати ще раз». Відмова чи помилка конфігурації нічого не записує й ліміт не витрачає. Після 429 ліміт діє до кінця блокування: наступні запити — `no_action` з `retryAfterSeconds` (для власника адреси), без звернення до Brevo |
 | Результат надсилання невідомий (тайм-аут, 5xx) | `outcome: "no_action"` (для власника — з `retryAfterSeconds`); `pendingConfirmation: true` | Як «лист загубився»: «Надіслати ще раз» після інтервалу. Другого листа в межах інтервалу немає |
 | Посилання прострочене (7 днів) або вже замінене | `400 INVALID_ACTION_TOKEN` на сторінці підтвердження; `pendingConfirmation: true` | Запропонувати «Надіслати нове посилання» (явна операція; ліміт до того часу вже минув) |
 | Лист загубився | `pendingConfirmation: true` | «Надіслати ще раз»: у межах 10 хв — `no_action` з `retryAfterSeconds`, після — новий лист |

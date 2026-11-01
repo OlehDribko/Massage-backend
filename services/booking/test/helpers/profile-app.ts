@@ -28,12 +28,21 @@ export const createProfileTestApp = (
   const marketingRows = createInMemoryMarketingRepository();
   const logs = createCapturingLogger();
   const sent: SentMail[] = [];
-  const mail = { failing: options.failMarketingSends === true };
+  // failing: the provider refuses (not sent); rateLimitedMs: a 429 with this Retry-After (null = none).
+  let sendAttempts = 0;
+  const mail: { failing: boolean; rateLimitedMs: number | null | undefined } = {
+    failing: options.failMarketingSends === true,
+    rateLimitedMs: undefined,
+  };
   let clock = Date.parse("2026-10-28T12:00:00Z");
   const mailer: MarketingMailer = {
     sendConfirmationRequest: (email, url) => {
+      sendAttempts += 1;
       if (mail.failing) {
         return Promise.resolve({ kind: "not_sent", code: "provider_rejected" });
+      }
+      if (mail.rateLimitedMs !== undefined) {
+        return Promise.resolve({ kind: "rate_limited", retryAfterMs: mail.rateLimitedMs });
       }
       sent.push({ kind: "confirm", email, url });
       return Promise.resolve({ kind: "accepted" });
@@ -103,5 +112,10 @@ export const createProfileTestApp = (
     setMarketingSendsFailing: (failing: boolean) => {
       mail.failing = failing;
     },
+    /** undefined: back to normal; a number or null: the provider answers 429 with that Retry-After. */
+    setMarketingRateLimited: (retryAfterMs: number | null | undefined) => {
+      mail.rateLimitedMs = retryAfterMs;
+    },
+    sendAttempts: () => sendAttempts,
   };
 };

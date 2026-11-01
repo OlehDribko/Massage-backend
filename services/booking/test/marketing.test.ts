@@ -2,6 +2,7 @@ import express from "express";
 import jwt from "jsonwebtoken";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import { createApp } from "../src/app.js";
 import type { MailOutcome, MarketingMailer } from "../src/modules/email/service/email.service.js";
 import { createActionTokenService } from "../src/modules/email/tokens/action-token.service.js";
@@ -211,7 +212,7 @@ describe("marketing subscription", () => {
 
     expect(response.status).toBe(503);
     expect(response.body).toEqual({
-      message: "The confirmation email could not be sent; nothing was changed, please retry later",
+      message: "The confirmation email could not be sent; retry in 60 seconds",
       code: "CONFIRMATION_EMAIL_NOT_SENT",
       retryAfterSeconds: 60,
     });
@@ -220,6 +221,7 @@ describe("marketing subscription", () => {
       confirmationSentAt: null,
       confirmationNonce: null,
     });
+    expect(response.headers["retry-after"]).toBe("60"); // nothing is blocked: the default hint
     expect(logs.raw()).toContain("marketing confirmation email not sent");
     expect(logs.raw()).toContain("provider_rejected");
     expect(logs.raw()).not.toContain("c@example.invalid");
@@ -245,6 +247,34 @@ describe("marketing subscription", () => {
     expect(attempts).toHaveLength(2);
     expect(sent).toHaveLength(1);
     expect(attempts[1]).not.toBe(attempts[0]); // a new legitimate attempt: new key
+  });
+
+  it("after a 429 the 503 hint is the remaining block stored for the address: message, body and Retry-After agree", async () => {
+    const hintOf = (response: request.Response) => {
+      const body: unknown = response.body;
+      const parsed = z.object({ code: z.literal("CONFIRMATION_EMAIL_NOT_SENT"), message: z.string(), retryAfterSeconds: z.int() }).parse(body);
+      expect(response.status).toBe(503);
+      expect(response.headers["retry-after"]).toBe(String(parsed.retryAfterSeconds));
+      expect(parsed.message).toBe(`The confirmation email could not be sent; retry in ${String(parsed.retryAfterSeconds)} seconds`);
+      return parsed.retryAfterSeconds;
+    };
+
+    const withRetryAfter = setup();
+    withRetryAfter.setOutcome({ kind: "rate_limited", retryAfterMs: 120_000 });
+    expect(hintOf(await subscribe(withRetryAfter.app, "h1@example.invalid"))).toBe(120);
+
+    const withoutRetryAfter = setup();
+    withoutRetryAfter.setOutcome({ kind: "rate_limited", retryAfterMs: null });
+    expect(hintOf(await subscribe(withoutRetryAfter.app, "h2@example.invalid"))).toBe(CONFIRMATION_COOLDOWN_MS / 1000);
+
+    const longBlock = setup();
+    longBlock.setOutcome({ kind: "rate_limited", retryAfterMs: 48 * 3_600_000 });
+    expect(hintOf(await subscribe(longBlock.app, "h3@example.invalid"))).toBe(48 * 3_600);
+
+    // Other causes keep the default hint: nothing is blocked after them.
+    const rejected = setup();
+    rejected.setOutcome({ kind: "not_sent", code: "provider_auth" });
+    expect(hintOf(await subscribe(rejected.app, "h4@example.invalid"))).toBe(60);
   });
 
   it("429 with Retry-After: no provider call before it, a retry is allowed once it has passed", async () => {

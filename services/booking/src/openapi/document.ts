@@ -349,7 +349,7 @@ Required on \`POST /api/bookings\` only: 8–128 characters \`[A-Za-z0-9_-]\` (a
 Booking emails are separate from the booking status. \`accepted\` means **accepted by the email provider for sending, not delivered to the mailbox**. A failed email never cancels or changes the booking.
 
 ## retryAfterSeconds
-- In errors (also the \`Retry-After\` header): \`AUTH_UNAVAILABLE\` (5 s), \`CALENDAR_BUSY\` (2 s), \`CONFIRMATION_EMAIL_NOT_SENT\` (always 60 s). After a provider rate limit (429) new confirmation emails for that address are blocked longer (until the provider's Retry-After, or 10 minutes): a retry after 60 s sends nothing and answers \`no_action\` (for the signed-in owner with the real \`retryAfterSeconds\`).
+- In errors (also the \`Retry-After\` header, and in the message): \`AUTH_UNAVAILABLE\` (5 s), \`CALENDAR_BUSY\` (2 s), \`CONFIRMATION_EMAIL_NOT_SENT\`: the remaining resend block of the address after a provider rate limit (until the provider's Retry-After, or 10 minutes), otherwise 60 s. A retry before that sends nothing and answers \`no_action\`.
 - In \`POST /api/me/marketing/subscription\` with \`outcome: "no_action"\`: seconds until "send again" may send a new confirmation email (10-minute interval after a sent email; after a provider rate limit, until the provider's Retry-After).
 
 ## Errors
@@ -519,7 +519,7 @@ const paths = (): OpenApiDocument["paths"] => ({
         {
           "403": [{ message: "A registered account with an email is required; guests use the subscription form", code: "REGISTERED_ACCOUNT_REQUIRED" }],
           "503": [
-            { message: "The confirmation email could not be sent; nothing was changed, please retry later", code: "CONFIRMATION_EMAIL_NOT_SENT", retryAfterSeconds: 60 },
+            { message: "The confirmation email could not be sent; retry in 600 seconds", code: "CONFIRMATION_EMAIL_NOT_SENT", retryAfterSeconds: 600 },
           ],
         },
       ),
@@ -566,8 +566,8 @@ const paths = (): OpenApiDocument["paths"] => ({
           { message: "The consent text shown is outdated; reload and show the current one", code: "CONSENT_TEXT_OUTDATED", currentConsentTextVersion: MARKETING_CONSENT_TEXT_VERSION },
         ]),
         "503": errors(
-          "The provider certainly did not accept the email. retryAfterSeconds is always 60; after a provider rate limit the address stays blocked longer and a retry answers 202 without sending",
-          [{ message: "The confirmation email could not be sent; nothing was changed, please retry later", code: "CONFIRMATION_EMAIL_NOT_SENT", retryAfterSeconds: 60 }],
+          "The provider certainly did not accept the email. retryAfterSeconds (= Retry-After header = the number in the message): after a provider rate limit, the remaining block of the address (provider's Retry-After or 10 minutes); otherwise 60",
+          [{ message: "The confirmation email could not be sent; retry in 600 seconds", code: "CONFIRMATION_EMAIL_NOT_SENT", retryAfterSeconds: 600 }],
           true,
         ),
       },
