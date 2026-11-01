@@ -1,0 +1,2492 @@
+{
+  "info": {
+    "_postman_id": "6b1f4e2a-3c5d-4e7f-9a1b-2c3d4e5f6a7b",
+    "name": "Massage booking API",
+    "description": "Requests of the booking API (OpenAPI 3.1: `services/booking/src/openapi/document.ts`) and the Firebase REST sign-in used to get ID tokens. Instructions: `docs/postman.md`.\n\n**Real operations.** Requests run against the environment you select (staging): ⚠️ requests change data or send emails. Send them one by one; **do not run this collection or a folder with the Collection Runner**.\n\nSecrets (Web API key, passwords, tokens) live only in the **current values** of your local environment. Scripts never print them.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1. Firebase sign-in (Firebase REST, not this API)",
+      "description": "Sign-in happens in **Firebase Authentication**; this API has no sign-in routes. These requests go to `identitytoolkit.googleapis.com` and `securetoken.googleapis.com` with the Web API key of the Firebase project.\n\n- Tokens are stored per role (`client…`, `admin…`, `guest…`), so one sign-in never overwrites another role.\n- Tokens are saved only into the **current values** of the selected environment, after HTTP 200 and a non-empty token. Nothing is printed to the console.\n- The admin requests only sign in to an existing account. **The collection never assigns the admin role** (the owner does it with a command, outside the API).\n- ⚠️ requests marked SEND verification email send a real email.\n- **Google sign-in is not part of this collection**: it needs the browser flow of the frontend (popup/redirect, authorized domain, CORS). It is a separate future browser check; do not imitate it with email/password.",
+      "auth": {
+        "type": "noauth"
+      },
+      "item": [
+        {
+          "name": "Client: sign in (email/password)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Builds the JSON body from the environment; JSON.stringify escapes any character of the password.",
+                  "const email = pm.environment.get(\"clientEmail\");",
+                  "const password = pm.environment.get(\"clientPassword\");",
+                  "if (!pm.environment.get(\"firebaseWebApiKey\") || !email || !password) {",
+                  "  console.warn(\"Request skipped. Set the current values of firebaseWebApiKey, clientEmail and clientPassword.\");",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.request.body.update({ mode: \"raw\", raw: JSON.stringify({ email, password, returnSecureToken: true }), options: { raw: { language: \"json\" } } });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Saves the client tokens into the CURRENT values of the selected environment (local),",
+                  "// only after HTTP 200 with non-empty strings. Token values are never printed.",
+                  "const ID_VAR = \"clientIdToken\";",
+                  "const REFRESH_VAR = \"clientRefreshToken\";",
+                  "let body = null;",
+                  "try {",
+                  "  body = pm.response.json();",
+                  "} catch (e) {",
+                  "  body = null;",
+                  "}",
+                  "const field = (key) => (body !== null && typeof body === \"object\" && typeof body[key] === \"string\" ? body[key] : \"\");",
+                  "const idToken = field(\"idToken\");",
+                  "const refreshToken = field(\"refreshToken\");",
+                  "const hasEnvironment = Boolean(pm.environment.name);",
+                  "const project = pm.environment.get(\"firebaseProjectId\");",
+                  "// The token must be issued for the Firebase project of this environment (otherwise: wrong Web API key).",
+                  "let audience = \"\";",
+                  "try {",
+                  "  const part = idToken.split(\".\")[1] || \"\";",
+                  "  const base64 = part.replace(/-/g, \"+\").replace(/_/g, \"/\");",
+                  "  const payload = JSON.parse(atob(base64 + \"=\".repeat((4 - (base64.length % 4)) % 4)));",
+                  "  audience = typeof payload.aud === \"string\" ? payload.aud : \"\";",
+                  "} catch (e) {",
+                  "  audience = \"\";",
+                  "}",
+                  "const saved = pm.response.code === 200 && idToken.length > 0 && refreshToken.length > 0 && hasEnvironment && audience === project;",
+                  "if (saved) {",
+                  "  pm.environment.set(ID_VAR, idToken);",
+                  "  pm.environment.set(REFRESH_VAR, refreshToken);",
+                  "}",
+                  "pm.test(\"HTTP 200\", () => pm.expect(pm.response.code).to.equal(200));",
+                  "pm.test(\"environment selected\", () => pm.expect(hasEnvironment).to.equal(true));",
+                  "pm.test(\"non-empty ID token and refresh token in the response\", () => pm.expect(idToken.length > 0 && refreshToken.length > 0).to.equal(true));",
+                  "if (idToken.length > 0) {",
+                  "  pm.test(\"token issued for project \" + project, () => pm.expect(audience === project).to.equal(true));",
+                  "}",
+                  "pm.test(saved ? \"tokens saved to \" + ID_VAR + \" / \" + REFRESH_VAR : \"tokens NOT saved (previous values kept)\", () => pm.expect(saved).to.equal(true));",
+                  "const error = body !== null && typeof body === \"object\" && body.error && typeof body.error.message === \"string\" ? body.error.message.slice(0, 120) : \"\";",
+                  "if (error) {",
+                  "  pm.test(\"Firebase error: \" + error, () => pm.expect.fail(error));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"<set from clientEmail by the pre-request script>\",\n  \"password\": \"<set from clientPassword by the pre-request script>\",\n  \"returnSecureToken\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={{firebaseWebApiKey}}",
+              "protocol": "https",
+              "host": [
+                "identitytoolkit",
+                "googleapis",
+                "com"
+              ],
+              "path": [
+                "v1",
+                "accounts:signInWithPassword"
+              ],
+              "query": [
+                {
+                  "key": "key",
+                  "value": "{{firebaseWebApiKey}}"
+                }
+              ]
+            },
+            "description": "Signs in to an EXISTING Firebase account (no sign-up). The pre-request script builds the body from the current values of `clientEmail` and `clientPassword` (JSON-escaped), the test script saves `clientIdToken` and `clientRefreshToken` only after HTTP 200 with non-empty tokens. Sends no email."
+          }
+        },
+        {
+          "name": "Client: ⚠️ SEND verification email (real email)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"firebaseWebApiKey\", \"clientIdToken\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Sign in as Client first.\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));",
+                  "const message = pm.response.code === 200 ? \"\" : ((pm.response.json().error || {}).message || \"\");",
+                  "if (message) {",
+                  "  pm.test(\"Firebase error: \" + String(message).slice(0, 120), () => pm.expect.fail(String(message)));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"requestType\": \"VERIFY_EMAIL\",\n  \"idToken\": \"{{clientIdToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key={{firebaseWebApiKey}}",
+              "protocol": "https",
+              "host": [
+                "identitytoolkit",
+                "googleapis",
+                "com"
+              ],
+              "path": [
+                "v1",
+                "accounts:sendOobCode"
+              ],
+              "query": [
+                {
+                  "key": "key",
+                  "value": "{{firebaseWebApiKey}}"
+                }
+              ]
+            },
+            "description": "⚠️ **Sends a real email**: Firebase mails a verification link to the address of the client account. Send only on purpose, once; then open the link and run \"Client: refresh ID token\". Repeats may be refused with TOO_MANY_ATTEMPTS_TRY_LATER."
+          }
+        },
+        {
+          "name": "Client: refresh ID token",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"firebaseWebApiKey\", \"clientRefreshToken\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Sign in as Client first.\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Saves the client tokens into the CURRENT values of the selected environment (local),",
+                  "// only after HTTP 200 with non-empty strings. Token values are never printed.",
+                  "const ID_VAR = \"clientIdToken\";",
+                  "const REFRESH_VAR = \"clientRefreshToken\";",
+                  "let body = null;",
+                  "try {",
+                  "  body = pm.response.json();",
+                  "} catch (e) {",
+                  "  body = null;",
+                  "}",
+                  "const field = (key) => (body !== null && typeof body === \"object\" && typeof body[key] === \"string\" ? body[key] : \"\");",
+                  "const idToken = field(\"id_token\");",
+                  "const refreshToken = field(\"refresh_token\");",
+                  "const hasEnvironment = Boolean(pm.environment.name);",
+                  "const project = pm.environment.get(\"firebaseProjectId\");",
+                  "// The token must be issued for the Firebase project of this environment (otherwise: wrong Web API key).",
+                  "let audience = \"\";",
+                  "try {",
+                  "  const part = idToken.split(\".\")[1] || \"\";",
+                  "  const base64 = part.replace(/-/g, \"+\").replace(/_/g, \"/\");",
+                  "  const payload = JSON.parse(atob(base64 + \"=\".repeat((4 - (base64.length % 4)) % 4)));",
+                  "  audience = typeof payload.aud === \"string\" ? payload.aud : \"\";",
+                  "} catch (e) {",
+                  "  audience = \"\";",
+                  "}",
+                  "const saved = pm.response.code === 200 && idToken.length > 0 && refreshToken.length > 0 && hasEnvironment && audience === project;",
+                  "if (saved) {",
+                  "  pm.environment.set(ID_VAR, idToken);",
+                  "  pm.environment.set(REFRESH_VAR, refreshToken);",
+                  "}",
+                  "pm.test(\"HTTP 200\", () => pm.expect(pm.response.code).to.equal(200));",
+                  "pm.test(\"environment selected\", () => pm.expect(hasEnvironment).to.equal(true));",
+                  "pm.test(\"non-empty ID token and refresh token in the response\", () => pm.expect(idToken.length > 0 && refreshToken.length > 0).to.equal(true));",
+                  "if (idToken.length > 0) {",
+                  "  pm.test(\"token issued for project \" + project, () => pm.expect(audience === project).to.equal(true));",
+                  "}",
+                  "pm.test(saved ? \"tokens saved to \" + ID_VAR + \" / \" + REFRESH_VAR : \"tokens NOT saved (previous values kept)\", () => pm.expect(saved).to.equal(true));",
+                  "const error = body !== null && typeof body === \"object\" && body.error && typeof body.error.message === \"string\" ? body.error.message.slice(0, 120) : \"\";",
+                  "if (error) {",
+                  "  pm.test(\"Firebase error: \" + error, () => pm.expect.fail(error));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "refresh_token",
+                  "type": "text"
+                },
+                {
+                  "key": "refresh_token",
+                  "value": "{{clientRefreshToken}}",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "https://securetoken.googleapis.com/v1/token?key={{firebaseWebApiKey}}",
+              "protocol": "https",
+              "host": [
+                "securetoken",
+                "googleapis",
+                "com"
+              ],
+              "path": [
+                "v1",
+                "token"
+              ],
+              "query": [
+                {
+                  "key": "key",
+                  "value": "{{firebaseWebApiKey}}"
+                }
+              ]
+            },
+            "description": "Exchanges `clientRefreshToken` for a new ID token (an ID token lives about an hour; after confirming the email the new token carries `email_verified: true`). Postman URL-encodes the form value. Saves both tokens only after HTTP 200 with non-empty values."
+          }
+        },
+        {
+          "name": "Admin: sign in (email/password)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Builds the JSON body from the environment; JSON.stringify escapes any character of the password.",
+                  "const email = pm.environment.get(\"adminEmail\");",
+                  "const password = pm.environment.get(\"adminPassword\");",
+                  "if (!pm.environment.get(\"firebaseWebApiKey\") || !email || !password) {",
+                  "  console.warn(\"Request skipped. Set the current values of firebaseWebApiKey, adminEmail and adminPassword.\");",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.request.body.update({ mode: \"raw\", raw: JSON.stringify({ email, password, returnSecureToken: true }), options: { raw: { language: \"json\" } } });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Saves the admin tokens into the CURRENT values of the selected environment (local),",
+                  "// only after HTTP 200 with non-empty strings. Token values are never printed.",
+                  "const ID_VAR = \"adminIdToken\";",
+                  "const REFRESH_VAR = \"adminRefreshToken\";",
+                  "let body = null;",
+                  "try {",
+                  "  body = pm.response.json();",
+                  "} catch (e) {",
+                  "  body = null;",
+                  "}",
+                  "const field = (key) => (body !== null && typeof body === \"object\" && typeof body[key] === \"string\" ? body[key] : \"\");",
+                  "const idToken = field(\"idToken\");",
+                  "const refreshToken = field(\"refreshToken\");",
+                  "const hasEnvironment = Boolean(pm.environment.name);",
+                  "const project = pm.environment.get(\"firebaseProjectId\");",
+                  "// The token must be issued for the Firebase project of this environment (otherwise: wrong Web API key).",
+                  "let audience = \"\";",
+                  "try {",
+                  "  const part = idToken.split(\".\")[1] || \"\";",
+                  "  const base64 = part.replace(/-/g, \"+\").replace(/_/g, \"/\");",
+                  "  const payload = JSON.parse(atob(base64 + \"=\".repeat((4 - (base64.length % 4)) % 4)));",
+                  "  audience = typeof payload.aud === \"string\" ? payload.aud : \"\";",
+                  "} catch (e) {",
+                  "  audience = \"\";",
+                  "}",
+                  "const saved = pm.response.code === 200 && idToken.length > 0 && refreshToken.length > 0 && hasEnvironment && audience === project;",
+                  "if (saved) {",
+                  "  pm.environment.set(ID_VAR, idToken);",
+                  "  pm.environment.set(REFRESH_VAR, refreshToken);",
+                  "}",
+                  "pm.test(\"HTTP 200\", () => pm.expect(pm.response.code).to.equal(200));",
+                  "pm.test(\"environment selected\", () => pm.expect(hasEnvironment).to.equal(true));",
+                  "pm.test(\"non-empty ID token and refresh token in the response\", () => pm.expect(idToken.length > 0 && refreshToken.length > 0).to.equal(true));",
+                  "if (idToken.length > 0) {",
+                  "  pm.test(\"token issued for project \" + project, () => pm.expect(audience === project).to.equal(true));",
+                  "}",
+                  "pm.test(saved ? \"tokens saved to \" + ID_VAR + \" / \" + REFRESH_VAR : \"tokens NOT saved (previous values kept)\", () => pm.expect(saved).to.equal(true));",
+                  "const error = body !== null && typeof body === \"object\" && body.error && typeof body.error.message === \"string\" ? body.error.message.slice(0, 120) : \"\";",
+                  "if (error) {",
+                  "  pm.test(\"Firebase error: \" + error, () => pm.expect.fail(error));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"<set from adminEmail by the pre-request script>\",\n  \"password\": \"<set from adminPassword by the pre-request script>\",\n  \"returnSecureToken\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={{firebaseWebApiKey}}",
+              "protocol": "https",
+              "host": [
+                "identitytoolkit",
+                "googleapis",
+                "com"
+              ],
+              "path": [
+                "v1",
+                "accounts:signInWithPassword"
+              ],
+              "query": [
+                {
+                  "key": "key",
+                  "value": "{{firebaseWebApiKey}}"
+                }
+              ]
+            },
+            "description": "Signs in to an EXISTING Firebase account (no sign-up). The pre-request script builds the body from the current values of `adminEmail` and `adminPassword` (JSON-escaped), the test script saves `adminIdToken` and `adminRefreshToken` only after HTTP 200 with non-empty tokens. Sends no email."
+          }
+        },
+        {
+          "name": "Admin: ⚠️ SEND verification email (real email)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"firebaseWebApiKey\", \"adminIdToken\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Sign in as Admin first.\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));",
+                  "const message = pm.response.code === 200 ? \"\" : ((pm.response.json().error || {}).message || \"\");",
+                  "if (message) {",
+                  "  pm.test(\"Firebase error: \" + String(message).slice(0, 120), () => pm.expect.fail(String(message)));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"requestType\": \"VERIFY_EMAIL\",\n  \"idToken\": \"{{adminIdToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key={{firebaseWebApiKey}}",
+              "protocol": "https",
+              "host": [
+                "identitytoolkit",
+                "googleapis",
+                "com"
+              ],
+              "path": [
+                "v1",
+                "accounts:sendOobCode"
+              ],
+              "query": [
+                {
+                  "key": "key",
+                  "value": "{{firebaseWebApiKey}}"
+                }
+              ]
+            },
+            "description": "⚠️ **Sends a real email**: Firebase mails a verification link to the address of the admin account. Send only on purpose, once; then open the link and run \"Admin: refresh ID token\". Repeats may be refused with TOO_MANY_ATTEMPTS_TRY_LATER."
+          }
+        },
+        {
+          "name": "Admin: refresh ID token",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"firebaseWebApiKey\", \"adminRefreshToken\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Sign in as Admin first.\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Saves the admin tokens into the CURRENT values of the selected environment (local),",
+                  "// only after HTTP 200 with non-empty strings. Token values are never printed.",
+                  "const ID_VAR = \"adminIdToken\";",
+                  "const REFRESH_VAR = \"adminRefreshToken\";",
+                  "let body = null;",
+                  "try {",
+                  "  body = pm.response.json();",
+                  "} catch (e) {",
+                  "  body = null;",
+                  "}",
+                  "const field = (key) => (body !== null && typeof body === \"object\" && typeof body[key] === \"string\" ? body[key] : \"\");",
+                  "const idToken = field(\"id_token\");",
+                  "const refreshToken = field(\"refresh_token\");",
+                  "const hasEnvironment = Boolean(pm.environment.name);",
+                  "const project = pm.environment.get(\"firebaseProjectId\");",
+                  "// The token must be issued for the Firebase project of this environment (otherwise: wrong Web API key).",
+                  "let audience = \"\";",
+                  "try {",
+                  "  const part = idToken.split(\".\")[1] || \"\";",
+                  "  const base64 = part.replace(/-/g, \"+\").replace(/_/g, \"/\");",
+                  "  const payload = JSON.parse(atob(base64 + \"=\".repeat((4 - (base64.length % 4)) % 4)));",
+                  "  audience = typeof payload.aud === \"string\" ? payload.aud : \"\";",
+                  "} catch (e) {",
+                  "  audience = \"\";",
+                  "}",
+                  "const saved = pm.response.code === 200 && idToken.length > 0 && refreshToken.length > 0 && hasEnvironment && audience === project;",
+                  "if (saved) {",
+                  "  pm.environment.set(ID_VAR, idToken);",
+                  "  pm.environment.set(REFRESH_VAR, refreshToken);",
+                  "}",
+                  "pm.test(\"HTTP 200\", () => pm.expect(pm.response.code).to.equal(200));",
+                  "pm.test(\"environment selected\", () => pm.expect(hasEnvironment).to.equal(true));",
+                  "pm.test(\"non-empty ID token and refresh token in the response\", () => pm.expect(idToken.length > 0 && refreshToken.length > 0).to.equal(true));",
+                  "if (idToken.length > 0) {",
+                  "  pm.test(\"token issued for project \" + project, () => pm.expect(audience === project).to.equal(true));",
+                  "}",
+                  "pm.test(saved ? \"tokens saved to \" + ID_VAR + \" / \" + REFRESH_VAR : \"tokens NOT saved (previous values kept)\", () => pm.expect(saved).to.equal(true));",
+                  "const error = body !== null && typeof body === \"object\" && body.error && typeof body.error.message === \"string\" ? body.error.message.slice(0, 120) : \"\";",
+                  "if (error) {",
+                  "  pm.test(\"Firebase error: \" + error, () => pm.expect.fail(error));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "refresh_token",
+                  "type": "text"
+                },
+                {
+                  "key": "refresh_token",
+                  "value": "{{adminRefreshToken}}",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "https://securetoken.googleapis.com/v1/token?key={{firebaseWebApiKey}}",
+              "protocol": "https",
+              "host": [
+                "securetoken",
+                "googleapis",
+                "com"
+              ],
+              "path": [
+                "v1",
+                "token"
+              ],
+              "query": [
+                {
+                  "key": "key",
+                  "value": "{{firebaseWebApiKey}}"
+                }
+              ]
+            },
+            "description": "Exchanges `adminRefreshToken` for a new ID token (an ID token lives about an hour; after confirming the email the new token carries `email_verified: true`). Postman URL-encodes the form value. Saves both tokens only after HTTP 200 with non-empty values."
+          }
+        },
+        {
+          "name": "Guest: anonymous sign-in (creates a new anonymous Firebase user)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"firebaseWebApiKey\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Set the current value of firebaseWebApiKey.\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Saves the guest tokens into the CURRENT values of the selected environment (local),",
+                  "// only after HTTP 200 with non-empty strings. Token values are never printed.",
+                  "const ID_VAR = \"guestIdToken\";",
+                  "const REFRESH_VAR = \"guestRefreshToken\";",
+                  "let body = null;",
+                  "try {",
+                  "  body = pm.response.json();",
+                  "} catch (e) {",
+                  "  body = null;",
+                  "}",
+                  "const field = (key) => (body !== null && typeof body === \"object\" && typeof body[key] === \"string\" ? body[key] : \"\");",
+                  "const idToken = field(\"idToken\");",
+                  "const refreshToken = field(\"refreshToken\");",
+                  "const hasEnvironment = Boolean(pm.environment.name);",
+                  "const project = pm.environment.get(\"firebaseProjectId\");",
+                  "// The token must be issued for the Firebase project of this environment (otherwise: wrong Web API key).",
+                  "let audience = \"\";",
+                  "try {",
+                  "  const part = idToken.split(\".\")[1] || \"\";",
+                  "  const base64 = part.replace(/-/g, \"+\").replace(/_/g, \"/\");",
+                  "  const payload = JSON.parse(atob(base64 + \"=\".repeat((4 - (base64.length % 4)) % 4)));",
+                  "  audience = typeof payload.aud === \"string\" ? payload.aud : \"\";",
+                  "} catch (e) {",
+                  "  audience = \"\";",
+                  "}",
+                  "const saved = pm.response.code === 200 && idToken.length > 0 && refreshToken.length > 0 && hasEnvironment && audience === project;",
+                  "if (saved) {",
+                  "  pm.environment.set(ID_VAR, idToken);",
+                  "  pm.environment.set(REFRESH_VAR, refreshToken);",
+                  "}",
+                  "pm.test(\"HTTP 200\", () => pm.expect(pm.response.code).to.equal(200));",
+                  "pm.test(\"environment selected\", () => pm.expect(hasEnvironment).to.equal(true));",
+                  "pm.test(\"non-empty ID token and refresh token in the response\", () => pm.expect(idToken.length > 0 && refreshToken.length > 0).to.equal(true));",
+                  "if (idToken.length > 0) {",
+                  "  pm.test(\"token issued for project \" + project, () => pm.expect(audience === project).to.equal(true));",
+                  "}",
+                  "pm.test(saved ? \"tokens saved to \" + ID_VAR + \" / \" + REFRESH_VAR : \"tokens NOT saved (previous values kept)\", () => pm.expect(saved).to.equal(true));",
+                  "const error = body !== null && typeof body === \"object\" && body.error && typeof body.error.message === \"string\" ? body.error.message.slice(0, 120) : \"\";",
+                  "if (error) {",
+                  "  pm.test(\"Firebase error: \" + error, () => pm.expect.fail(error));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"returnSecureToken\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={{firebaseWebApiKey}}",
+              "protocol": "https",
+              "host": [
+                "identitytoolkit",
+                "googleapis",
+                "com"
+              ],
+              "path": [
+                "v1",
+                "accounts:signUp"
+              ],
+              "query": [
+                {
+                  "key": "key",
+                  "value": "{{firebaseWebApiKey}}"
+                }
+              ]
+            },
+            "description": "Anonymous sign-in. **Every send creates a new anonymous user** in Firebase Authentication and replaces `guestIdToken` / `guestRefreshToken` (the client and admin tokens are not touched). Send once and reuse the tokens via \"Guest: refresh ID token\". Sends no email."
+          }
+        },
+        {
+          "name": "Guest: refresh ID token",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"firebaseWebApiKey\", \"guestRefreshToken\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Sign in as Guest first.\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Saves the guest tokens into the CURRENT values of the selected environment (local),",
+                  "// only after HTTP 200 with non-empty strings. Token values are never printed.",
+                  "const ID_VAR = \"guestIdToken\";",
+                  "const REFRESH_VAR = \"guestRefreshToken\";",
+                  "let body = null;",
+                  "try {",
+                  "  body = pm.response.json();",
+                  "} catch (e) {",
+                  "  body = null;",
+                  "}",
+                  "const field = (key) => (body !== null && typeof body === \"object\" && typeof body[key] === \"string\" ? body[key] : \"\");",
+                  "const idToken = field(\"id_token\");",
+                  "const refreshToken = field(\"refresh_token\");",
+                  "const hasEnvironment = Boolean(pm.environment.name);",
+                  "const project = pm.environment.get(\"firebaseProjectId\");",
+                  "// The token must be issued for the Firebase project of this environment (otherwise: wrong Web API key).",
+                  "let audience = \"\";",
+                  "try {",
+                  "  const part = idToken.split(\".\")[1] || \"\";",
+                  "  const base64 = part.replace(/-/g, \"+\").replace(/_/g, \"/\");",
+                  "  const payload = JSON.parse(atob(base64 + \"=\".repeat((4 - (base64.length % 4)) % 4)));",
+                  "  audience = typeof payload.aud === \"string\" ? payload.aud : \"\";",
+                  "} catch (e) {",
+                  "  audience = \"\";",
+                  "}",
+                  "const saved = pm.response.code === 200 && idToken.length > 0 && refreshToken.length > 0 && hasEnvironment && audience === project;",
+                  "if (saved) {",
+                  "  pm.environment.set(ID_VAR, idToken);",
+                  "  pm.environment.set(REFRESH_VAR, refreshToken);",
+                  "}",
+                  "pm.test(\"HTTP 200\", () => pm.expect(pm.response.code).to.equal(200));",
+                  "pm.test(\"environment selected\", () => pm.expect(hasEnvironment).to.equal(true));",
+                  "pm.test(\"non-empty ID token and refresh token in the response\", () => pm.expect(idToken.length > 0 && refreshToken.length > 0).to.equal(true));",
+                  "if (idToken.length > 0) {",
+                  "  pm.test(\"token issued for project \" + project, () => pm.expect(audience === project).to.equal(true));",
+                  "}",
+                  "pm.test(saved ? \"tokens saved to \" + ID_VAR + \" / \" + REFRESH_VAR : \"tokens NOT saved (previous values kept)\", () => pm.expect(saved).to.equal(true));",
+                  "const error = body !== null && typeof body === \"object\" && body.error && typeof body.error.message === \"string\" ? body.error.message.slice(0, 120) : \"\";",
+                  "if (error) {",
+                  "  pm.test(\"Firebase error: \" + error, () => pm.expect.fail(error));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "refresh_token",
+                  "type": "text"
+                },
+                {
+                  "key": "refresh_token",
+                  "value": "{{guestRefreshToken}}",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "https://securetoken.googleapis.com/v1/token?key={{firebaseWebApiKey}}",
+              "protocol": "https",
+              "host": [
+                "securetoken",
+                "googleapis",
+                "com"
+              ],
+              "path": [
+                "v1",
+                "token"
+              ],
+              "query": [
+                {
+                  "key": "key",
+                  "value": "{{firebaseWebApiKey}}"
+                }
+              ]
+            },
+            "description": "Exchanges `guestRefreshToken` for a new ID token (an ID token lives about an hour; after confirming the email the new token carries `email_verified: true`). Postman URL-encodes the form value. Saves both tokens only after HTTP 200 with non-empty values."
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Public: health, catalogue, availability",
+      "description": "No token. Read-only.",
+      "auth": {
+        "type": "noauth"
+      },
+      "item": [
+        {
+          "name": "Liveness",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health/live",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health",
+                "live"
+              ]
+            },
+            "description": "GET /health/live (operationId getLiveness)."
+          }
+        },
+        {
+          "name": "Readiness",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health/ready",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health",
+                "ready"
+              ]
+            },
+            "description": "GET /health/ready (getReadiness). Wakes the database."
+          }
+        },
+        {
+          "name": "List services",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));",
+                  "pm.test(\"services listed\", () => pm.expect(Array.isArray(pm.response.json().services)).to.equal(true));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/services",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "services"
+              ]
+            },
+            "description": "GET /api/services (listServices). Copy an `id` into the `serviceId` variable for the next requests."
+          }
+        },
+        {
+          "name": "Get service",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"serviceId\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Copy a service id from List services.\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/services/{{serviceId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "services",
+                "{{serviceId}}"
+              ]
+            },
+            "description": "GET /api/services/{serviceId} (getService)."
+          }
+        },
+        {
+          "name": "Availability of a service",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"serviceId\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Copy a service id from List services.\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/services/{{serviceId}}/availability",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "services",
+                "{{serviceId}}",
+                "availability"
+              ],
+              "query": [
+                {
+                  "key": "from",
+                  "value": "{{availabilityFrom}}",
+                  "disabled": true,
+                  "description": "Optional local date YYYY-MM-DD (default: today). Enable and set availabilityFrom."
+                },
+                {
+                  "key": "to",
+                  "value": "{{availabilityTo}}",
+                  "disabled": true,
+                  "description": "Optional local date YYYY-MM-DD (default: end of the horizon). Enable and set availabilityTo."
+                }
+              ]
+            },
+            "description": "GET /api/services/{serviceId}/availability (getAvailability). Free starts in Europe/Paris. Empty days until the administrator sets the schedule. Copy a `startsAt` into `bookingStartsAt` (or `rescheduleStartsAt`)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Client (clientIdToken)",
+      "description": "Requests of a registered client. Bearer token: `{{clientIdToken}}` (skipped while it is empty). To book, the client needs a verified email, a name and a phone (`bookingReadiness.blockers`).\n\n⚠️ = changes data. Booking emails are off on staging; when they are switched on, creating, rescheduling and cancelling send emails.",
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "{{clientIdToken}}",
+            "type": "string"
+          }
+        ]
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Skips the request while a required variable is empty (no values are printed).",
+              "const missing = [\"clientIdToken\"].filter((name) => !pm.environment.get(name));",
+              "if (missing.length > 0) {",
+              "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Run 1. Firebase sign-in → Client: sign in.\");",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "Profile: sync",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));",
+                  "const body = pm.response.code === 200 ? pm.response.json() : null;",
+                  "const profile = body && body.profile ? body.profile : null;",
+                  "if (profile && typeof profile.id === \"string\" && profile.id.length > 0 && pm.environment.name) {",
+                  "  pm.environment.set(\"clientProfileId\", profile.id);",
+                  "}",
+                  "pm.test(\"role is client\", () => pm.expect(profile && profile.role).to.equal(\"client\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/me/sync",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "me",
+                "sync"
+              ]
+            },
+            "description": "POST /api/me/sync (syncProfile) without a body: creates or refreshes the profile from the ID token. Saves `profile.id` into `clientProfileId`. Run it again after a token refresh to pick up `emailVerified: true`. Sends no email (the marketing checkbox is not sent)."
+          }
+        },
+        {
+          "name": "Profile: get",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "me"
+              ]
+            },
+            "description": "GET /api/me (getProfile). Read-only."
+          }
+        },
+        {
+          "name": "Profile: ⚠️ update name and phone",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Anna Example\",\n  \"phone\": \"+33 6 12 34 56 78\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "me"
+              ]
+            },
+            "description": "⚠️ PATCH /api/me (updateProfile). Changes the profile. Invented example values; replace them with test data."
+          }
+        },
+        {
+          "name": "Profile: ⚠️ sign out everywhere (revokes sessions)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 204\", () => pm.expect([204]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/me/sessions/revoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "me",
+                "sessions",
+                "revoke"
+              ]
+            },
+            "description": "⚠️ POST /api/me/sessions/revoke (revokeSessions). Revokes ALL Firebase refresh tokens of this account: the saved client tokens stop working (`401 SESSION_REVOKED`), sign in again afterwards."
+          }
+        },
+        {
+          "name": "Bookings: ⚠️ create (Idempotency-Key)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"serviceId\", \"bookingStartsAt\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Set serviceId and bookingStartsAt (a startsAt from Availability).\");",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "// One key per booking attempt: generated only while the variable is empty, never on a repeat.",
+                  "if (missing.length === 0 && !pm.environment.get(\"bookingIdempotencyKey\")) {",
+                  "  pm.environment.set(\"bookingIdempotencyKey\", pm.variables.replaceIn(\"{{$guid}}\"));",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 201 or 200\", () => pm.expect([201, 200]).to.include(pm.response.code));",
+                  "const replayed = pm.response.headers.get(\"Idempotent-Replayed\") === \"true\";",
+                  "pm.test(replayed ? \"repeat of the same request: original booking returned\" : \"new booking created\", () => pm.expect(pm.response.code).to.equal(replayed ? 200 : 201));",
+                  "const booking = [200, 201].includes(pm.response.code) ? pm.response.json().booking : null;",
+                  "if (booking && typeof booking.id === \"string\" && pm.environment.name) {",
+                  "  pm.environment.set(\"bookingId\", booking.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{bookingIdempotencyKey}}",
+                "description": "One key per booking attempt. Same key + same body = safe repeat. Clear bookingIdempotencyKey for a new booking."
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"serviceId\": \"{{serviceId}}\",\n  \"startsAt\": \"{{bookingStartsAt}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/bookings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "bookings"
+              ]
+            },
+            "description": "⚠️ POST /api/bookings (createBooking). **Creates a real booking.**\n\n**Idempotency-Key** comes from the `bookingIdempotencyKey` variable:\n- if the variable is empty, the pre-request script fills it ONCE with a new UUID; it is never regenerated while it has a value;\n- **repeat the same operation** (timeout, unknown result): send again without changing the key or the body → `200` with `Idempotent-Replayed: true` and the same booking, no second booking;\n- **new booking**: clear the current value of `bookingIdempotencyKey` (or type a new 8–128 character value `[A-Za-z0-9_-]`), then send;\n- same key with another `serviceId`/`startsAt` → `422 IDEMPOTENCY_KEY_REUSED`.\n\nSaves the booking `id` into `bookingId`."
+          }
+        },
+        {
+          "name": "Bookings: list own",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/bookings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "bookings"
+              ]
+            },
+            "description": "GET /api/bookings (listOwnBookings). Read-only."
+          }
+        },
+        {
+          "name": "Bookings: get own",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"bookingId\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Create a booking or copy an id from Bookings: list own.\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/bookings/{{bookingId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "bookings",
+                "{{bookingId}}"
+              ]
+            },
+            "description": "GET /api/bookings/{bookingId} (getOwnBooking). Someone else's booking is 404."
+          }
+        },
+        {
+          "name": "Bookings: ⚠️ reschedule",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"bookingId\", \"rescheduleStartsAt\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Set bookingId and rescheduleStartsAt (a startsAt from Availability).\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"startsAt\": \"{{rescheduleStartsAt}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/bookings/{{bookingId}}/reschedule",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "bookings",
+                "{{bookingId}}",
+                "reschedule"
+              ]
+            },
+            "description": "⚠️ POST /api/bookings/{bookingId}/reschedule (rescheduleBooking). Moves the booking; the service and the agreed price stay. A repeat answers `changed: false`."
+          }
+        },
+        {
+          "name": "Bookings: ⚠️ cancel own",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"bookingId\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Set bookingId.\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/bookings/{{bookingId}}/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "bookings",
+                "{{bookingId}}",
+                "cancel"
+              ]
+            },
+            "description": "⚠️ POST /api/bookings/{bookingId}/cancel (cancelOwnBooking). Cancels the booking (before its start). A repeat answers `changed: false`."
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Guest (guestIdToken)",
+      "description": "Firebase anonymous session. Has a profile and sees own bookings, but cannot book (see 6. Permission checks).",
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "{{guestIdToken}}",
+            "type": "string"
+          }
+        ]
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Skips the request while a required variable is empty (no values are printed).",
+              "const missing = [\"guestIdToken\"].filter((name) => !pm.environment.get(name));",
+              "if (missing.length > 0) {",
+              "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Run 1. Firebase sign-in → Guest: anonymous sign-in.\");",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "Profile: sync (guest)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));",
+                  "pm.test(\"anonymous profile\", () => pm.expect(pm.response.json().profile.authState).to.equal(\"anonymous\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/me/sync",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "me",
+                "sync"
+              ]
+            },
+            "description": "POST /api/me/sync (syncProfile) with the guest token. Expect `authState: anonymous` and the blocker `anonymous_session`."
+          }
+        },
+        {
+          "name": "Profile: get (guest)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "me"
+              ]
+            },
+            "description": "GET /api/me (getProfile)."
+          }
+        },
+        {
+          "name": "Bookings: list own (guest)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/bookings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "bookings"
+              ]
+            },
+            "description": "GET /api/bookings (listOwnBookings)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Admin (adminIdToken)",
+      "description": "Verified administrator only. Bearer token: `{{adminIdToken}}`. The collection does **not** assign the role: until the owner assigns it, these requests answer `403`.\n\n⚠️ = changes data. Booking emails are off on staging; when they are on, cancelling by the studio emails the client.",
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "{{adminIdToken}}",
+            "type": "string"
+          }
+        ]
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Skips the request while a required variable is empty (no values are printed).",
+              "const missing = [\"adminIdToken\"].filter((name) => !pm.environment.get(name));",
+              "if (missing.length > 0) {",
+              "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Run 1. Firebase sign-in → Admin: sign in.\");",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "Profile: sync (admin)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));",
+                  "const body = pm.response.code === 200 ? pm.response.json() : null;",
+                  "const profile = body && body.profile ? body.profile : null;",
+                  "if (profile && typeof profile.id === \"string\" && profile.id.length > 0 && pm.environment.name) {",
+                  "  pm.environment.set(\"adminProfileId\", profile.id);",
+                  "}",
+                  "pm.test(\"role is admin\", () => pm.expect(profile && profile.role).to.equal(\"admin\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/me/sync",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "me",
+                "sync"
+              ]
+            },
+            "description": "POST /api/me/sync (syncProfile) with the admin token. Saves `profile.id` into `adminProfileId` (needed by the owner to assign the role). The role test fails until the role is assigned."
+          }
+        },
+        {
+          "name": "Schedule: get",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/schedule",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "schedule"
+              ]
+            },
+            "description": "GET /api/admin/schedule (getSchedule). Read-only."
+          }
+        },
+        {
+          "name": "Schedule: ⚠️ replace weekly",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"intervals\": [\n    {\n      \"weekday\": 1,\n      \"start\": \"09:00\",\n      \"end\": \"13:00\"\n    },\n    {\n      \"weekday\": 1,\n      \"start\": \"14:00\",\n      \"end\": \"19:00\"\n    },\n    {\n      \"weekday\": 2,\n      \"start\": \"09:00\",\n      \"end\": \"13:00\"\n    },\n    {\n      \"weekday\": 2,\n      \"start\": \"14:00\",\n      \"end\": \"19:00\"\n    },\n    {\n      \"weekday\": 3,\n      \"start\": \"09:00\",\n      \"end\": \"13:00\"\n    },\n    {\n      \"weekday\": 3,\n      \"start\": \"14:00\",\n      \"end\": \"19:00\"\n    },\n    {\n      \"weekday\": 4,\n      \"start\": \"09:00\",\n      \"end\": \"13:00\"\n    },\n    {\n      \"weekday\": 4,\n      \"start\": \"14:00\",\n      \"end\": \"19:00\"\n    },\n    {\n      \"weekday\": 5,\n      \"start\": \"09:00\",\n      \"end\": \"13:00\"\n    },\n    {\n      \"weekday\": 5,\n      \"start\": \"14:00\",\n      \"end\": \"19:00\"\n    },\n    {\n      \"weekday\": 6,\n      \"start\": \"10:00\",\n      \"end\": \"16:00\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/schedule/weekly",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "schedule",
+                "weekly"
+              ]
+            },
+            "description": "⚠️ PUT /api/admin/schedule/weekly (replaceWeeklySchedule). **Replaces the whole weekly schedule**. Invented example hours: edit them before sending. Refused with `409 SCHEDULE_CONFLICT` when active bookings would fall outside."
+          }
+        },
+        {
+          "name": "Schedule: list exceptions",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/schedule/exceptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "schedule",
+                "exceptions"
+              ],
+              "query": [
+                {
+                  "key": "from",
+                  "value": "{{exceptionsFrom}}",
+                  "disabled": true,
+                  "description": "Optional YYYY-MM-DD (default: today)."
+                },
+                {
+                  "key": "to",
+                  "value": "{{exceptionsTo}}",
+                  "disabled": true,
+                  "description": "Optional YYYY-MM-DD (default: no limit)."
+                }
+              ]
+            },
+            "description": "GET /api/admin/schedule/exceptions (listScheduleExceptions). Read-only."
+          }
+        },
+        {
+          "name": "Schedule: ⚠️ set exception of a date",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"exceptionDate\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Set exceptionDate (YYYY-MM-DD).\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"intervals\": [\n    {\n      \"start\": \"10:00\",\n      \"end\": \"14:00\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/schedule/exceptions/{{exceptionDate}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "schedule",
+                "exceptions",
+                "{{exceptionDate}}"
+              ]
+            },
+            "description": "⚠️ PUT /api/admin/schedule/exceptions/{date} (setScheduleException). Sets the hours of one date; `{\"closed\": true}` closes it. Invented example hours."
+          }
+        },
+        {
+          "name": "Schedule: ⚠️ remove exception of a date",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"exceptionDate\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Set exceptionDate (YYYY-MM-DD).\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/schedule/exceptions/{{exceptionDate}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "schedule",
+                "exceptions",
+                "{{exceptionDate}}"
+              ]
+            },
+            "description": "⚠️ DELETE /api/admin/schedule/exceptions/{date} (removeScheduleException). Back to the weekly rule for that date."
+          }
+        },
+        {
+          "name": "Bookings: list of a date",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"adminBookingsDate\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Set adminBookingsDate (YYYY-MM-DD).\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/bookings?date={{adminBookingsDate}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "bookings"
+              ],
+              "query": [
+                {
+                  "key": "date",
+                  "value": "{{adminBookingsDate}}",
+                  "description": "Required local date YYYY-MM-DD."
+                }
+              ]
+            },
+            "description": "GET /api/admin/bookings?date= (listBookingsOfDate). Read-only."
+          }
+        },
+        {
+          "name": "Bookings: get any",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"bookingId\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Set bookingId.\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/bookings/{{bookingId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "bookings",
+                "{{bookingId}}"
+              ]
+            },
+            "description": "GET /api/admin/bookings/{bookingId} (getAnyBooking). Read-only."
+          }
+        },
+        {
+          "name": "Bookings: ⚠️ cancel (studio)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"bookingId\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Set bookingId.\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Fermeture exceptionnelle\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/bookings/{{bookingId}}/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "bookings",
+                "{{bookingId}}",
+                "cancel"
+              ]
+            },
+            "description": "⚠️ POST /api/admin/bookings/{bookingId}/cancel (cancelAnyBooking). Cancels the booking for the client; the optional reason is shown to the client. A repeat answers `changed: false`."
+          }
+        }
+      ]
+    },
+    {
+      "name": "6. Permission checks (expected errors)",
+      "description": "Each request expects a refusal; none of them changes data.",
+      "item": [
+        {
+          "name": "No token: GET /api/me → 401 AUTH_REQUIRED",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 401 AUTH_REQUIRED\", () => {",
+                  "  pm.expect(pm.response.code).to.equal(401);",
+                  "  pm.expect(pm.response.json().code).to.equal(\"AUTH_REQUIRED\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "me"
+              ]
+            },
+            "description": "GET /api/me (getProfile) without a token."
+          }
+        },
+        {
+          "name": "Client on an admin route: GET /api/admin/schedule → 403 FORBIDDEN",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"clientIdToken\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Sign in as Client first.\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 403 FORBIDDEN\", () => {",
+                  "  pm.expect(pm.response.code).to.equal(403);",
+                  "  pm.expect(pm.response.json().code).to.equal(\"FORBIDDEN\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{clientIdToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/schedule",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "schedule"
+              ]
+            },
+            "description": "GET /api/admin/schedule (getSchedule) with the client token: refused for a non-administrator."
+          }
+        },
+        {
+          "name": "Guest tries to book → 403 BOOKING_NOT_READY",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"guestIdToken\", \"serviceId\", \"bookingStartsAt\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Sign in as Guest and set serviceId and bookingStartsAt.\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 403 BOOKING_NOT_READY\", () => {",
+                  "  pm.expect(pm.response.code).to.equal(403);",
+                  "  pm.expect(pm.response.json().code).to.equal(\"BOOKING_NOT_READY\");",
+                  "});",
+                  "pm.test(\"blocker anonymous_session\", () => pm.expect(pm.response.json().blockers).to.include(\"anonymous_session\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{guestIdToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "guest-check-0001",
+                "description": "Fixed: the request is always refused, no booking is stored."
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"serviceId\": \"{{serviceId}}\",\n  \"startsAt\": \"{{bookingStartsAt}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/bookings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "bookings"
+              ]
+            },
+            "description": "POST /api/bookings (createBooking) with the guest token: refused with the blocker `anonymous_session`; no booking is created."
+          }
+        }
+      ]
+    },
+    {
+      "name": "7. Marketing — DISABLED on staging (404 NOT_FOUND)",
+      "description": "**Marketing is switched off on staging**: every request here answers `404 NOT_FOUND` until `ENABLE_MARKETING_SUBSCRIPTION` is enabled with Brevo. Kept for later.\n\n⚠️ When marketing is enabled, the subscribe requests send a real confirmation email.",
+      "item": [
+        {
+          "name": "Own subscription: ⚠️ request (email when enabled)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"clientIdToken\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Sign in as Client first.\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{clientIdToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"consentTextVersion\": \"2026-10-28.fr.1\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/me/marketing/subscription",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "me",
+                "marketing",
+                "subscription"
+              ]
+            },
+            "description": "⚠️ POST /api/me/marketing/subscription (requestOwnSubscription). When enabled, sends a confirmation email (at most once per 10 minutes)."
+          }
+        },
+        {
+          "name": "Own subscription: ⚠️ unsubscribe",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"clientIdToken\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Sign in as Client first.\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{clientIdToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/me/marketing/subscription",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "me",
+                "marketing",
+                "subscription"
+              ]
+            },
+            "description": "⚠️ DELETE /api/me/marketing/subscription (unsubscribeOwn)."
+          }
+        },
+        {
+          "name": "Public form: ⚠️ subscribe (email when enabled)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"marketingFormEmail\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Set marketingFormEmail (agreed test address).\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{marketingFormEmail}}\",\n  \"consentTextVersion\": \"2026-10-28.fr.1\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/marketing/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "marketing",
+                "subscriptions"
+              ]
+            },
+            "description": "⚠️ POST /api/marketing/subscriptions (requestSubscription). When enabled, emails a confirmation link to `marketingFormEmail` (use an agreed test address only)."
+          }
+        },
+        {
+          "name": "Public link: ⚠️ confirm subscription",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"marketingActionToken\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Copy the token from the emailed link.\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"token\": \"{{marketingActionToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/marketing/subscriptions/confirm",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "marketing",
+                "subscriptions",
+                "confirm"
+              ]
+            },
+            "description": "⚠️ POST /api/marketing/subscriptions/confirm (confirmSubscription). The token comes from the emailed link."
+          }
+        },
+        {
+          "name": "Public link: ⚠️ unsubscribe",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"marketingActionToken\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Copy the token from the emailed link.\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"token\": \"{{marketingActionToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/marketing/subscriptions/unsubscribe",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "marketing",
+                "subscriptions",
+                "unsubscribe"
+              ]
+            },
+            "description": "⚠️ POST /api/marketing/subscriptions/unsubscribe (unsubscribeByLink). The token comes from the unsubscribe link of an email."
+          }
+        }
+      ]
+    }
+  ]
+}
