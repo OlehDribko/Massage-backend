@@ -18,7 +18,7 @@ import type { MarketingService, RequestOutcome } from "../marketing/marketing.se
 import { updateOwnProfileSchema } from "./profile.schema.js";
 import { toProfileView, type ProfileService } from "./profile.service.js";
 
-const syncSchema = z
+export const syncSchema = z
   .object({
     // Sign-up checkbox (optional, unticked by default). Absent or false never
     // changes an existing subscription; true starts double opt-in at most once.
@@ -32,7 +32,7 @@ const syncSchema = z
   })
   .optional();
 
-const subscribeSchema = z.object({ consentTextVersion: consentTextVersionSchema }).strict();
+export const ownSubscriptionSchema = z.object({ consentTextVersion: consentTextVersionSchema }).strict();
 
 /**
  * Result of `marketingOptIn: true` in a sync. The profile sync itself
@@ -135,7 +135,7 @@ export const createProfileRouter = ({
   // Double opt-in: the status becomes true only after the emailed link.
   router.post(
     "/marketing/subscription",
-    withValidatedBody(subscribeSchema, async ({ consentTextVersion }, res, _next, req) => {
+    withValidatedBody(ownSubscriptionSchema, async ({ consentTextVersion }, res, _next, req) => {
       const identity = requireIdentity(req);
       if (marketing.service === undefined) {
         throw new AppError(404, "Not found", { code: "NOT_FOUND" });

@@ -62,6 +62,7 @@ describe("loadConfig", () => {
       firebase: undefined,
       authRequired: false,
       marketing: undefined,
+      apiDocs: false,
       notifications: { enabled: false },
     });
   });

@@ -4,6 +4,7 @@ import cors from "cors";
 import { createErrorHandler, notFoundHandler } from "./middleware/error.middleware.js";
 import { createRequestLogging } from "./http/request-logging.js";
 import { createHealthRouter, type ReadinessOutcome } from "./http/health.js";
+import { createDocsRouter } from "./openapi/docs-router.js";
 import type { Logger } from "./logging/logger.js";
 
 /**
@@ -21,6 +22,8 @@ export type AppDeps = {
   corsOrigin: string | undefined;
   /** Business routes under /api; undefined when none is enabled. */
   apiRouter: Router | undefined;
+  /** /openapi.json and /docs (Swagger UI); absent when false or omitted. */
+  apiDocs?: boolean | undefined;
 };
 
 /** Builds the Express app. Does not open a port. */
@@ -49,6 +52,10 @@ export const createApp = (deps: AppDeps): Express => {
 
   if (deps.apiRouter !== undefined) {
     app.use("/api", deps.apiRouter);
+  }
+
+  if (deps.apiDocs === true) {
+    app.use(createDocsRouter());
   }
 
   app.use(notFoundHandler);
