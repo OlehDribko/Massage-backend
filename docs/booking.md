@@ -217,7 +217,54 @@ Content-Type: application/json
 
 Обмеження БД: назва 1–120 символів, тривалість 5–480 хв, ціна 0–10 000 000 євроцентів, валюта `EUR`. Колонка `description` застаріла: API її не читає й не віддає, нові рядки лишають її `NULL` (це дозволено обмеженням `Service_description_length`); видалення — окремою пізнішою міграцією.
 
-Перелік послуг надає власник; початкове заповнення — окремий PR за цим шаблоном.
+### Початковий каталог (погоджено власником 2026-11-01)
+
+Міграція `20261101120000_catalog_initial_services`: 35 разових послуг, усі доступні для запису. Абонементів, пакетів і акцій немає. Тривалості 55 і 85 хв — як погоджено, без округлення.
+
+**`serviceId` стабільні й однакові в усіх середовищах.** Frontend прив'язує до них фото й тексти. Назва — як у відповіді API; ціна в API — `priceCents` (цілі євроценти), валюта `EUR`.
+
+| № | `serviceId` | Назва | Тривалість, хв | Ціна, € (`priceCents`) |
+|---:|---|---|---:|---:|
+| 1 | `8768f0f0-3e76-4ed6-a273-5dd431a305e5` | Massage Tuina aux huiles chaudes | 60 | 85 (8500) |
+| 2 | `039b509e-baff-4748-bb5e-094ed66a2198` | Massage Tuina aux huiles chaudes | 90 | 120 (12000) |
+| 3 | `a0f4141c-2f1a-49b4-9ee6-09d15b0853af` | Massage Tuina aux huiles chaudes | 120 | 155 (15500) |
+| 4 | `69465693-b812-4dab-a100-f1f880b7c1b7` | Massage Tuina traditionnel sans huile | 60 | 85 (8500) |
+| 5 | `fe0523ef-4b29-4c4e-96fa-e8bdbd3f899e` | Massage Tuina traditionnel sans huile | 90 | 120 (12000) |
+| 6 | `81f49f12-7b74-43b2-9dc5-ad1e18c92b59` | Massage Tuina traditionnel sans huile | 120 | 155 (15500) |
+| 7 | `0a879540-15e2-4e5a-8b8a-ab3ce30cc25e` | Massage premium pour femmes | 60 | 75 (7500) |
+| 8 | `3d21cb0f-5905-4b76-af1c-a0268602ad88` | Massage pierres chaudes | 60 | 90 (9000) |
+| 9 | `7cbaae05-e433-4087-b64e-fed91195ad2e` | Massage pierres chaudes | 90 | 128 (12800) |
+| 10 | `1abe839a-35e1-4322-aec3-c03b3fcd6864` | Massage pierres chaudes | 120 | 170 (17000) |
+| 11 | `cf4fb0b1-7b35-455b-8367-e4b422639610` | Massage ayurvédique | 60 | 85 (8500) |
+| 12 | `40c8f682-6222-4cd0-b6aa-d3bcfb2a80d3` | Massage ayurvédique | 90 | 120 (12000) |
+| 13 | `2703c0d8-c30a-49d7-bd41-bc51179dd22f` | Massage de la tête aux pieds | 60 | 90 (9000) |
+| 14 | `c438d102-95ae-4c7d-9dda-87cf966d3efd` | Massage de la tête aux pieds | 90 | 128 (12800) |
+| 15 | `b84f23ba-773d-4ff2-b128-10a1ee22a4cf` | Massage de la tête aux pieds | 120 | 170 (17000) |
+| 16 | `11a5f7a9-4e3a-4fe1-bfcb-ad85073b7ec4` | Massage sportif | 55 | 100 (10000) |
+| 17 | `dea5ef63-6ab1-4338-aa05-2fab089ee070` | Massage sportif | 90 | 143 (14300) |
+| 18 | `e416e435-88a8-458c-8737-3f9b5b9b5e6f` | Massage sportif | 120 | 185 (18500) |
+| 19 | `570a1b88-f7e4-43e7-9e25-23455764aa74` | Massage enfant — à partir de 6 ans | 30 | 50 (5000) |
+| 20 | `e0a4be32-524f-49e3-b525-1051092007d3` | Réflexologie plantaire | 30 | 50 (5000) |
+| 21 | `696afe81-79e4-4114-961c-af875229a2b1` | Massage de tout le dos | 30 | 50 (5000) |
+| 22 | `353c5f3d-62d3-43e1-a9f4-65181e356e6b` | Massage de la tête, du cou et des trapèzes | 30 | 50 (5000) |
+| 23 | `57f78078-f65b-4723-b20b-aad89495c898` | Endosphères — demi-corps, une séance | 45 | 110 (11000) |
+| 24 | `97b3295d-8d7e-4c7f-a8a8-bbe1df1af633` | Madérothérapie | 60 | 95 (9500) |
+| 25 | `0eb52a15-863f-4981-8354-e1a4ab84c088` | Madérothérapie | 90 | 135 (13500) |
+| 26 | `ca2c3570-e81f-4410-b447-7fc90618da8f` | Massage de drainage lymphatique | 60 | 90 (9000) |
+| 27 | `713d9d2a-c90e-42e3-a224-99390862f856` | Massage de drainage lymphatique | 90 | 128 (12800) |
+| 28 | `c513a89e-712f-4462-83d0-3b1a08df1f92` | Massage de drainage lymphatique | 120 | 155 (15500) |
+| 29 | `9b081644-29e6-496a-9303-6e07a12966d4` | Massage prénatal — future maman | 60 | 90 (9000) |
+| 30 | `3dd3ebdd-da7b-4ca2-9f13-3a46d96be6f4` | Massage postnatal | 60 | 90 (9000) |
+| 31 | `2bdfa0e1-5556-46a7-869a-ef48114dc07c` | Massage postnatal | 90 | 130 (13000) |
+| 32 | `e8714bef-1897-4dd9-9ee9-c0c31d58f293` | Massage myofascial | 55 | 90 (9000) |
+| 33 | `f85a106b-7f20-4ef1-88f7-670cacee7747` | Massage myofascial | 85 | 135 (13500) |
+| 34 | `a587db53-7b29-4b32-adc3-15d68289cfa8` | Massage des tissus profonds | 55 | 90 (9000) |
+| 35 | `018a645a-7ff7-48fd-a730-894ef3b62aa5` | Massage des tissus profonds | 85 | 135 (13500) |
+
+Перевірка — `test/integration/catalog-initial-services.test.ts` (джерело даних тесту — `test/fixtures/catalog-initial-services.json`, ціни в євро, як у погодженому переліку):
+- після міграцій у БД рівно ці 35 рядків з точними центами, тривалостями й `id`;
+- повторне виконання не дає дублікатів і не чіпає сторонніх послуг;
+- бронювання 55-хвилинної послуги отримує тривалість і ціну від сервера.
 
 ## 8. Відкладено
 
@@ -249,5 +296,5 @@ Content-Type: application/json
 ## 10. Застосування (не виконано)
 
 1. Злиття PR у `develop`.
-2. `ECR publish`, далі `Staging deploy` з `run_migrations=true`. Застосовується міграція `20261030120000_catalog_schedule_bookings`: нові таблиці, enum-и, exclusion constraint. Legacy-таблиці й профілі не змінюються. Права `booking_app` на нові таблиці й послідовність видає раннер.
+2. `ECR publish`, далі `Staging deploy` з `run_migrations=true`. Застосовуються міграції `20261030120000_catalog_schedule_bookings` (нові таблиці, enum-и, exclusion constraint), `20261031120000_booking_notifications` і `20261101120000_catalog_initial_services` (35 послуг каталогу). Legacy-таблиці й профілі не змінюються. Права `booking_app` на нові таблиці й послідовність видає раннер.
 3. Пауза staging після перевірки, як в `infra/staging-deploy.md`.

@@ -82,7 +82,10 @@ describe("catalogue data migrations", () => {
       allowFailure: true,
     });
     expect(result.code).not.toBe(0);
-    const count = await database.query("admin", `SELECT count(*)::int AS n FROM "Service"`);
+    const count = await database.query(
+      "admin",
+      `SELECT count(*)::int AS n FROM "Service" WHERE id IN ('${SAMPLE_ID}', '00000000-0000-4000-8000-000000000001')`,
+    );
     expect(count.rows).toEqual([{ n: 0 }]);
   });
 
@@ -95,7 +98,7 @@ describe("catalogue data migrations", () => {
         { name: "20991231000001_catalog_second", sql: changed },
       ],
     });
-    const service = await database.query("app", `SELECT "durationMinutes", "priceCents" FROM "Service"`);
+    const service = await database.query("app", `SELECT "durationMinutes", "priceCents" FROM "Service" WHERE id = '${SAMPLE_ID}'`);
     expect(service.rows).toEqual([{ durationMinutes: 90, priceCents: 9000 }]);
   });
 });
