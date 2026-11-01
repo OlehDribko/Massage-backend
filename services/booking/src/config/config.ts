@@ -106,6 +106,8 @@ const baseEnvSchema = z.object({
       .optional(),
   ),
   ENABLE_MARKETING_SUBSCRIPTION: booleanFlagSchema.default(false),
+  // OpenAPI document and Swagger UI (/openapi.json, /docs). Off by default.
+  ENABLE_API_DOCS: booleanFlagSchema.default(false),
   // Functional deployments set this: starting without Firebase is then a
   // configuration error instead of silently running without /api/me.
   REQUIRE_FIREBASE_AUTH: booleanFlagSchema.default(false),
@@ -184,6 +186,8 @@ export type AppConfig = {
   /** REQUIRE_FIREBASE_AUTH: when true, `firebase` is always present. */
   authRequired: boolean;
   marketing: MarketingConfig | undefined;
+  /** ENABLE_API_DOCS: serve /openapi.json and Swagger UI at /docs. */
+  apiDocs: boolean;
   /** Booking emails (src/notifications), sent from this process when enabled. */
   notifications: NotificationConfig;
 };
@@ -219,6 +223,7 @@ export const loadConfig = (env: EnvSource): ConfigResult => {
     READINESS_TIMEOUT_MS: trimmed(env.READINESS_TIMEOUT_MS),
     ENABLE_LEGACY_USER_ROUTES: trimmed(env.ENABLE_LEGACY_USER_ROUTES),
     ENABLE_MARKETING_SUBSCRIPTION: trimmed(env.ENABLE_MARKETING_SUBSCRIPTION),
+    ENABLE_API_DOCS: trimmed(env.ENABLE_API_DOCS),
     REQUIRE_FIREBASE_AUTH: trimmed(env.REQUIRE_FIREBASE_AUTH),
     FIREBASE_PROJECT_ID: trimmed(env.FIREBASE_PROJECT_ID),
     FIREBASE_CREDENTIALS: trimmed(env.FIREBASE_CREDENTIALS),
@@ -267,6 +272,7 @@ export const loadConfig = (env: EnvSource): ConfigResult => {
       firebase: firebase.value,
       authRequired: base.data.REQUIRE_FIREBASE_AUTH,
       marketing: marketing.value,
+      apiDocs: base.data.ENABLE_API_DOCS,
       notifications: notifications.config,
     },
   };

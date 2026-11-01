@@ -38,7 +38,8 @@
     "@prisma/engines@7.10.1": true,
     "prisma@7.10.1": true,
     "@firebase/util@1.15.3": false,
-    "protobufjs@7.6.6": false
+    "protobufjs@7.6.6": false,
+    "@scarf/scarf": false
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

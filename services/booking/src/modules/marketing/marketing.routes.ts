@@ -10,7 +10,7 @@ export const emailSchema = z.string().trim().toLowerCase().max(254).pipe(z.email
 
 export const consentTextVersionSchema = z.string().min(1).max(64);
 
-const subscribeSchema = z
+export const subscribeSchema = z
   .object({
     email: emailSchema,
     consentTextVersion: consentTextVersionSchema,

@@ -82,9 +82,26 @@ npm run prisma -- generate    # Prisma Client у services/booking/src/generated 
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | — | Секрет: JSON-ключ службового акаунта того самого проєкту (при `service-account-json`) |
 | `FIREBASE_AUTH_EMULATOR_HOST` | — | Лише локально/CI з `demo-` проєктом; при `NODE_ENV=production` — помилка запуску |
 | `ENABLE_MARKETING_SUBSCRIPTION` | `false` | Лише `true`/`false`; вмикає `/api/marketing` |
+| `ENABLE_API_DOCS` | `false` | Лише `true`/`false`; вмикає `/openapi.json` і Swagger UI на `/docs` (розділ «Документація API») |
 | `ENABLE_LEGACY_USER_ROUTES` | — | Застаріла: `false` або відсутність ігноруються, `true` — помилка (маршрути видалено) |
 
 Коли `ENABLE_MARKETING_SUBSCRIPTION=true`, додатково обов'язкові `BREVO_API_KEY`, `EMAIL_FROM_NAME`, `EMAIL_FROM_EMAIL`, `ACTION_TOKEN_SECRET` (≥ 32 символи) і `FRONTEND_URL`. Без прапорця Brevo-клієнт і сервіс токенів не створюються. Firebase Admin SDK створюється лише при заданому `FIREBASE_PROJECT_ID`. Сам імпорт модулів не читає `process.env` і не вимагає секретів. Правила для Firebase-змінних — у [docs/auth-and-profiles.md](docs/auth-and-profiles.md#8-конфігурація-backend).
+
+### Документація API (OpenAPI, Swagger UI)
+
+Опис усіх наявних маршрутів — OpenAPI 3.1 (`/openapi.json`) і Swagger UI (`/docs`). **Вимкнено за замовчуванням**; обидва маршрути й ресурси Swagger UI з'являються лише при `ENABLE_API_DOCS=true`. Документ будується з коду (схеми запитів — ті самі Zod-схеми, що й валідація; схеми відповідей — `src/openapi/schemas.ts`, звірені з типами й реальними відповідями тестами). Генерація й відкриття документації не звертаються до БД, Firebase, Brevo чи мережі; Swagger UI — з пакета `swagger-ui-dist`, без CDN.
+
+Локально:
+```sh
+# у .env: ENABLE_API_DOCS=true (і решта змінних, як для звичайного запуску)
+npm run dev
+# Swagger UI:   http://localhost:3001/docs
+# OpenAPI JSON: http://localhost:3001/openapi.json
+```
+
+**Авторизація.** Вхід через Google, email/пароль і анонімний вхід виконує frontend через Firebase SDK; у нашому API маршрутів входу немає. Для захищених операцій візьміть ID token **власної** сесії у frontend (`await auth.currentUser.getIdToken()`), натисніть **Authorize** і вставте його (схема Bearer). Токен живе близько години й не зберігається після перезавантаження сторінки. Не вставляйте чужі токени.
+
+**«Try it out» виконує справжні операції** на тому сервері, з якого відкрито сторінку (запити йдуть на поточний origin): створює бронювання, змінює профіль і графік, може надіслати листи. Використовуйте тестові акаунти й дані.
 
 **Формат `DATABASE_URL`** (`src/shared/database/database-url.ts`). URL розбирається самим сервісом і не передається в `pg` як `connectionString`:
 - спецсимволи в імені користувача, паролі та назві БД мають бути percent-encoded (`@` → `%40` тощо); `+` лишається плюсом;

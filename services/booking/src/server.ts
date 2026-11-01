@@ -84,6 +84,7 @@ const main = () => {
       authRequired: config.authRequired,
       authEmulator: config.firebase?.credentials.kind === "emulator",
       marketingEnabled: config.marketing !== undefined,
+      apiDocsEnabled: config.apiDocs,
       corsEnabled: config.corsOrigin !== undefined,
       databaseSslMode: config.databaseSslMode,
       databasePoolMax: config.databasePoolMax,

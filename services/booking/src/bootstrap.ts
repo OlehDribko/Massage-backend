@@ -178,5 +178,6 @@ export const createApplication = ({
     appVersion: config.appVersion,
     corsOrigin: config.corsOrigin,
     apiRouter: api,
+    apiDocs: config.apiDocs,
   });
 };
