@@ -42,6 +42,38 @@ afterEach(() => {
   db = undefined;
 });
 
+describe("sale price migration (20261102120000_service_sale_price)", () => {
+  it("is additive: data of the previous schema stays, writes and reads without the new columns keep working", async () => {
+    const database = await freshDatabase();
+    await runMigrations(database, "booking_app", "20261031120000_booking_notifications");
+    await database.query(
+      "migrator",
+      `INSERT INTO "Service" (id, name, "durationMinutes", "priceCents", "updatedAt") VALUES ('${SAMPLE_ID}', 'Before', 60, 8500, now())`,
+    );
+
+    await runMigrations(database);
+
+    // The previous API version's statements (no sale columns) still work.
+    await database.query(
+      "migrator",
+      `INSERT INTO "Service" (id, name, "durationMinutes", "priceCents", "updatedAt") VALUES ('00000000-0000-4000-8000-000000000002', 'Old style', 30, 5000, now())`,
+    );
+    const old = await database.query(
+      "app",
+      `SELECT id, name, "durationMinutes", "priceCents", currency, "archivedAt" FROM "Service" WHERE id IN ('${SAMPLE_ID}', '00000000-0000-4000-8000-000000000002') ORDER BY id`,
+    );
+    expect(old.rows).toHaveLength(2);
+    const sale = await database.query(
+      "app",
+      `SELECT "salePriceCents", "saleEndsAt" FROM "Service" WHERE id IN ('${SAMPLE_ID}', '00000000-0000-4000-8000-000000000002')`,
+    );
+    expect(sale.rows).toEqual([
+      { salePriceCents: null, saleEndsAt: null },
+      { salePriceCents: null, saleEndsAt: null },
+    ]);
+  });
+});
+
 describe("catalogue data migrations", () => {
   it("the template takes the calendar lock and makes all changes in one explicit transaction", async () => {
     const database = await freshDatabase();

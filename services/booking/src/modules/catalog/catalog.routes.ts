@@ -16,16 +16,24 @@ export const serviceIdFrom = (req: Request): string => {
  * only bookable services. There are no admin catalogue routes: the catalogue
  * is changed by data migrations.
  */
-export const createPublicCatalogRouter = (catalog: CatalogService): Router => {
+export const createPublicCatalogRouter = (catalog: CatalogService, now: () => Date): Router => {
   const router = Router();
+
+  // Prices depend on the request time (a sale can end at any moment): never
+  // let a client or intermediary reuse an older answer.
+  router.use((_req, res, next) => {
+    res.setHeader("Cache-Control", "no-store");
+    next();
+  });
 
   router.get("/", async (_req, res) => {
     const services = await catalog.listBookable();
-    res.status(200).json({ services: services.map(toPublicServiceView) });
+    const at = now();
+    res.status(200).json({ services: services.map((service) => toPublicServiceView(service, at)) });
   });
 
   router.get("/:serviceId", async (req, res) => {
-    res.status(200).json({ service: toPublicServiceView(await catalog.getBookable(serviceIdFrom(req))) });
+    res.status(200).json({ service: toPublicServiceView(await catalog.getBookable(serviceIdFrom(req)), now()) });
   });
 
   return router;

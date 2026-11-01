@@ -103,7 +103,7 @@ export const createApplication = ({
     "/services/:serviceId/availability",
     createPublicAvailabilityRouter({ prisma: database.prisma, catalog, rules, now }),
   );
-  api.use("/services", createPublicCatalogRouter(catalog));
+  api.use("/services", createPublicCatalogRouter(catalog, now));
 
   const marketingRepository = createMarketingRepository(database.prisma);
   const marketingService =

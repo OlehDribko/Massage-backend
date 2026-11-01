@@ -96,10 +96,12 @@ describe("access: guests, clients and admins", () => {
     expect(list.status).toBe(200);
     // Only what the frontend needs; no description (texts live in the frontend).
     expect(list.body).toEqual({
-      services: [{ id: serviceId, name: "Massage 60", durationMinutes: 60, priceCents: 6500, currency: "EUR" }],
+      services: [
+        { id: serviceId, name: "Massage 60", durationMinutes: 60, priceCents: 6500, effectivePriceCents: 6500, salePriceCents: null, saleEndsAt: null, currency: "EUR" },
+      ],
     });
     expect((await request(stack.app).get(`/api/services/${serviceId}`)).body).toEqual({
-      service: { id: serviceId, name: "Massage 60", durationMinutes: 60, priceCents: 6500, currency: "EUR" },
+      service: { id: serviceId, name: "Massage 60", durationMinutes: 60, priceCents: 6500, effectivePriceCents: 6500, salePriceCents: null, saleEndsAt: null, currency: "EUR" },
     });
     expect((await availability(serviceId, "2027-03-02")).status).toBe(200);
 
@@ -160,7 +162,9 @@ describe("catalogue", () => {
       expect(response.status).toBe(404);
     }
     expect((await request(stack.app).get("/api/services")).body).toEqual({
-      services: [{ id: serviceId, name: "Massage 60", durationMinutes: 60, priceCents: 6500, currency: "EUR" }],
+      services: [
+        { id: serviceId, name: "Massage 60", durationMinutes: 60, priceCents: 6500, effectivePriceCents: 6500, salePriceCents: null, saleEndsAt: null, currency: "EUR" },
+      ],
     });
   });
 
@@ -227,6 +231,131 @@ describe("catalogue", () => {
 
     await catalogSql(`UPDATE "Service" SET "archivedAt" = NULL, "updatedAt" = now() WHERE id = '${used}'`);
     expect((await request(stack.app).get(`/api/services/${used}`)).status).toBe(200);
+  });
+});
+
+describe("sale price", () => {
+  // "Until 1 March 2027 inclusive" = ends 2 March 2027 00:00 Paris (CET, UTC+1).
+  const SALE_END = "2027-03-01T23:00:00.000Z";
+  const at = (iso: string, deltaMs = 0) => new Date(Date.parse(iso) + deltaMs).toISOString();
+
+  const serviceOnSale = async () => {
+    const id = await createService({ name: "Massage 60", durationMinutes: 60, priceCents: 8500 });
+    await catalogSql(`
+      BEGIN;
+      SELECT pg_advisory_xact_lock(7316442001);
+      UPDATE "Service" SET "salePriceCents" = 6900, "saleEndsAt" = TIMESTAMP '2027-03-02 00:00' AT TIME ZONE 'Europe/Paris', "updatedAt" = now() WHERE id = '${id}';
+      COMMIT;`);
+    return id;
+  };
+
+  const eventPrices = async (bookingId: string) => {
+    const result = await stack.db.query(
+      "admin",
+      `SELECT (payload->'service'->>'priceCents')::int AS price FROM "OutboxEvent" WHERE "aggregateId" = '${bookingId}' ORDER BY position`,
+    );
+    const rows: unknown = result.rows;
+    return z.array(z.object({ price: z.number() })).parse(rows).map((row) => row.price);
+  };
+
+  it("the public catalogue shows the sale while active: regular, effective, sale price and end; exactly at the end the regular price", async () => {
+    const id = await serviceOnSale();
+    stack.setNow(at(SALE_END, -1));
+    const during = await request(stack.app).get(`/api/services/${id}`).expect(200);
+    expect(during.headers["cache-control"]).toBe("no-store");
+    expect(during.body).toEqual({
+      service: { id, name: "Massage 60", durationMinutes: 60, priceCents: 8500, effectivePriceCents: 6900, salePriceCents: 6900, saleEndsAt: SALE_END, currency: "EUR" },
+    });
+    expect((await request(stack.app).get("/api/services")).body).toMatchObject({ services: [{ id, effectivePriceCents: 6900, saleEndsAt: SALE_END }] });
+
+    stack.setNow(SALE_END);
+    for (const response of [await request(stack.app).get(`/api/services/${id}`), await request(stack.app).get("/api/services")]) {
+      expect(response.headers["cache-control"]).toBe("no-store");
+      expect(JSON.stringify(response.body)).toContain('"effectivePriceCents":8500,"salePriceCents":null,"saleEndsAt":null');
+    }
+  });
+
+  it("a session after the sale, booked during it, costs the sale price; it stays through the end of the sale, catalogue changes, rescheduling and an idempotent repeat", async () => {
+    const id = await serviceOnSale();
+    await setWeekly();
+    stack.setNow(at(SALE_END, -60_000));
+    const created = await book(users.clientA, id, paris("2027-03-03", "09:00"), "sale-key-0001"); // after the sale ends
+    expect(created.status).toBe(201);
+    expect(created.body).toMatchObject({ booking: { service: { priceCents: 6900, currency: "EUR" } } });
+    const bookingId = bookingIdOf(created);
+
+    // The sale ends, then the catalogue changes (new regular price, no sale).
+    stack.setNow(at(SALE_END, 3_600_000));
+    await catalogSql(`UPDATE "Service" SET "priceCents" = 9900, "salePriceCents" = NULL, "saleEndsAt" = NULL, "updatedAt" = now() WHERE id = '${id}'`);
+
+    const replay = await book(users.clientA, id, paris("2027-03-03", "09:00"), "sale-key-0001");
+    expect(replay.status).toBe(200);
+    expect(replay.headers["idempotent-replayed"]).toBe("true");
+    expect(replay.body).toMatchObject({ booking: { id: bookingId, service: { priceCents: 6900 } } });
+
+    const moved = await reschedule(users.clientA, bookingId, paris("2027-03-04", "10:00"));
+    expect(moved.status).toBe(200);
+    expect(moved.body).toMatchObject({ booking: { service: { priceCents: 6900 } } });
+    expect((await request(stack.app).get(`/api/bookings/${bookingId}`).set(bearer(users.clientA))).body).toMatchObject({
+      booking: { service: { priceCents: 6900 } },
+    });
+
+    // Every event of this booking (created, rescheduled) carries the agreed price used by the emails.
+    expect(await eventPrices(bookingId)).toEqual([6900, 6900]);
+
+    // A new booking after the sale: the current regular price.
+    const later = await book(users.clientB, id, paris("2027-03-05", "09:00"));
+    expect(later.body).toMatchObject({ booking: { service: { priceCents: 9900 } } });
+    expect(await eventPrices(bookingIdOf(later))).toEqual([9900]);
+  });
+
+  it("a booking created exactly at the end of the sale costs the regular price; the client cannot send a price", async () => {
+    const id = await serviceOnSale();
+    await setWeekly();
+    stack.setNow(SALE_END);
+    const response = await book(users.clientA, id, paris("2027-03-03", "09:00"));
+    expect(response.body).toMatchObject({ booking: { service: { priceCents: 8500 } } });
+
+    const tampered = await request(stack.app)
+      .post("/api/bookings")
+      .set(bearer(users.clientB))
+      .set("Idempotency-Key", "sale-tamper-0001")
+      .send({ serviceId: id, startsAt: paris("2027-03-03", "11:00"), priceCents: 1, salePriceCents: 1, effectivePriceCents: 1 });
+    expect(tampered.status).toBe(400);
+  });
+
+  it("the database refuses incomplete sales, negative sale prices and sale prices not below the regular price", async () => {
+    const id = await createService({ name: "Massage 60", durationMinutes: 60, priceCents: 8500 });
+    const end = `'2027-03-01T23:00:00Z'`;
+    for (const assignment of [
+      `"salePriceCents" = 6900, "saleEndsAt" = NULL`,
+      `"salePriceCents" = NULL, "saleEndsAt" = ${end}`,
+      `"salePriceCents" = -1, "saleEndsAt" = ${end}`,
+      `"salePriceCents" = 8500, "saleEndsAt" = ${end}`,
+      `"salePriceCents" = 9000, "saleEndsAt" = ${end}`,
+    ]) {
+      await expect(catalogSql(`UPDATE "Service" SET ${assignment} WHERE id = '${id}'`)).rejects.toThrow(/check constraint/);
+    }
+    await catalogSql(`UPDATE "Service" SET "salePriceCents" = 0, "saleEndsAt" = ${end} WHERE id = '${id}'`);
+    // Lowering the regular price to or below an existing sale price is refused too.
+    await expect(catalogSql(`UPDATE "Service" SET "priceCents" = 0 WHERE id = '${id}'`)).rejects.toThrow(/check constraint/);
+  });
+
+  it("Paris dates become the right UTC moments, winter and summer time included", async () => {
+    for (const [local, utc] of [
+      ["2026-12-01 00:00", "2026-11-30T23:00:00.000Z"], // "until 30 November inclusive" (CET)
+      ["2027-07-01 00:00", "2027-06-30T22:00:00.000Z"], // summer (CEST)
+      ["2027-03-28 00:00", "2027-03-27T23:00:00.000Z"], // the night of the switch to summer time
+      ["2027-03-29 00:00", "2027-03-28T22:00:00.000Z"], // the day after
+      ["2027-11-01 00:00", "2027-10-31T23:00:00.000Z"], // after the switch back
+    ] satisfies [string, string][]) {
+      const result = await stack.db.query("admin", `SELECT (TIMESTAMP '${local}' AT TIME ZONE 'Europe/Paris') AS at`);
+      const row: unknown = result.rows[0];
+      expect(z.object({ at: z.date() }).parse(row).at.toISOString()).toBe(utc);
+      const [date = "", time = ""] = local.split(" ");
+      const [h = "0", m = "0"] = time.split(":");
+      expect(localDateTimeToInstant(date, Number(h) * 60 + Number(m), "Europe/Paris").toISOString()).toBe(utc);
+    }
   });
 });
 

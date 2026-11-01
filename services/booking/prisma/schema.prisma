@@ -119,7 +119,13 @@ model Service {
   // compatibility with older versions; new catalogue rows leave it NULL.
   description     String?
   durationMinutes Int
+  // Regular price in integer euro cents.
   priceCents      Int
+  // Optional sale (both set or both null, DB checks): active while the
+  // server time is strictly before saleEndsAt (UTC). Set and changed by data
+  // migrations only; expired values stay (activity is decided per request).
+  salePriceCents  Int?
+  saleEndsAt      DateTime? @db.Timestamptz(3)
   currency        String    @default("EUR")
   archivedAt      DateTime? @db.Timestamptz(3)
   createdAt       DateTime  @default(now()) @db.Timestamptz(3)
