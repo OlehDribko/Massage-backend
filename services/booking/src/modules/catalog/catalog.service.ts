@@ -1,5 +1,6 @@
 import type { PrismaClient, Service } from "../../generated/prisma/client.js";
 import { AppError } from "../../shared/errors/app-error.js";
+import { pricingAt } from "./pricing.js";
 
 /**
  * Public view of a service: what the frontend needs to show and book it.
@@ -10,17 +11,30 @@ export type PublicServiceView = {
   id: string;
   name: string;
   durationMinutes: number;
+  /** Regular price (integer euro cents). */
   priceCents: number;
+  /** Price of a booking created now: the sale price while a sale is active, otherwise priceCents. */
+  effectivePriceCents: number;
+  /** Only while a sale is active; otherwise both null. */
+  salePriceCents: number | null;
+  saleEndsAt: string | null;
   currency: "EUR";
 };
 
-export const toPublicServiceView = (service: Service): PublicServiceView => ({
-  id: service.id,
-  name: service.name,
-  durationMinutes: service.durationMinutes,
-  priceCents: service.priceCents,
-  currency: "EUR",
-});
+/** `now` is the server time of this request (sales are decided per request). */
+export const toPublicServiceView = (service: Service, now: Date): PublicServiceView => {
+  const pricing = pricingAt(service, now);
+  return {
+    id: service.id,
+    name: service.name,
+    durationMinutes: service.durationMinutes,
+    priceCents: pricing.priceCents,
+    effectivePriceCents: pricing.effectivePriceCents,
+    salePriceCents: pricing.salePriceCents,
+    saleEndsAt: pricing.saleEndsAt?.toISOString() ?? null,
+    currency: "EUR",
+  };
+};
 
 export const serviceNotFound = () =>
   new AppError(404, "Service not found", { code: "SERVICE_NOT_FOUND" });

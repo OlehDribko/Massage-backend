@@ -2,6 +2,7 @@ import type { Booking, BookingTimeChange, Prisma, PrismaClient, UserProfile } fr
 import { AppError } from "../../shared/errors/app-error.js";
 import { canCancelAppointment, canRescheduleAppointment } from "../access/policies.js";
 import { serviceNotFound } from "../catalog/catalog.service.js";
+import { pricingAt } from "../catalog/pricing.js";
 import { checkStart, type UnavailableReason } from "../schedule/availability.js";
 import type { BookingRules } from "../schedule/booking-rules.js";
 import { postgresErrorCode, type CalendarTransaction, type Tx } from "../schedule/calendar-transaction.js";
@@ -117,6 +118,11 @@ export const createBookingService = ({
       }
 
       const endsAt = new Date(request.startsAt.getTime() + minutesToMs(service.durationMinutes));
+      // Price agreed now, under the calendar lock and in this transaction: the
+      // sale (if any) is decided by the moment of booking, not by the session
+      // date, and never by the request. Rescheduling keeps it; later changes
+      // of the catalogue or the end of a sale do not touch it.
+      const { effectivePriceCents } = pricingAt(service, current);
       const created = await tx.booking
         .create({
           data: {
@@ -124,7 +130,7 @@ export const createBookingService = ({
             serviceId: service.id,
             serviceName: service.name,
             durationMinutes: service.durationMinutes,
-            priceCents: service.priceCents,
+            priceCents: effectivePriceCents,
             currency: service.currency,
             startsAt: request.startsAt,
             endsAt,
