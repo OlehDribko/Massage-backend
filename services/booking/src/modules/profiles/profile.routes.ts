@@ -151,7 +151,7 @@ export const createProfileRouter = ({
         "explicit",
       );
       if (outcome === "delivery_failed") {
-        throw deliveryFailed();
+        throw await deliveryFailed(marketing.service, identity.email);
       }
       // A confirmation sent recently (lost or not yet read): tell the owner
       // when the "send again" button works.
