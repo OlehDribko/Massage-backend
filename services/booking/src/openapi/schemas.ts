@@ -64,8 +64,10 @@ export const notReadySchema = z
 
 export const publicServiceSchema = z
   .strictObject({
-    id: uuid.meta({ description: "Stable service id; the frontend keys photos and texts by it" }),
+    id: uuid.meta({ description: "Stable service id; the frontend keys photos by it" }),
     name: z.string(),
+    description: z.string().nullable().meta({ description: "Client-facing text (French, plain text); null when the service has none" }),
+    features: z.array(z.string()).meta({ description: "Client-facing features (French, plain text) shown as a list, in order; empty when none" }),
     durationMinutes: z.int().meta({ description: "Length of the session, minutes" }),
     priceCents: cents.meta({ description: "Regular price, integer euro cents" }),
     effectivePriceCents: cents.meta({ description: "Price of a booking created now: the sale price while a sale is active, otherwise priceCents" }),
@@ -79,6 +81,8 @@ export const publicServiceSchema = z
       {
         id: "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
         name: "Massage example",
+        description: "Un massage d’exemple pour illustrer la réponse.",
+        features: ["Première particularité.", "Seconde particularité."],
         durationMinutes: 60,
         priceCents: 8500,
         effectivePriceCents: 6900,
