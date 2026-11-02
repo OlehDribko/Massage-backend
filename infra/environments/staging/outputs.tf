@@ -88,3 +88,8 @@ output "deploy_workflow_variables" {
     STAGING_API_BASE_URL           = aws_apigatewayv2_api.api.api_endpoint
   }
 }
+
+output "brevo_api_key_parameter_name" {
+  description = "SSM SecureString read by the API only when enable_booking_notifications = true (created outside Terraform before enabling)."
+  value       = local.brevo_api_key_parameter
+}

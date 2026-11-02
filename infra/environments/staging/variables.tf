@@ -247,3 +247,63 @@ variable "github_deploy_environment" {
     error_message = "github_deploy_environment must be 1-64 characters [A-Za-z0-9_-]."
   }
 }
+
+variable "firebase_project_id" {
+  description = "Firebase project of this environment (staging only; production uses its own project). Its ID tokens are accepted by the API; the service account key in SSM must belong to it."
+  type        = string
+  default     = "massage-fr"
+
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]$", var.firebase_project_id)) && !startswith(var.firebase_project_id, "demo-")
+    error_message = "firebase_project_id must be a real Firebase project ID (6-30 lowercase letters, digits, hyphens; not a demo- emulator project)."
+  }
+}
+
+# --- Booking notifications (module inside the API process, docs/notifications.md) ---
+# Off by default. While off, the API task gets no notification settings and no
+# BREVO_API_KEY secret, so a missing SSM parameter cannot block the API start.
+
+variable "enable_booking_notifications" {
+  description = "ENABLE_BOOKING_NOTIFICATIONS of the API. true also wires the BREVO_API_KEY secret (SSM parameter must exist) and requires the settings below."
+  type        = bool
+  default     = false
+}
+
+variable "notification_studio_email" {
+  description = "Studio mailbox for booking notifications (NOTIFICATION_STUDIO_EMAIL). Must also be in notification_recipient_allowlist. Required when notifications are on."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.notification_studio_email == null || can(regex("^[^@\\s,]+@[^@\\s,]+\\.[^@\\s,]+$", var.notification_studio_email))
+    error_message = "notification_studio_email must be an email address."
+  }
+}
+
+variable "notification_recipient_allowlist" {
+  description = "The only recipients staging may email (NOTIFICATION_RECIPIENT_ALLOWLIST): approved test mailboxes. Kept out of Git (terraform.tfvars). Required when notifications are on."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for email in var.notification_recipient_allowlist : can(regex("^[^@\\s,]+@[^@\\s,]+\\.[^@\\s,]+$", email))])
+    error_message = "notification_recipient_allowlist must contain email addresses only."
+  }
+}
+
+variable "email_from_name" {
+  description = "Sender name of booking notifications (EMAIL_FROM_NAME). Required when notifications are on."
+  type        = string
+  default     = null
+}
+
+variable "email_from_email" {
+  description = "Sender address (EMAIL_FROM_EMAIL); must be a verified sender or on an authenticated domain in Brevo. Required when notifications are on."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.email_from_email == null || can(regex("^[^@\\s,]+@[^@\\s,]+\\.[^@\\s,]+$", var.email_from_email))
+    error_message = "email_from_email must be an email address."
+  }
+}

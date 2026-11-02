@@ -10,20 +10,323 @@ datasource db {
   provider = "postgresql"
 }
 
+// Legacy table from before Firebase Authentication: password accounts and
+// marketing subscribers. No application code reads or writes it any more; it
+// is kept (including passwordHash) until a separate decision on removal.
+// See docs/auth-and-profiles.md, "Legacy data".
 enum UserStatus {
   subscribed
   registered
 }
 
 model User {
-  id               String     @id @default(uuid())
+  id                      String     @id @default(uuid())
+  name                    String?
+  email                   String     @unique
+  passwordHash            String?
+  status                  UserStatus
+  marketingConsent        Boolean    @default(false)
+  emailVerified           Boolean    @default(false)
+  emailVerificationSentAt DateTime?
+  createdAt               DateTime   @default(now())
+  updatedAt               DateTime   @updatedAt
+}
+
+enum UserRole {
+  client
+  admin
+}
+
+// Our user: a stable own id (future bookings reference it), linked to exactly
+// one Firebase identity. Identity fields (email, emailVerified, isAnonymous,
+// signInProvider) are copied only from verified Firebase ID tokens; role only
+// by the owner-run assign-role command; name and phone by the user.
+model UserProfile {
+  id               String   @id @default(uuid()) @db.Uuid
+  firebaseUid      String   @unique
+  role             UserRole @default(client)
   name             String?
-  email            String     @unique
-  passwordHash     String?
-  status           UserStatus
-  marketingConsent          Boolean   @default(false)
-  emailVerified             Boolean   @default(false)
-  emailVerificationSentAt   DateTime?
-  createdAt                 DateTime  @default(now())
-  updatedAt                 DateTime  @updatedAt
+  email            String?
+  emailVerified    Boolean  @default(false)
+  isAnonymous      Boolean
+  signInProvider   String
+  // E.164, not verified (no SMS); never used for sign-in or recovery.
+  phoneE164        String?
+  // `iat` of the newest ID token applied; older tokens never overwrite newer data.
+  identityIssuedAt DateTime
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  bookings Booking[]
+}
+
+enum MarketingConsentSource {
+  // Optional, unticked-by-default checkbox at sign-up (POST /api/me/sync).
+  signup_checkbox
+  // Public subscription form (guests too).
+  subscription_form
+  // Explicit request from a signed-in user, e.g. re-subscribing after unsubscribing.
+  account_request
+}
+
+// Marketing consent per email address: the single source of truth. Separate
+// from accounts, so a guest's subscription survives losing the anonymous
+// session; profiles show it for their verified email. Consent exists only
+// after the emailed link is confirmed (double opt-in); Firebase email
+// verification is never treated as marketing consent.
+model MarketingSubscription {
+  id                      String                  @id @default(uuid()) @db.Uuid
+  email                   String                  @unique
+  // Authoritative status: false by default, true only after confirmation,
+  // false again after unsubscribing.
+  subscribed              Boolean                 @default(false)
+  // The confirmed consent (kept after unsubscribing as history of the last consent).
+  consentGivenAt          DateTime?
+  consentSource           MarketingConsentSource?
+  consentTextVersion      String?
+  unsubscribedAt          DateTime?
+  // The outstanding confirmation request, if any: its single-use nonce and
+  // what the user agreed to when asking.
+  confirmationNonce       String?
+  // Anchor of the resend limit (next attempt allowed after it + cooldown).
+  // Usually the time the last confirmation email was handed to the provider;
+  // after a provider 429 it is set so that the limit ends at Retry-After: then
+  // no email was sent (confirmationNonce is null) and it can be in the future.
+  // Never shown as a send date.
+  confirmationSentAt      DateTime?
+  confirmationSource      MarketingConsentSource?
+  confirmationTextVersion String?
+  createdAt               DateTime                @default(now())
+  updatedAt               DateTime                @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Catalogue, schedule and bookings: one masseuse, one studio (Europe/Paris).
+// Instants are timestamptz (absolute time); weekly rules and exceptions are
+// local wall-clock values interpreted in the studio time zone.
+// See docs/booking.md.
+// ---------------------------------------------------------------------------
+
+// A service of the fixed catalogue, maintained by data migrations
+// (prisma/templates/catalog-data-migration.sql); the application only reads
+// it. Money in integer euro cents (EUR only), duration in whole minutes.
+// Archived services (archivedAt set) stay for the history of bookings but
+// cannot be booked; ids are stable keys for the frontend's photos and texts.
+model Service {
+  id              String    @id @default(uuid()) @db.Uuid
+  name            String
+  // DEPRECATED, unused and not exposed: texts live in the frontend. Kept for
+  // compatibility with older versions; new catalogue rows leave it NULL.
+  description     String?
+  durationMinutes Int
+  // Regular price in integer euro cents.
+  priceCents      Int
+  // Optional sale (both set or both null, DB checks): active while the
+  // server time is strictly before saleEndsAt (UTC). Set and changed by data
+  // migrations only; expired values stay (activity is decided per request).
+  salePriceCents  Int?
+  saleEndsAt      DateTime? @db.Timestamptz(3)
+  currency        String    @default("EUR")
+  archivedAt      DateTime? @db.Timestamptz(3)
+  createdAt       DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime  @updatedAt @db.Timestamptz(3)
+
+  bookings Booking[]
+}
+
+// Recurring weekly working interval in local time: minutes since local
+// midnight, [startMinute, endMinute). weekday: ISO, 1 = Monday … 7 = Sunday.
+model WeeklyScheduleInterval {
+  id          String @id @default(uuid()) @db.Uuid
+  weekday     Int
+  startMinute Int
+  endMinute   Int
+
+  @@index([weekday])
+}
+
+// Replaces the weekly schedule for one local date. No intervals = day off.
+model ScheduleException {
+  date      DateTime @id @db.Date
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  intervals ScheduleExceptionInterval[]
+}
+
+model ScheduleExceptionInterval {
+  id          String            @id @default(uuid()) @db.Uuid
+  date        DateTime          @db.Date
+  exception   ScheduleException @relation(fields: [date], references: [date], onDelete: Cascade)
+  startMinute Int
+  endMinute   Int
+
+  @@index([date])
+}
+
+enum BookingStatus {
+  confirmed
+  cancelled
+}
+
+enum BookingActor {
+  client
+  admin
+}
+
+// A booking with a snapshot of the service at creation (name, duration,
+// price): catalogue edits never change existing bookings, and rescheduling
+// keeps them. [startsAt, blockedUntil) is the occupied time including the one
+// 15-minute break after the session (blockedUntil = endsAt + 15 min); a
+// database exclusion constraint forbids two confirmed bookings from
+// overlapping there, so consecutive sessions are at least 15 minutes apart.
+model Booking {
+  id                   String        @id @default(uuid()) @db.Uuid
+  clientProfileId      String        @db.Uuid
+  client               UserProfile   @relation(fields: [clientProfileId], references: [id], onDelete: Restrict)
+  serviceId            String        @db.Uuid
+  service              Service       @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  serviceName          String
+  durationMinutes      Int
+  priceCents           Int
+  currency             String
+  startsAt             DateTime      @db.Timestamptz(3)
+  endsAt               DateTime      @db.Timestamptz(3)
+  blockedUntil         DateTime      @db.Timestamptz(3)
+  status               BookingStatus @default(confirmed)
+  // Client-chosen Idempotency-Key of the creating request and what it asked for.
+  idempotencyKey       String
+  requestFingerprint   String
+  cancelledAt          DateTime?     @db.Timestamptz(3)
+  cancelledBy          BookingActor?
+  cancelledByProfileId String?       @db.Uuid
+  cancellationReason   String?
+  createdAt            DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt            DateTime      @updatedAt @db.Timestamptz(3)
+
+  timeChanges BookingTimeChange[]
+
+  @@unique([clientProfileId, idempotencyKey])
+  @@index([startsAt])
+  @@index([clientProfileId, startsAt])
+}
+
+// History of rescheduling: one row per change of time.
+model BookingTimeChange {
+  id                 String   @id @default(uuid()) @db.Uuid
+  bookingId          String   @db.Uuid
+  booking            Booking  @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  previousStartsAt   DateTime @db.Timestamptz(3)
+  previousEndsAt     DateTime @db.Timestamptz(3)
+  newStartsAt        DateTime @db.Timestamptz(3)
+  newEndsAt          DateTime @db.Timestamptz(3)
+  changedByProfileId String   @db.Uuid
+  changedAt          DateTime @db.Timestamptz(3)
+
+  @@index([bookingId, changedAt])
+}
+
+// Transactional outbox: events written in the same transaction as the
+// booking change (only by the bookings module, under the calendar lock, so
+// `position` follows commit order). The Notifications component reads them
+// and records its own progress in NotificationEvent / NotificationDelivery;
+// it never writes here.
+model OutboxEvent {
+  id            String    @id @default(uuid()) @db.Uuid
+  // Commit order of events (writers hold the calendar lock): consumers read by position.
+  position      BigInt    @unique @default(autoincrement())
+  type          String
+  schemaVersion Int
+  aggregateType String
+  aggregateId   String    @db.Uuid
+  // One event per business fact, e.g. "booking.created:<bookingId>".
+  dedupeKey     String    @unique
+  payload       Json
+  occurredAt    DateTime  @db.Timestamptz(3)
+  // DEPRECATED, unused, always null. Kept so that API versions released
+  // before the Notifications component (their Prisma Client selects it) keep
+  // working during rollout and after a rollback. Delivery progress lives in
+  // NotificationEvent / NotificationDelivery. Drop in a later release, once no
+  // older version can run (docs/notifications.md, "Сумісність").
+  publishedAt   DateTime? @db.Timestamptz(3)
+
+  notification NotificationEvent?
+
+  @@index([publishedAt, position])
+  @@index([aggregateId])
+}
+
+// ---------------------------------------------------------------------------
+// Notifications component (worker): its own tables only. See
+// docs/notifications.md.
+// ---------------------------------------------------------------------------
+
+enum NotificationEventStatus {
+  // Deliveries were recorded for this event (one per recipient).
+  planned
+  // The event could not be used (unknown type/version, invalid payload): no deliveries; see reasonCode.
+  invalid
+}
+
+// The worker's processing of one outbox event: exists once the event was
+// examined. It says nothing about whether emails were sent; that is per
+// delivery.
+model NotificationEvent {
+  eventId     String                  @id @db.Uuid
+  event       OutboxEvent             @relation(fields: [eventId], references: [id], onDelete: Restrict)
+  position    BigInt
+  status      NotificationEventStatus
+  reasonCode  String?
+  processedAt DateTime                @db.Timestamptz(3)
+
+  deliveries NotificationDelivery[]
+}
+
+enum NotificationRecipientRole {
+  client
+  studio
+}
+
+enum NotificationDeliveryStatus {
+  // Waiting for an attempt (first one or a retry at nextAttemptAt).
+  pending
+  // Leased by a worker (leaseOwner, leaseToken, leaseExpiresAt).
+  in_progress
+  // The provider accepted the message (not: delivered to the mailbox).
+  accepted
+  // Will not be sent: see resultCode (invalid recipient, rejected, attempts exhausted).
+  failed
+  // Deliberately not sent: see resultCode (e.g. recipient not allowed on staging).
+  skipped
+}
+
+// One email to one recipient for one event. Recipients are fixed when the
+// event is first planned. `id` is also the provider idempotency key.
+model NotificationDelivery {
+  id                String                     @id @default(uuid()) @db.Uuid
+  eventId           String                     @db.Uuid
+  event             NotificationEvent          @relation(fields: [eventId], references: [eventId], onDelete: Restrict)
+  eventPosition     BigInt
+  eventType         String
+  bookingId         String                     @db.Uuid
+  recipientRole     NotificationRecipientRole
+  // null when the event carries no address for this recipient (then failed, recipient_missing).
+  recipientEmail    String?
+  status            NotificationDeliveryStatus @default(pending)
+  attempts          Int                        @default(0)
+  nextAttemptAt     DateTime                   @db.Timestamptz(3)
+  leaseOwner        String?
+  leaseToken        String?                    @db.Uuid
+  leaseExpiresAt    DateTime?                  @db.Timestamptz(3)
+  lastErrorCode     String?
+  resultCode        String?
+  providerMessageId String?
+  acceptedAt        DateTime?                  @db.Timestamptz(3)
+  completedAt       DateTime?                  @db.Timestamptz(3)
+  createdAt         DateTime                   @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime                   @updatedAt @db.Timestamptz(3)
+
+  @@unique([eventId, recipientRole])
+  @@index([status, nextAttemptAt])
+  @@index([bookingId, recipientRole, eventPosition])
 }

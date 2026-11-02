@@ -30,6 +30,11 @@ on:
         required: true
         type: boolean
         default: true
+      verify_auth:
+        description: Require GET /api/me without a token to answer 401 AUTH_REQUIRED (false only for images without Firebase authentication)
+        required: true
+        type: boolean
+        default: true
 
 # Nothing by default; each job gets only what it needs.
 permissions: {}
@@ -134,6 +139,7 @@ jobs:
       API_DIGEST: ${{ needs.verify.outputs.api_digest }}
       MIGRATE_DIGEST: ${{ needs.verify.outputs.migrate_digest }}
       RUN_MIGRATIONS: ${{ inputs.run_migrations }}
+      VERIFY_AUTH: ${{ inputs.verify_auth }}
       AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
       AWS_REGION: ${{ vars.AWS_REGION }}
       ROLE_ARN: ${{ vars.AWS_STAGING_DEPLOY_ROLE_ARN }}
@@ -295,6 +301,16 @@ jobs:
           echo "::error::${API_BASE_URL}/health/ready did not report ready with version ${SHA}"
           exit 1
 
+      # Health does not prove the business API: check that /api/me exists and
+      # demands a token. No token is sent, so Firebase is not called.
+      - name: Check authentication over HTTPS
+        if: env.VERIFY_AUTH == 'true'
+        run: |
+          status="$(curl -sS -o "$RUNNER_TEMP/me.json" -D "$RUNNER_TEMP/me.headers" -w '%{http_code}' --max-time 10 \
+            "${API_BASE_URL}/api/me" || echo 000)"
+          challenge="$(tr -d '\r' < "$RUNNER_TEMP/me.headers" | sed -n 's/^[Ww][Ww][Ww]-[Aa]uthenticate: //p' | head -n 1)"
+          "$SCRIPTS/check-auth.sh" "$status" "$RUNNER_TEMP/me.json" "$challenge"
+
       - name: Summary and rollback instructions
         if: always()
         env:
@@ -308,10 +324,12 @@ jobs:
             echo "| API image | \`${REGISTRY:-?}/massage/booking-api@${API_DIGEST}\` |"
             echo "| Migration image | \`${REGISTRY:-?}/massage/booking-migrate@${MIGRATE_DIGEST}\` |"
             echo "| Migrations run | ${RUN_MIGRATIONS} |"
+            echo "| Authentication checked | ${VERIFY_AUTH} |"
             echo "| New API revision | \`${API_TASK_DEFINITION:-not registered}\` |"
             echo "| Previously deployed | \`${PREVIOUS_TASK_DEFINITION:-unknown}\` (APP_VERSION \`${PREVIOUS_VERSION:-unknown}\`) |"
             echo
             echo "**Application rollback:** run this workflow with the previous commit and its digests"
-            echo "(from its ECR publish artifact) and \`run_migrations = false\`. Previous API image:"
+            echo "(from its ECR publish artifact) and \`run_migrations = false\` (and \`verify_auth = false\`"
+            echo "if that image predates Firebase authentication). Previous API image:"
             echo "\`${PREVIOUS_IMAGE:-unknown}\`. The database is never rolled back automatically."
           } >> "$GITHUB_STEP_SUMMARY"

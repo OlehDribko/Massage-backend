@@ -175,7 +175,7 @@ describe("docker images: migrate + runtime against PostgreSQL", () => {
     expect(wrong.output).toContain("password authentication failed");
   });
 
-  it("runtime image serves live/ready, hides legacy routes and runs as non-root", async () => {
+  it("runtime image serves live/ready, protects /api/me, has no legacy routes and runs as non-root", async () => {
     docker([
       "run", "-d",
       "--name", api,
@@ -190,6 +190,10 @@ describe("docker images: migrate + runtime against PostgreSQL", () => {
       "-e", `DATABASE_URL=postgresql://${RUNTIME_ROLE}:${passwords.app}@postgres:5432/booking`,
       "-e", "DATABASE_SSL_MODE=disable",
       "-e", "ENABLE_LEGACY_USER_ROUTES=false",
+      // Firebase Admin SDK loads; no credentials are present, and the requests
+      // below are rejected before any call to Google.
+      "-e", "FIREBASE_PROJECT_ID=massage-smoke-test",
+      "-e", "FIREBASE_CREDENTIALS=application-default",
       "-e", "SHUTDOWN_TIMEOUT_MS=10000",
       runtimeImage,
     ]);
@@ -212,6 +216,8 @@ describe("docker images: migrate + runtime against PostgreSQL", () => {
     expect(await http("GET", "/health/ready")).toBe(200);
     expect(await http("GET", "/api/users")).toBe(404);
     expect(await http("POST", "/api/users/subscribe")).toBe(404);
+    expect(await http("GET", "/api/me")).toBe(401);
+    expect(await http("POST", "/api/marketing/subscriptions")).toBe(404);
 
     expect(docker(["inspect", "--format", "{{.Config.User}}", api])).toBe("node");
     expect(docker(["exec", api, "id", "-u"])).not.toBe("0");

@@ -19,8 +19,9 @@ locals {
   ssm_parameter_prefix = "/${var.name_prefix}/booking"
 
   booking_parameters = {
-    database_url           = "${local.ssm_parameter_prefix}/database-url"
-    migration_database_url = "${local.ssm_parameter_prefix}/migration-database-url"
+    database_url             = "${local.ssm_parameter_prefix}/database-url"
+    migration_database_url   = "${local.ssm_parameter_prefix}/migration-database-url"
+    firebase_service_account = "${local.ssm_parameter_prefix}/firebase-service-account"
   }
 
   booking_parameter_arns = {
@@ -28,17 +29,31 @@ locals {
     key => "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter${name}"
   }
 
-  # API (runtime) and migration task: image repository, log group, secret.
+  # Booking notifications run inside the API. Their Brevo key is wired (task
+  # secret and execution-role permission) only while they are enabled, so a
+  # missing parameter never blocks the API start when they are off.
+  brevo_api_key_parameter     = "${local.ssm_parameter_prefix}/brevo-api-key"
+  brevo_api_key_parameter_arn = "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter${local.brevo_api_key_parameter}"
+
+  # API (runtime) and migration task: image repository, log group, secrets.
+  # Only the API verifies Firebase ID tokens; the migration task never gets
+  # the Firebase key.
   booking_task_kinds = {
     api = {
       repository = aws_ecr_repository.booking["booking_api"].arn
       log_group  = aws_cloudwatch_log_group.booking["api"].arn
-      parameter  = local.booking_parameter_arns.database_url
+      parameters = concat(
+        [
+          local.booking_parameter_arns.database_url,
+          local.booking_parameter_arns.firebase_service_account,
+        ],
+        var.enable_booking_notifications ? [local.brevo_api_key_parameter_arn] : [],
+      )
     }
     migrate = {
       repository = aws_ecr_repository.booking["booking_migrate"].arn
       log_group  = aws_cloudwatch_log_group.booking["migrate"].arn
-      parameter  = local.booking_parameter_arns.migration_database_url
+      parameters = [local.booking_parameter_arns.migration_database_url]
     }
   }
 }
@@ -99,10 +114,10 @@ data "aws_iam_policy_document" "booking_execution" {
   }
 
   statement {
-    sid       = "ReadOwnSecret"
+    sid       = "ReadOwnSecrets"
     effect    = "Allow"
     actions   = ["ssm:GetParameters"]
-    resources = [each.value.parameter]
+    resources = each.value.parameters
   }
 }
 
@@ -110,7 +125,7 @@ resource "aws_iam_role" "booking_execution" {
   for_each = local.booking_task_kinds
 
   name                 = "${var.name_prefix}-booking-${each.key}-execution"
-  description          = "ECS agent for booking-${each.key}: pull own image, write own logs, read own secret."
+  description          = "ECS agent for booking-${each.key}: pull own image, write own logs, read own secrets."
   assume_role_policy   = data.aws_iam_policy_document.ecs_tasks_trust.json
   max_session_duration = 3600
 }

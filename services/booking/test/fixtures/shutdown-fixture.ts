@@ -53,7 +53,7 @@ app.use(
     probeReadiness: () => Promise.resolve("ready"),
     appVersion: undefined,
     corsOrigin: undefined,
-    legacyUserRouter: undefined,
+    apiRouter: undefined,
   }),
 );
 

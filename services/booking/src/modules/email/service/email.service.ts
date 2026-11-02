@@ -1,129 +1,109 @@
 import { BrevoClient } from "@getbrevo/brevo";
+import { classifyBrevoError } from "../../../integrations/brevo/brevo-errors.js";
 import { emailTemplates } from "../templates/email.templates.js";
-import { mapBrevoError } from "../errors/email.errors.js";
-import type {
-  ActionTokenPurpose,
-  ActionTokenService,
-} from "../tokens/action-token.service.js";
-import type { Logger } from "../../../logging/logger.js";
-
-import type { User } from "../../../generated/prisma/client.js";
 import type { SendTransactionalEmailType } from "../types/email.types.js";
 
 export type EmailServiceConfig = {
   brevoApiKey: string;
   fromName: string;
   fromEmail: string;
-  frontendUrl: string;
+  /** Tests only: a fake transport (no network, no real email). */
+  fetchImpl?: typeof fetch;
 };
 
-export type EmailService = ReturnType<typeof createEmailService>;
+/**
+ * Result of one marketing email, sent inside an HTTP request:
+ * - accepted: accepted by Brevo for sending (also when Brevo recognises the
+ *   idempotency key of an earlier accepted attempt); not "delivered";
+ * - not_sent: certainly not accepted (rejected, configuration); safe to try
+ *   again;
+ * - rate_limited (429): refused and not processed; retry only after the
+ *   provider's Retry-After (retryAfterMs, when given);
+ * - uncertain: timeout, network error or 5xx: Brevo may have accepted it.
+ */
+export type MailOutcome =
+  | { kind: "accepted" }
+  | { kind: "not_sent"; code: "provider_rejected" | "provider_auth" | "provider_forbidden" | "provider_account" }
+  | { kind: "rate_limited"; retryAfterMs: number | null }
+  | { kind: "uncertain"; code: "provider_unavailable" | "timeout" | "network" };
 
-/** Creates the Brevo client only when called (legacy routes enabled). */
-export const createEmailService = (
-  { brevoApiKey, fromName, fromEmail, frontendUrl }: EmailServiceConfig,
-  actionTokenService: ActionTokenService,
-  logger: Logger,
-) => {
+/** Marketing emails; links and idempotency keys are built by the caller. */
+export type MarketingMailer = {
+  sendConfirmationRequest: (email: string, confirmUrl: string, idempotencyKey: string) => Promise<MailOutcome>;
+  sendSubscriptionConfirmed: (email: string, unsubscribeUrl: string, idempotencyKey: string) => Promise<MailOutcome>;
+};
+
+/**
+ * Limit of one Brevo call. It bounds only this call, not the whole HTTP
+ * request (database, Firebase and the network to the client add to it).
+ */
+export const MARKETING_BREVO_TIMEOUT_MS = 10_000;
+
+/**
+ * Brevo transactional API. Created only when marketing is enabled.
+ * No SDK retries (maxRetries 0): a retry inside the HTTP request would make it
+ * long and could send a second email; repeats are decided by the caller.
+ */
+export const createBrevoMarketingMailer = ({
+  brevoApiKey,
+  fromName,
+  fromEmail,
+  fetchImpl,
+}: EmailServiceConfig): MarketingMailer => {
   const brevo = new BrevoClient({
     apiKey: brevoApiKey,
-    timeoutInSeconds: 30,
-    maxRetries: 3,
+    timeoutInSeconds: MARKETING_BREVO_TIMEOUT_MS / 1000,
+    maxRetries: 0,
+    ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
   });
 
-  const buildActionUrl = (
-    path: "/unsubscribe" | "/verify-email" | "/reset-password",
-    purpose: ActionTokenPurpose,
-    userId: string,
-  ) => {
-    const token = actionTokenService.createToken(userId, purpose);
-    const url = new URL(path, frontendUrl);
-    url.searchParams.set("token", token);
-    return url.toString();
-  };
-
-  const buildUnsubscribeUrl = (userId: string) => {
-    return buildActionUrl("/unsubscribe", "marketing_unsubscribe", userId);
-  };
-
-  const buildVerifyEmailUrl = (userId: string) => {
-    return buildActionUrl("/verify-email", "email_verify", userId);
-  };
-
-  const buildResetPasswordUrl = (userId: string) => {
-    return buildActionUrl("/reset-password", "password_reset", userId);
-  };
-
-  const sendTransactionalEmail = async ({
-    to,
-    subject,
-    htmlContent,
-  }: SendTransactionalEmailType) => {
-    logger.debug("sendTransactionalEmail");
+  const send = async (
+    { to, subject, htmlContent }: SendTransactionalEmailType,
+    idempotencyKey: string,
+  ): Promise<MailOutcome> => {
     try {
-      const result = await brevo.transactionalEmails.sendTransacEmail({
+      await brevo.transactionalEmails.sendTransacEmail({
         subject,
         htmlContent,
         sender: { name: fromName, email: fromEmail },
         to,
+        headers: { idempotencyKey },
       });
-      return result.messageId;
+      return { kind: "accepted" };
     } catch (error) {
-      throw mapBrevoError(error);
+      const failure = classifyBrevoError(error);
+      switch (failure.kind) {
+        case "duplicate":
+          return { kind: "accepted" };
+        case "rejected":
+        case "configuration":
+          return { kind: "not_sent", code: failure.code };
+        case "retryable":
+          return failure.code === "rate_limited"
+            ? { kind: "rate_limited", retryAfterMs: failure.retryAfterMs }
+            : { kind: "uncertain", code: failure.code };
+      }
     }
   };
 
   return {
-    sendEmailVerificationRequest: async (user: User) => {
-      logger.debug("sendEmailVerificationRequest");
-      const verifyUrl = buildVerifyEmailUrl(user.id);
-      const to = [
+    sendConfirmationRequest: (email, confirmUrl, idempotencyKey) =>
+      send(
         {
-          email: user.email,
-          ...(user.name ? { name: user.name } : {}),
+          to: [{ email }],
+          subject: "Confirmez votre inscription aux offres",
+          htmlContent: emailTemplates.marketingConfirmationRequest(confirmUrl),
         },
-      ];
-
-      return sendTransactionalEmail({
-        to,
-        subject: "Confirmez votre adresse e-mail",
-        htmlContent: emailTemplates.emailVerificationRequest(user, verifyUrl),
-      });
-    },
-    sendOffersSubscriptionConfirmation: async (user: User) => {
-      const unsubscribeUrl = buildUnsubscribeUrl(user.id);
-      const to = [
+        idempotencyKey,
+      ),
+    sendSubscriptionConfirmed: (email, unsubscribeUrl, idempotencyKey) =>
+      send(
         {
-          email: user.email,
-          ...(user.name ? { name: user.name } : {}),
+          to: [{ email }],
+          subject: "Votre inscription aux offres est confirmée",
+          htmlContent: emailTemplates.offersSubscriptionConfirmation(unsubscribeUrl),
         },
-      ];
-      const subject = "Votre inscription aux offres est confirmée";
-      const htmlContent = emailTemplates.offersSubscriptionConfirmation(
-        user,
-        unsubscribeUrl,
-      );
-      const emailData = {
-        to,
-        subject,
-        htmlContent,
-      };
-      return sendTransactionalEmail(emailData);
-    },
-    sendPasswordResetRequest: async (user: User) => {
-      const resetUrl = buildResetPasswordUrl(user.id);
-      const to = [
-        {
-          email: user.email,
-          ...(user.name ? { name: user.name } : {}),
-        },
-      ];
-
-      return sendTransactionalEmail({
-        to,
-        subject: "Réinitialisation de votre mot de passe",
-        htmlContent: emailTemplates.passwordResetRequest(user, resetUrl),
-      });
-    },
+        idempotencyKey,
+      ),
   };
 };

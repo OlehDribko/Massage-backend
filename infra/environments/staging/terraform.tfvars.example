@@ -12,6 +12,15 @@ booking_api_image        = "000000000000.dkr.ecr.eu-west-3.amazonaws.com/massage
 booking_migrate_image    = "000000000000.dkr.ecr.eu-west-3.amazonaws.com/massage/booking-migrate@sha256:<64 hex>"
 booking_image_commit_sha = "<40-character commit SHA>"
 
+# Booking notifications inside the API (off by default). When true, the SSM
+# parameter /<name_prefix>/booking/brevo-api-key must exist first. Addresses
+# are approved test mailboxes only; keep them out of Git.
+# enable_booking_notifications     = true
+# notification_studio_email        = "studio-test@example.invalid"
+# notification_recipient_allowlist = ["studio-test@example.invalid", "client-test@example.invalid"]
+# email_from_name                  = "<sender name>"
+# email_from_email                 = "<verified sender address>"
+
 # Defaults, change only if needed:
 # region                   = "eu-west-3"
 # name_prefix              = "massage-staging"
@@ -29,3 +38,4 @@ booking_image_commit_sha = "<40-character commit SHA>"
 # api_throttling_rate_limit  = 2
 # api_throttling_burst_limit = 10
 # github_deploy_environment  = "staging"
+# firebase_project_id        = "massage-fr"  # staging Firebase project

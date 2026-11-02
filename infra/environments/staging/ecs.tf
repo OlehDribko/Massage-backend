@@ -34,6 +34,20 @@ locals {
   # the process serves HTTP; readiness (/health/ready) is checked by the
   # deploy workflow. The runtime image has no curl, so Node's fetch is used.
   api_health_command = "fetch('http://127.0.0.1:${var.app_port}/health/live').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+
+  # Booking notifications (module inside the API, docs/notifications.md).
+  # Off: nothing is added, the API defaults to ENABLE_BOOKING_NOTIFICATIONS=false.
+  api_notification_environment = var.enable_booking_notifications ? [
+    { name = "ENABLE_BOOKING_NOTIFICATIONS", value = "true" },
+    { name = "NOTIFICATIONS_ENVIRONMENT", value = "staging" },
+    { name = "NOTIFICATION_STUDIO_EMAIL", value = coalesce(var.notification_studio_email, "-") },
+    { name = "NOTIFICATION_RECIPIENT_ALLOWLIST", value = join(",", var.notification_recipient_allowlist) },
+    { name = "EMAIL_FROM_NAME", value = coalesce(var.email_from_name, "-") },
+    { name = "EMAIL_FROM_EMAIL", value = coalesce(var.email_from_email, "-") },
+  ] : []
+  api_notification_secrets = var.enable_booking_notifications ? [
+    { name = "BREVO_API_KEY", valueFrom = local.brevo_api_key_parameter_arn },
+  ] : []
 }
 
 resource "aws_ecs_cluster" "main" {
@@ -80,7 +94,7 @@ resource "aws_ecs_task_definition" "api" {
           protocol      = "tcp"
         }
       ]
-      environment = [
+      environment = concat([
         { name = "NODE_ENV", value = "production" },
         { name = "PORT", value = tostring(var.app_port) },
         { name = "LOG_LEVEL", value = "info" },
@@ -90,12 +104,19 @@ resource "aws_ecs_task_definition" "api" {
         { name = "READINESS_TIMEOUT_MS", value = "2000" },
         # Legacy /api/users stays off: no Brevo key or token secret is provided.
         { name = "ENABLE_LEGACY_USER_ROUTES", value = "false" },
+        # Firebase Authentication (docs/auth-and-profiles.md, section 8). With
+        # REQUIRE_FIREBASE_AUTH the task refuses to start without a working
+        # Firebase configuration instead of serving without /api/me.
+        { name = "REQUIRE_FIREBASE_AUTH", value = "true" },
+        { name = "FIREBASE_PROJECT_ID", value = var.firebase_project_id },
+        { name = "FIREBASE_CREDENTIALS", value = "service-account-json" },
         # Replaced with the deployed commit SHA by the deploy workflow.
         { name = "APP_VERSION", value = var.booking_image_commit_sha },
-      ]
-      secrets = [
+      ], local.api_notification_environment)
+      secrets = concat([
         { name = "DATABASE_URL", valueFrom = local.booking_parameter_arns.database_url },
-      ]
+        { name = "FIREBASE_SERVICE_ACCOUNT_JSON", valueFrom = local.booking_parameter_arns.firebase_service_account },
+      ], local.api_notification_secrets)
       healthCheck = {
         command     = ["CMD", "node", "-e", local.api_health_command]
         interval    = 15
@@ -118,6 +139,16 @@ resource "aws_ecs_task_definition" "api" {
       }
     }
   ])
+
+  lifecycle {
+    precondition {
+      condition = !var.enable_booking_notifications || (
+        var.notification_studio_email != null && var.email_from_name != null && var.email_from_email != null &&
+        contains([for email in var.notification_recipient_allowlist : lower(email)], lower(coalesce(var.notification_studio_email, "-")))
+      )
+      error_message = "With enable_booking_notifications, set notification_studio_email, email_from_name, email_from_email and a notification_recipient_allowlist that contains the studio mailbox."
+    }
+  }
 }
 
 resource "aws_ecs_task_definition" "migrate" {

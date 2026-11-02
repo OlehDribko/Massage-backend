@@ -1,4 +1,0 @@
-// `const` declarations of string literals keep the literal types
-// ("EMAIL_VERIFICATION_SENT", "EMAIL_VERIFICATION_PENDING").
-export const EMAIL_VERIFICATION_SENT_CODE = "EMAIL_VERIFICATION_SENT";
-export const EMAIL_VERIFICATION_PENDING_CODE = "EMAIL_VERIFICATION_PENDING";
