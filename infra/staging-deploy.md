@@ -9,11 +9,13 @@
 | Образи коміту `0e93e68ff7f2418eefe8c762b55588973034b32a` у ECR | **опубліковано й перевірено** (run 39656783947) |
 | Terraform: ECS, API Gateway, Cloud Map, ролі, лог-групи, SG (`infra/environments/staging`) | **створено** 2026-10-26 (`apply`: 38 added); виправлення Cloud Map застосовано 2026-10-27, контрольний `plan` — `No changes` (див. «Cloud Map: health check») |
 | Workflow `.github/workflows/staging-deploy.yml` | **перший запуск успішний** 2026-10-26 (run 40400135052): 4 міграції, ревізія API `massage-staging-booking-api:2`, readiness через HTTPS з версією `0e93e68` |
+| Деплой етапу A | **успішний** 2026-11-01 (run 41332228844, образи — run 41330856420): коміт `develop` `5221d98011af0d31caa6c668b9f325c7c97dda84`, 4 нові міграції (каталог, графік і бронювання; Notifications; початковий каталог; акційна ціна), ревізія `booking-api:5`. Точка відновлення Neon перед міграціями — `2026-11-01T17:35:12Z` |
 | SSM-параметри з рядками підключення | **створено власником** 2026-10-24: обидва `SecureString`, `alias/aws/ssm`, Standard, версія 1 (перевірено лише метадані) |
 | Staging-БД у Neon | **підготовлено власником**: проєкт `massage-staging`, БД `neondb`, ролі `booking_migrator`/`booking_app`, таблиць і `_prisma_migrations` немає; міграції ще не запускались |
 | GitHub environment `staging` | **створено**: лише гілка `develop`, без тегів і reviewer |
 | Repository variables деплою (9) | **задано** з `terraform output deploy_workflow_variables` |
-| Staging | **на паузі** з 2026-10-27 (після короткої перевірки): `desired_count = 0`, running/pending 0, задач і екземплярів Cloud Map немає |
+| Staging | **працює** з 2026-11-01 для ручного тестування: `desired_count = 1`, листи (`ENABLE_BOOKING_NOTIFICATIONS`), маркетинг і Swagger вимкнені. Зупинка — лише за окремим рішенням власника (розділ «Пауза staging») |
+| Перевірки | **Пройдено** публічні перевірки через HTTPS: health з версією, каталог (35 послуг збігаються з погодженим переліком), доступність, 404 для невідомої послуги, 401 без токена й з невалідним токеном, 404 для Swagger і маркетингу, логи без warn/error. **Не перевірено:** справжній вхід Firebase, профілі, ролі, авторизовані операції бронювання, реальні листи. Ручна перевірка — [docs/postman.md](../docs/postman.md) |
 
 ### Опубліковані образи
 
@@ -45,7 +47,7 @@ API-образ локально перевірено в режимі, близь
 - **Ділянка до origin** не виходить в інтернет: VPC link відкриває з'єднання зі своїх ENI у VPC на приватну IP задачі. SG api приймає порт 3001 лише від SG vpc-link (і від SG alb, у якого немає учасників).
 - **Authorization** — зарезервований заголовок HTTP API: передається без змін, змінити чи прибрати його mapping-ом не можна. **Кешування немає**: HTTP API не має кешу відповідей, кожен запит доходить до сервісу.
 - **Legacy `/api/users` видалено з коду** (task definition ще передає `ENABLE_LEGACY_USER_ROUTES=false`, яке приймається й ігнорується); ключів Brevo і токенів у task definition немає.
-- **Firebase Authentication (`/api/me`) у task definition ще не налаштовано:** без `FIREBASE_PROJECT_ID` маршрутів `/api/me` немає. Потрібні зміни (SSM-параметр службового ключа, змінні й secret, права execution role) описано в [docs/auth-and-profiles.md](../docs/auth-and-profiles.md#8-конфігурація-backend); їх не внесено в Terraform і не застосовано.
+- **Firebase Authentication (`/api/me`)** налаштовано в task definition (розділ «Короткий запуск з Firebase-автентифікацією»): маршрути `/api/me`, `/api/bookings`, `/api/admin` існують і без токена відповідають 401. Перевірки зі справжнім ID token ще не було.
 
 **Обмеження цієї схеми:**
 - VPC links V2 у Парижі підтримуються лише в AZ `euw3-az1` і `euw3-az3`. Наші subnets — `euw3-az1` (3a) і `euw3-az2` (3b), тож VPC link має ENI лише в 3a. Задачі можуть працювати в обох subnets. Якщо зона 3a недоступна, API недоступний. Для production варто додати subnet в `eu-west-3c` (`euw3-az3`).
