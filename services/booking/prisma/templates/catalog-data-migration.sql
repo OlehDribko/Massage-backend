@@ -16,9 +16,8 @@ BEGIN;
 -- booking is created for a service while it changes.
 SELECT pg_advisory_xact_lock(7316442001);
 
--- Add or change services. Fixed ids: the frontend keys photos and texts by
--- them; never reuse an id for another service. No description: texts live
--- in the frontend (the column stays NULL). Limits (database checks): name
+-- Add or change services. Fixed ids: the frontend keys photos by them;
+-- never reuse an id for another service. Limits (database checks): name
 -- 1–120 characters, duration 5–480 minutes, price 0–10 000 000 euro cents.
 -- Existing bookings keep their own snapshot of name, duration and price.
 INSERT INTO "Service" ("id", "name", "durationMinutes", "priceCents", "updatedAt") VALUES
@@ -28,6 +27,15 @@ ON CONFLICT ("id") DO UPDATE SET
   "durationMinutes" = EXCLUDED."durationMinutes",
   "priceCents" = EXCLUDED."priceCents",
   "updatedAt" = now();
+
+-- Client-facing texts (French, plain text): description NULL or 1–2000
+-- characters; features: up to 10 non-empty items, shown in this order.
+-- Double a single quote inside a text ('l''huile'), or use the typographic
+-- apostrophe (’) as the existing texts do:
+-- UPDATE "Service" SET "description" = 'Un massage …',
+--   "features" = ARRAY['Première particularité.', 'Seconde particularité.']::TEXT[], "updatedAt" = now()
+--   WHERE "id" = '<id>';
+-- Remove the texts: "description" = NULL, "features" = ARRAY[]::TEXT[].
 
 -- Sale price (docs/booking.md, "Акційна ціна"): both fields together, the
 -- sale price in cents strictly below priceCents. The end is a human date in

@@ -28,7 +28,6 @@ const rowSchema = z.object({
   durationMinutes: z.number(),
   priceCents: z.number(),
   currency: z.string(),
-  description: z.string().nullable(),
   bookable: z.boolean(),
 });
 
@@ -37,7 +36,7 @@ let stack: BookingStack;
 const services = async () => {
   const result = await stack.db.query(
     "app",
-    `SELECT id, name, "durationMinutes", "priceCents", currency, description, "archivedAt" IS NULL AS bookable FROM "Service" ORDER BY id`,
+    `SELECT id, name, "durationMinutes", "priceCents", currency, "archivedAt" IS NULL AS bookable FROM "Service" ORDER BY id`,
   );
   return z.array(rowSchema).parse(result.rows);
 };
@@ -49,7 +48,6 @@ const expectedRows = () =>
     durationMinutes: service.durationMinutes,
     priceCents: service.priceEuros * 100,
     currency: "EUR",
-    description: null,
     bookable: true,
   })).sort((a, b) => a.id.localeCompare(b.id));
 
@@ -73,7 +71,7 @@ describe("initial catalogue", () => {
     expect(EXPECTED.find((service) => service.n === 23)).toMatchObject({ name: "Endosphères — demi-corps, une séance", durationMinutes: 45, priceEuros: 110 });
   });
 
-  it("after the migrations the database holds exactly these services: exact cents, durations, ids, bookable, no description", async () => {
+  it("after the migrations the database holds exactly these services: exact cents, durations, ids, bookable (texts: catalog-service-texts.test.ts)", async () => {
     expect(await services()).toEqual(expectedRows());
   });
 
@@ -106,8 +104,8 @@ describe("initial catalogue", () => {
     const all = await services();
     expect(all).toHaveLength(37);
     expect(all.filter((service) => service.id.startsWith("00000000-0000-4000-8000-0000000000a"))).toEqual([
-      { id: "00000000-0000-4000-8000-0000000000a1", name: "Other bookable", durationMinutes: 30, priceCents: 1000, currency: "EUR", description: null, bookable: true },
-      { id: "00000000-0000-4000-8000-0000000000a2", name: "Other archived", durationMinutes: 30, priceCents: 1000, currency: "EUR", description: null, bookable: false },
+      { id: "00000000-0000-4000-8000-0000000000a1", name: "Other bookable", durationMinutes: 30, priceCents: 1000, currency: "EUR", bookable: true },
+      { id: "00000000-0000-4000-8000-0000000000a2", name: "Other archived", durationMinutes: 30, priceCents: 1000, currency: "EUR", bookable: false },
     ]);
     expect(all.filter((service) => !service.id.startsWith("00000000-"))).toEqual(expectedRows());
     await stack.db.query(

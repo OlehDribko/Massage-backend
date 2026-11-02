@@ -111,13 +111,16 @@ model MarketingSubscription {
 // (prisma/templates/catalog-data-migration.sql); the application only reads
 // it. Money in integer euro cents (EUR only), duration in whole minutes.
 // Archived services (archivedAt set) stay for the history of bookings but
-// cannot be booked; ids are stable keys for the frontend's photos and texts.
+// cannot be booked; ids are stable keys for the frontend's photos.
 model Service {
   id              String    @id @default(uuid()) @db.Uuid
   name            String
-  // DEPRECATED, unused and not exposed: texts live in the frontend. Kept for
-  // compatibility with older versions; new catalogue rows leave it NULL.
+  // Client-facing texts (French), set by data migrations like the rest of the
+  // catalogue and returned by the public catalogue API: a short description
+  // (1–2000 characters or NULL) and up to 10 features shown as a list, in
+  // order (no empty items). Photos and card design live in the frontend.
   description     String?
+  features        String[]  @default([])
   durationMinutes Int
   // Regular price in integer euro cents.
   priceCents      Int
