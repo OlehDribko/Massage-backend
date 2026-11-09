@@ -259,6 +259,17 @@ variable "firebase_project_id" {
   }
 }
 
+variable "frontend_url" {
+  description = "FRONTEND_URL of the API: the only browser origin allowed by CORS (exact origin: scheme, host and optional port; no path, no trailing slash, no wildcard). Marketing email links use it too, but marketing is off on staging."
+  type        = string
+  default     = "http://localhost:3000"
+
+  validation {
+    condition     = can(regex("^https?://[a-z0-9.-]+(:[0-9]{1,5})?$", var.frontend_url))
+    error_message = "frontend_url must be an exact origin such as https://app.example.com or http://localhost:3000 (no path, no trailing slash, no wildcard)."
+  }
+}
+
 # --- Booking notifications (module inside the API process, docs/notifications.md) ---
 # Off by default. While off, the API task gets no notification settings and no
 # BREVO_API_KEY secret, so a missing SSM parameter cannot block the API start.

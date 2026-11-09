@@ -146,6 +146,7 @@ CloudFront дає HTTPS на `*.cloudfront.net` без власного доме
 - API: 256 CPU / 512 MiB, `X86_64`, `readonlyRootFilesystem`, `initProcessEnabled`, `stopTimeout` 30 с (застосунок завершується за 10 с).
   - Health check контейнера — `/health/live` через `node -e fetch(...)`, бо curl в образі немає. Liveness навмисно не залежить від БД.
   - Змінні: `NODE_ENV=production`, `DATABASE_SSL_MODE=verify-full`, `ENABLE_LEGACY_USER_ROUTES=false`, `APP_VERSION=<SHA>`.
+  - `FRONTEND_URL` — єдиний origin, якому браузер дозволяє звертатися до API (CORS, точний збіг, без wildcard). Задається змінною Terraform `frontend_url`, за замовчуванням `http://localhost:3000` для локального frontend. Зміна origin — новий `terraform apply` (нова ревізія task definition) і деплой.
   - Секрет: `DATABASE_URL`.
 - Міграції: `MIGRATION_DATABASE_SSL_MODE=verify-full`, `BOOKING_RUNTIME_ROLE=booking_app`, секрет `MIGRATION_DATABASE_URL`. Root filesystem лишається доступним на запис для Prisma CLI.
 
