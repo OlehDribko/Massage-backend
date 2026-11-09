@@ -15,6 +15,15 @@ export type RoleAssignmentRefusal =
   | "anonymous_session"
   | "email_not_verified";
 
+/**
+ * Interactive-transaction limits. Prisma's defaults (maxWait 2 s, timeout 5 s)
+ * count opening the first pool connection inside maxWait: a one-off ECS task
+ * reaching a sleeping Neon database (TLS + compute wake-up) exceeds 2 s and
+ * fails with P2028 "Unable to start a transaction in the given time". The
+ * command connects first (see assign-role.ts); these limits are a safety net.
+ */
+export const ROLE_ASSIGNMENT_TRANSACTION = { maxWait: 15_000, timeout: 15_000 };
+
 export type RoleAssignmentResult =
   | { ok: true; profileId: string; previousRole: UserRole; role: UserRole; changed: boolean; applied: boolean }
   | { ok: false; reason: RoleAssignmentRefusal };
@@ -66,4 +75,4 @@ export const assignRole = async (
       changed,
       applied: changed && request.apply,
     };
-  });
+  }, ROLE_ASSIGNMENT_TRANSACTION);

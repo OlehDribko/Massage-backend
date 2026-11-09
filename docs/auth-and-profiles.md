@@ -447,13 +447,15 @@ HTTP-маршруту для зміни ролі немає; профіль не
 2. Власник запускає команду в мережі staging, використовуючи вже наявний секрет БД (рядок підключення не потрапляє в термінал):
    ```sh
    aws ecs run-task --cluster massage-staging \
-     --task-definition massage-staging-booking-api \
+     --task-definition "$(aws ecs describe-services --cluster massage-staging --services booking-api --query 'services[0].taskDefinition' --output text)" \
      --launch-type FARGATE \
      --network-configuration "awsvpcConfiguration={subnets=[<public subnet>],securityGroups=[<sg massage-staging-api>],assignPublicIp=ENABLED}" \
      --overrides '{"containerOverrides":[{"name":"booking-api","command":["node","dist/admin/assign-role.js","--profile-id","<uuid>","--email","<email>","--role","admin"]}]}'
    ```
    Переглянути лог задачі (`/ecs/massage-staging/booking-api`, повідомлення `dry run: nothing changed`), потім повторити з `"--apply"`.
 3. Коди виходу: `0` — виконано / сухий прогін, `2` — відмовлено (`profile_not_found`, `email_mismatch`, `anonymous_session`, `email_not_verified`), `1` — помилка конфігурації або БД.
+   Повідомлення в лозі по черзі: `role assignment started` (`dryRun`), `database connected` (`connectMs`), далі одне з `dry run: nothing changed (add --apply)` / `role assignment done` / `role assignment refused` (`reason`) / `role assignment failed`. Помилка містить `stage` (`connect` — з'єднання з БД, `transaction` — читання профілю й зміна ролі), `cause` і `causeText` (фіксований безпечний текст, напр. `connect_timeout`, `authentication_failed`, `transaction_start_timeout`), `prismaCode` і `sqlState`, якщо є. Тексти помилок драйвера й Prisma не логуються.
+   Сплячий Neon прокидається на першому з'єднанні: команда спершу з'єднується (до 15 с), а вже потім відкриває транзакцію (`maxWait`/`timeout` 15 с). Типові для Prisma 2 с на старт транзакції включали відкриття з'єднання, тож на холодній БД перший запуск падав з `P2028` («Unable to start a transaction in the given time»).
 4. Зняти роль: та сама команда з `--role client`.
 
 Лог містить лише `profileId`, стару й нову роль. Альтернатива — запуск локально з тимчасовим env-файлом `DATABASE_URL` (як для перевірки ролей Neon), але ECS-варіант не виводить секрет за межі AWS.

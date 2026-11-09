@@ -8,6 +8,7 @@ import { createLogger, describeError } from "../logging/logger.js";
 import { createDatabase } from "../shared/database/database.js";
 import { parseDatabaseUrl } from "../shared/database/database-url.js";
 import { assignRole } from "../modules/profiles/role-assignment.js";
+import { describeDatabaseFailure } from "./database-failure.js";
 
 const logger = createLogger({ level: "info" });
 
@@ -26,6 +27,10 @@ const argsSchema = z
     apply: z.boolean().default(false),
   })
   .strict();
+
+// A one-off task may meet a sleeping database (Neon wakes up on the first
+// connection): connecting gets its own, generous limit before the transaction.
+const CONNECT_TIMEOUT_MS = 15_000;
 
 // Exit codes: 0 done (or dry run), 1 configuration/database error, 2 refused.
 const main = async (): Promise<number> => {
@@ -69,13 +74,24 @@ const main = async (): Promise<number> => {
       url: env.data.DATABASE_URL,
       sslMode: env.data.DATABASE_SSL_MODE,
       poolMax: 1,
-      connectTimeoutMs: 10_000,
+      connectTimeoutMs: CONNECT_TIMEOUT_MS,
       queryTimeoutMs: 30_000,
     },
     logger,
   );
 
+  const dryRun = !args.data.apply;
+  logger.info({ profileId: args.data["profile-id"], role: args.data.role, dryRun }, "role assignment started");
+
+  // Logged with a failure: where it happened (connect: reaching the database;
+  // transaction: reading the profile and, with --apply, changing the role).
+  let stage: "connect" | "transaction" = "connect";
+  const startedAt = Date.now();
   try {
+    await database.ping(CONNECT_TIMEOUT_MS);
+    logger.info({ connectMs: Date.now() - startedAt }, "database connected");
+
+    stage = "transaction";
     const result = await assignRole(database.prisma, {
       profileId: args.data["profile-id"],
       expectedEmail: args.data.email,
@@ -84,7 +100,7 @@ const main = async (): Promise<number> => {
     });
 
     if (!result.ok) {
-      logger.error({ profileId: args.data["profile-id"], reason: result.reason }, "role assignment refused");
+      logger.error({ profileId: args.data["profile-id"], reason: result.reason, dryRun }, "role assignment refused");
       return 2;
     }
 
@@ -95,13 +111,16 @@ const main = async (): Promise<number> => {
         role: result.role,
         changed: result.changed,
         applied: result.applied,
-        dryRun: !args.data.apply,
+        dryRun,
       },
       args.data.apply ? "role assignment done" : "dry run: nothing changed (add --apply)",
     );
     return 0;
   } catch (error) {
-    logger.fatal({ error: describeError(error) }, "role assignment failed");
+    logger.fatal(
+      { stage, elapsedMs: Date.now() - startedAt, dryRun, ...describeDatabaseFailure(error), error: describeError(error) },
+      "role assignment failed",
+    );
     return 1;
   } finally {
     await database.close();
