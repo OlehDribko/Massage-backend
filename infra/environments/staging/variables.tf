@@ -226,7 +226,7 @@ variable "vpc_link_az_ids" {
 }
 
 variable "api_throttling_rate_limit" {
-  description = "Steady-state request rate limit (requests/second) of the HTTP API $default route. Also caps the request-driven cost: 2 rps is at most 172,800 requests/day."
+  description = "Steady-state request rate limit (requests/second) of the HTTP API $default route. Best effort, not a cost limit; the cost estimate in infra/staging-deploy.md assumes 2 rps all day (172,800 requests/day) as a scenario."
   type        = number
   default     = 2
 }
