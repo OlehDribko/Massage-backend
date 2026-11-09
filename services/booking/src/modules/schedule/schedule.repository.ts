@@ -109,3 +109,24 @@ export const activeBookingTimes = (
     select: { id: true, startsAt: true, endsAt: true, blockedUntil: true, serviceName: true },
     orderBy: { startsAt: "asc" },
   });
+
+/**
+ * Writes several dates at once with a fixed number of queries (the calendar
+ * transaction has a short timeout): their old exceptions go, then the new ones
+ * are inserted. Dates in `weekly` only lose their exception.
+ */
+export const putDays = async (
+  tx: Tx,
+  { exceptions, weekly }: { exceptions: Map<LocalDate, MinuteInterval[]>; weekly: LocalDate[] },
+): Promise<void> => {
+  const dates = [...exceptions.keys(), ...weekly].map(localDateToDb);
+  await tx.scheduleException.deleteMany({ where: { date: { in: dates } } });
+  if (exceptions.size === 0) {
+    return;
+  }
+  await tx.scheduleException.createMany({ data: [...exceptions.keys()].map((date) => ({ date: localDateToDb(date) })) });
+  const intervals = [...exceptions].flatMap(([date, list]) => list.map((interval) => ({ date: localDateToDb(date), ...interval })));
+  if (intervals.length > 0) {
+    await tx.scheduleExceptionInterval.createMany({ data: intervals });
+  }
+};

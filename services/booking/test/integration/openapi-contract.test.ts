@@ -10,6 +10,7 @@ import {
   liveSchema,
   publicServiceSchema,
   readySchema,
+  scheduleDaysViewSchema,
   scheduleExceptionViewSchema,
   scheduleViewSchema,
   syncResponseSchema,
@@ -78,6 +79,16 @@ describe("documented responses (catalogue, availability, bookings, administratio
     scheduleExceptionViewSchema.parse(
       (await request(stack.app).put("/api/admin/schedule/exceptions/2027-03-08").set(admin).send({ closed: true }).expect(200)).body,
     );
+    scheduleDaysViewSchema.parse(
+      (
+        await request(stack.app)
+          .put("/api/admin/schedule/days")
+          .set(admin)
+          .send({ days: [{ date: "2027-03-09", intervals: [{ start: "10:00", end: "14:00" }] }, { date: "2027-03-10", useWeekly: true }] })
+          .expect(200)
+      ).body,
+    );
+    scheduleDaysViewSchema.parse((await request(stack.app).get("/api/admin/schedule/days?from=2027-03-01&to=2027-03-31").set(admin).expect(200)).body);
     z.strictObject({ timeZone: z.literal("Europe/Paris"), exceptions: z.array(scheduleExceptionViewSchema) }).parse(
       (await request(stack.app).get("/api/admin/schedule/exceptions?from=2027-03-01&to=2027-03-31").set(admin).expect(200)).body,
     );

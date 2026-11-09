@@ -2,8 +2,15 @@ import { Router, type Request } from "express";
 import { AppError } from "../../shared/errors/app-error.js";
 import { withValidatedBody } from "../../shared/http/validated-body.js";
 import type { BookingRules } from "./booking-rules.js";
-import { formatLocalTime, scheduleExceptionSchema, weeklyScheduleSchema, type WeeklyInterval } from "./schedule.schema.js";
-import type { ScheduleService } from "./schedule.service.js";
+import {
+  dayRangeSchema,
+  formatLocalTime,
+  scheduleDaysSchema,
+  scheduleExceptionSchema,
+  weeklyScheduleSchema,
+  type WeeklyInterval,
+} from "./schedule.schema.js";
+import type { DayView, ScheduleService } from "./schedule.service.js";
 import type { MinuteInterval } from "./slots.js";
 import { localDateSchema, localDateTimeOf, type LocalDate } from "./zoned-time.js";
 
@@ -20,6 +27,15 @@ const exceptionsView = (exceptions: Map<LocalDate, MinuteInterval[]>) =>
     date,
     closed: intervals.length === 0,
     intervals: intervals.map(intervalView),
+  }));
+
+const daysView = (days: DayView[]) =>
+  days.map((day) => ({
+    date: day.date,
+    weekday: day.weekday,
+    closed: day.intervals.length === 0,
+    source: day.source,
+    intervals: day.intervals.map(intervalView),
   }));
 
 const dateParam = (req: Request): LocalDate => {
@@ -95,6 +111,26 @@ export const createAdminScheduleRouter = ({
       const date = dateParam(req);
       await schedule.setException(date, intervals);
       res.status(200).json({ date, closed: intervals.length === 0, intervals: intervals.map(intervalView) });
+    }),
+  );
+
+  // Hours in effect on each date of a range (a week, a month).
+  router.get("/days", async (req, res) => {
+    const parsed = dayRangeSchema.safeParse({ from: req.query.from, to: req.query.to });
+    if (!parsed.success) {
+      throw new AppError(400, "Validation failed", {
+        code: "VALIDATION_FAILED",
+        details: { errors: parsed.error.issues.map((issue) => ({ field: issue.path.map(String), message: issue.message })) },
+      });
+    }
+    res.status(200).json({ timeZone: rules.timeZone, days: daysView(await schedule.getDays(parsed.data)) });
+  });
+
+  // Several dates at once, all or nothing.
+  router.put(
+    "/days",
+    withValidatedBody(scheduleDaysSchema, async (changes, res) => {
+      res.status(200).json({ timeZone: rules.timeZone, days: daysView(await schedule.setDays(changes)) });
     }),
   );
 

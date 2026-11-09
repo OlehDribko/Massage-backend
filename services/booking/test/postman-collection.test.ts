@@ -7,7 +7,7 @@ import { MARKETING_CONSENT_TEXT_VERSION } from "../src/modules/marketing/consent
 import { subscribeSchema } from "../src/modules/marketing/marketing.routes.js";
 import { ownSubscriptionSchema, syncSchema } from "../src/modules/profiles/profile.routes.js";
 import { updateOwnProfileSchema } from "../src/modules/profiles/profile.schema.js";
-import { scheduleExceptionSchema, weeklyScheduleSchema } from "../src/modules/schedule/schedule.schema.js";
+import { scheduleDaysSchema, scheduleExceptionSchema, weeklyScheduleSchema } from "../src/modules/schedule/schedule.schema.js";
 import { buildOpenApiDocument } from "../src/openapi/document.js";
 
 // The Postman collection (postman/, docs/postman.md) against the current API:
@@ -155,6 +155,7 @@ const BODY_SCHEMAS: Record<string, z.ZodType> = {
   cancelOwnBooking: clientCancelSchema,
   replaceWeeklySchedule: weeklyScheduleSchema,
   setScheduleException: scheduleExceptionSchema,
+  setScheduleDays: scheduleDaysSchema,
   cancelAnyBooking: adminCancelSchema,
 };
 
