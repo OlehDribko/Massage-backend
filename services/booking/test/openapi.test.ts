@@ -211,7 +211,7 @@ describe("OpenAPI document", () => {
       .map((operation) => `${operation.method.toUpperCase()} ${operation.path}`)
       .sort();
     expect(documented).toEqual(routes);
-    expect(documented).toHaveLength(27);
+    expect(documented).toHaveLength(29);
     const text = JSON.stringify(buildOpenApiDocument());
     expect(text).not.toContain("/api/admin/services");
     expect(Object.keys(buildOpenApiDocument().paths).some((path) => /login|signin|sign-in|signup|password|register/i.test(path))).toBe(false);

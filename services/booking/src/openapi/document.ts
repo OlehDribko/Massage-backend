@@ -5,7 +5,7 @@ import { actionTokenSchema } from "../modules/email/schema/email.schema.js";
 import { adminCancelSchema, createBookingSchema, rescheduleBookingSchema } from "../modules/bookings/booking.schema.js";
 import { ownSubscriptionSchema, syncSchema } from "../modules/profiles/profile.routes.js";
 import { updateOwnProfileSchema } from "../modules/profiles/profile.schema.js";
-import { scheduleExceptionSchema, weeklyScheduleSchema } from "../modules/schedule/schedule.schema.js";
+import { MAX_DAYS_PER_REQUEST, scheduleDaysSchema, scheduleExceptionSchema, weeklyScheduleSchema } from "../modules/schedule/schedule.schema.js";
 import { DEFAULT_BOOKING_RULES } from "../modules/schedule/booking-rules.js";
 import {
   adminBookingSchema,
@@ -22,6 +22,8 @@ import {
   publicServiceSchema,
   readySchema,
   scheduleExceptionViewSchema,
+  scheduleDayViewSchema,
+  scheduleDaysViewSchema,
   scheduleViewSchema,
   syncResponseSchema,
 } from "./schemas.js";
@@ -117,6 +119,8 @@ const COMPONENT_SCHEMAS = {
   AdminBooking: adminBookingSchema,
   Schedule: scheduleViewSchema,
   ScheduleException: scheduleExceptionViewSchema,
+  ScheduleDay: scheduleDayViewSchema,
+  ScheduleDays: scheduleDaysViewSchema,
   Live: liveSchema,
   Ready: readySchema,
   NotReady: notReadySchema,
@@ -303,6 +307,15 @@ const SCHEDULE_EXAMPLE = {
     { weekday: 1, start: "14:00", end: "20:30" },
   ],
   exceptions: [{ date: "2027-03-08", closed: true, intervals: [] }],
+};
+
+const SCHEDULE_DAYS_EXAMPLE = {
+  timeZone: "Europe/Paris",
+  days: [
+    { date: "2027-03-01", weekday: 1, closed: false, source: "exception", intervals: [{ start: "09:00", end: "13:00" }, { start: "14:00", end: "20:30" }] },
+    { date: "2027-03-02", weekday: 2, closed: true, source: "exception", intervals: [] },
+    { date: "2027-03-03", weekday: 3, closed: false, source: "weekly", intervals: [{ start: "09:00", end: "20:30" }] },
+  ],
 };
 
 const rules = DEFAULT_BOOKING_RULES;
@@ -751,6 +764,48 @@ const paths = (): OpenApiDocument["paths"] => ({
         {
           "200": ok("The new schedule", ref("Schedule"), SCHEDULE_EXAMPLE),
           "400": errors("Invalid body", [validation("intervals"), INVALID_JSON]),
+          "409": errors("Active bookings would fall outside the working hours", [scheduleConflict()]),
+        },
+        { ...adminOnly(), "503": [{ message: "The calendar is busy; retry shortly", code: "CALENDAR_BUSY", retryAfterSeconds: 2 }] },
+      ),
+    }),
+  },
+  "/api/admin/schedule/days": {
+    get: op({
+      operationId: "getScheduleDays",
+      tags: ["Admin: schedule"],
+      summary: "Hours in effect on each date of a range (a week, a month)",
+      description: `Every date from \`from\` to \`to\` (inclusive, at most ${String(MAX_DAYS_PER_REQUEST)} dates) with its working hours: the exception of the date if set, else the weekly rule. Verified administrator only.`,
+      security: PROTECTED,
+      parameters: [queryParam("from", "First date (required)", true, "2027-03-01"), queryParam("to", "Last date (required)", true, "2027-03-07")],
+      responses: withAuth(
+        {
+          "200": ok("Hours of each date", ref("ScheduleDays"), SCHEDULE_DAYS_EXAMPLE),
+          "400": errors("Missing or invalid dates, or too long a range", [validation("to")]),
+        },
+        adminOnly(),
+      ),
+    }),
+    put: op({
+      operationId: "setScheduleDays",
+      tags: ["Admin: schedule"],
+      summary: "Set the hours of several dates at once (a week, a month)",
+      description: `1–${String(MAX_DAYS_PER_REQUEST)} dates, each at most once: \`{ "date", "closed": true }\` for a day off, \`{ "date", "intervals": [...] }\` (1–6, not overlapping) for own working hours (different on each date if needed), or \`{ "date", "useWeekly": true }\` to go back to the weekly rule. All or nothing: refused as a whole if an active booking of any of these dates would fall outside (\`409 SCHEDULE_CONFLICT\` lists them). Returns the hours now in effect on these dates. Verified administrator only.`,
+      security: PROTECTED,
+      requestBody: {
+        required: true,
+        content: json(input(scheduleDaysSchema), {
+          days: [
+            { date: "2027-03-01", intervals: [{ start: "09:00", end: "13:00" }, { start: "14:00", end: "20:30" }] },
+            { date: "2027-03-02", closed: true },
+            { date: "2027-03-03", useWeekly: true },
+          ],
+        }),
+      },
+      responses: withAuth(
+        {
+          "200": ok("Hours now in effect on these dates", ref("ScheduleDays"), SCHEDULE_DAYS_EXAMPLE),
+          "400": errors("Invalid body", [validation("days"), INVALID_JSON]),
           "409": errors("Active bookings would fall outside the working hours", [scheduleConflict()]),
         },
         { ...adminOnly(), "503": [{ message: "The calendar is busy; retry shortly", code: "CALENDAR_BUSY", retryAfterSeconds: 2 }] },

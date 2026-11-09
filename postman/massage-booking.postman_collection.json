@@ -1736,6 +1736,108 @@
           }
         },
         {
+          "name": "Schedule: days of a range (week, month)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"scheduleDaysFrom\", \"scheduleDaysTo\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Set scheduleDaysFrom and scheduleDaysTo (YYYY-MM-DD, at most 62 days).\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/schedule/days?from={{scheduleDaysFrom}}&to={{scheduleDaysTo}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "schedule",
+                "days"
+              ],
+              "query": [
+                {
+                  "key": "from",
+                  "value": "{{scheduleDaysFrom}}",
+                  "description": "First date YYYY-MM-DD (required)."
+                },
+                {
+                  "key": "to",
+                  "value": "{{scheduleDaysTo}}",
+                  "description": "Last date YYYY-MM-DD (required, at most 62 days in all)."
+                }
+              ]
+            },
+            "description": "GET /api/admin/schedule/days (getScheduleDays). Hours in effect on each date of the range: the exception of the date, else the weekly rule. Read-only."
+          }
+        },
+        {
+          "name": "Schedule: ⚠️ set several dates (week, month)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"days\": [\n    {\n      \"date\": \"2027-03-01\",\n      \"intervals\": [\n        {\n          \"start\": \"09:00\",\n          \"end\": \"13:00\"\n        },\n        {\n          \"start\": \"14:00\",\n          \"end\": \"20:30\"\n        }\n      ]\n    },\n    {\n      \"date\": \"2027-03-02\",\n      \"intervals\": [\n        {\n          \"start\": \"12:00\",\n          \"end\": \"18:00\"\n        }\n      ]\n    },\n    {\n      \"date\": \"2027-03-03\",\n      \"closed\": true\n    },\n    {\n      \"date\": \"2027-03-04\",\n      \"useWeekly\": true\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/schedule/days",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "schedule",
+                "days"
+              ]
+            },
+            "description": "⚠️ PUT /api/admin/schedule/days (setScheduleDays). Up to 62 dates at once, all or nothing: own hours (`intervals`), `closed: true` or `useWeekly: true` (back to the weekly rule). **Invented example dates and hours: edit them before sending.** Refused with `409 SCHEDULE_CONFLICT` when active bookings would fall outside."
+          }
+        },
+        {
           "name": "Schedule: list exceptions",
           "event": [
             {

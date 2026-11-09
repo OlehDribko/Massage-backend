@@ -268,6 +268,20 @@ export const scheduleExceptionViewSchema = z
   .strictObject({ date: localDate, closed: z.boolean(), intervals: z.array(interval) })
   .meta({ id: "ScheduleException" });
 
+export const scheduleDayViewSchema = z
+  .strictObject({
+    date: localDate,
+    weekday: z.int().min(1).max(7).meta({ description: "ISO weekday, 1 = Monday … 7 = Sunday" }),
+    closed: z.boolean().meta({ description: "No working hours on this date" }),
+    source: z.enum(["weekly", "exception"]).meta({ description: "`weekly`: the weekly rule applies; `exception`: hours set for this date" }),
+    intervals: z.array(interval),
+  })
+  .meta({ id: "ScheduleDay" });
+
+export const scheduleDaysViewSchema = z
+  .strictObject({ timeZone: z.literal("Europe/Paris"), days: z.array(scheduleDayViewSchema) })
+  .meta({ id: "ScheduleDays" });
+
 export const scheduleViewSchema = z
   .strictObject({
     timeZone: z.literal("Europe/Paris"),
