@@ -33,7 +33,7 @@ const buildApp = (overrides: Partial<AppDeps> = {}) => {
     isShuttingDown: () => false,
     probeReadiness: () => Promise.resolve("ready"),
     appVersion: undefined,
-    corsOrigin: undefined,
+    cors: undefined,
     apiRouter: undefined,
     ...overrides,
   });

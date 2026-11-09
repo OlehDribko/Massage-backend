@@ -1,8 +1,8 @@
 import express from "express";
 import type { Express, Router } from "express";
-import cors from "cors";
 import { createErrorHandler, notFoundHandler } from "./middleware/error.middleware.js";
 import { createRequestLogging } from "./http/request-logging.js";
+import { createCorsMiddleware, type CorsPolicy } from "./http/cors.js";
 import { createHealthRouter, type ReadinessOutcome } from "./http/health.js";
 import { createDocsRouter } from "./openapi/docs-router.js";
 import type { Logger } from "./logging/logger.js";
@@ -19,7 +19,8 @@ export type AppDeps = {
   isShuttingDown: () => boolean;
   probeReadiness: () => Promise<ReadinessOutcome>;
   appVersion: string | undefined;
-  corsOrigin: string | undefined;
+  /** Allowed browser origins; undefined: no CORS headers. */
+  cors: CorsPolicy | undefined;
   /** Business routes under /api; undefined when none is enabled. */
   apiRouter: Router | undefined;
   /** /openapi.json and /docs (Swagger UI); absent when false or omitted. */
@@ -34,9 +35,10 @@ export const createApp = (deps: AppDeps): Express => {
 
   app.use(createRequestLogging(deps.logger));
 
-  // CORS headers only for the configured frontend origin; none otherwise.
-  if (deps.corsOrigin !== undefined) {
-    app.use(cors({ origin: deps.corsOrigin }));
+  // CORS headers only for allowed origins (before routes and the error
+  // handler, so errors and preflights carry them too); none otherwise.
+  if (deps.cors !== undefined) {
+    app.use(createCorsMiddleware(deps.cors));
   }
 
   app.use(

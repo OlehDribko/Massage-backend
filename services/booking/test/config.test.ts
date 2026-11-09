@@ -56,7 +56,7 @@ describe("loadConfig", () => {
       databaseConnectTimeoutMs: 5_000,
       databaseQueryTimeoutMs: 30_000,
       appVersion: undefined,
-      corsOrigin: undefined,
+      cors: undefined,
       shutdownTimeoutMs: 10_000,
       readinessTimeoutMs: 2_000,
       firebase: undefined,
@@ -141,7 +141,7 @@ describe("loadConfig", () => {
       actionTokenSecret: ACTION_SECRET,
       frontendUrl: "http://localhost:5173",
     });
-    expect(config.corsOrigin).toBe("http://localhost:5173");
+    expect(config.cors).toEqual({ origins: ["http://localhost:5173"], patterns: [] });
   });
 
   describe("Firebase", () => {

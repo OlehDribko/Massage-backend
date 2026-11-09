@@ -392,7 +392,16 @@ Brevo використовується лише для листів маркет
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | при `service-account-json` | **Секрет.** Вміст JSON-ключа; `project_id` має дорівнювати `FIREBASE_PROJECT_ID`. У логи й помилки не потрапляє |
 | `FIREBASE_AUTH_EMULATOR_HOST` | ні | Лише локально й у CI: тільки при `NODE_ENV≠production`, тільки з `demo-` проєктом і без облікових даних. При `NODE_ENV=production` — **помилка запуску** (емулятор приймає непідписані токени) |
 | `ENABLE_MARKETING_SUBSCRIPTION` | ні (`false`) | Вмикає `/api/marketing`; тоді обов'язкові `BREVO_API_KEY`, `EMAIL_FROM_NAME`, `EMAIL_FROM_EMAIL`, `ACTION_TOKEN_SECRET` (≥ 32 символи), `FRONTEND_URL` |
-| `FRONTEND_URL` | ні | CORS origin і база посилань у листах підписки |
+| `FRONTEND_URL` | ні | База посилань у листах підписки. Для CORS — лише коли обидва списки нижче порожні (тоді дозволено лише її origin) |
+| `CORS_ALLOWED_ORIGINS` | ні | Точні origin-и для CORS через кому, до 20. Невалідний запис — помилка запуску з назвою змінної й номером запису, без значення (`CORS_ALLOWED_ORIGINS[1]: must be an exact origin …`) |
+| `CORS_ALLOWED_ORIGIN_PATTERNS` | ні | Шаблони preview-деплоїв свого проєкту, через кому, до 10: `^https://…$`, усі крапки екрановані, без `\|` і `,`. Приклад: `^https://massage-e9zb-[a-z0-9]+-olehdrs-projects\.vercel\.app$` |
+
+**CORS** (`src/http/cors.ts`):
+- Origin, якого немає в списку й який не збігається з шаблоном, не отримує CORS-заголовків, тож браузер заблокує відповідь. Сервер при цьому не відповідає 500. Запити без `Origin` (curl, сервер Next.js) працюють як завжди.
+- Preflight дозволяє методи `GET, HEAD, PUT, PATCH, POST, DELETE` і заголовки `Authorization`, `Content-Type`, `Idempotency-Key`; відповідь кешується браузером на 10 хв (`Access-Control-Max-Age: 600`).
+- `Access-Control-Expose-Headers: Retry-After, Idempotent-Replayed` — frontend читає `Retry-After` у `503 CALENDAR_BUSY` / `AUTH_UNAVAILABLE`.
+- Cookies не використовуються (токен у `Authorization`), тому `Access-Control-Allow-Credentials` не надсилається.
+- CORS-заголовки є й у відповідях з помилками (middleware стоїть перед маршрутами й обробником помилок).
 
 ### Admin SDK в AWS (staging), безпечне підключення
 

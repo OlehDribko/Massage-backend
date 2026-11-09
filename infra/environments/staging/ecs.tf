@@ -110,8 +110,11 @@ resource "aws_ecs_task_definition" "api" {
         { name = "REQUIRE_FIREBASE_AUTH", value = "true" },
         { name = "FIREBASE_PROJECT_ID", value = var.firebase_project_id },
         { name = "FIREBASE_CREDENTIALS", value = "service-account-json" },
-        # The only browser origin allowed by CORS (exact match, no wildcard).
+        # Base of email links; also the CORS origin when the CORS lists are empty.
         { name = "FRONTEND_URL", value = var.frontend_url },
+        # CORS: exact origins and preview patterns (frontend_url stays the base of email links).
+        { name = "CORS_ALLOWED_ORIGINS", value = join(",", var.cors_allowed_origins) },
+        { name = "CORS_ALLOWED_ORIGIN_PATTERNS", value = join(",", var.cors_allowed_origin_patterns) },
         # Replaced with the deployed commit SHA by the deploy workflow.
         { name = "APP_VERSION", value = var.booking_image_commit_sha },
       ], local.api_notification_environment)

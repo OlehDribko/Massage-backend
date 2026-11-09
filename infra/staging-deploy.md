@@ -146,7 +146,13 @@ CloudFront дає HTTPS на `*.cloudfront.net` без власного доме
 - API: 256 CPU / 512 MiB, `X86_64`, `readonlyRootFilesystem`, `initProcessEnabled`, `stopTimeout` 30 с (застосунок завершується за 10 с).
   - Health check контейнера — `/health/live` через `node -e fetch(...)`, бо curl в образі немає. Liveness навмисно не залежить від БД.
   - Змінні: `NODE_ENV=production`, `DATABASE_SSL_MODE=verify-full`, `ENABLE_LEGACY_USER_ROUTES=false`, `APP_VERSION=<SHA>`.
-  - `FRONTEND_URL` — єдиний origin, якому браузер дозволяє звертатися до API (CORS, точний збіг, без wildcard). Задається змінною Terraform `frontend_url`, за замовчуванням `http://localhost:3000` для локального frontend. Зміна origin — новий `terraform apply` (нова ревізія task definition) і деплой.
+  - CORS — origin-и, яким браузер дозволяє звертатися до API:
+    - `CORS_ALLOWED_ORIGINS` (змінна Terraform `cors_allowed_origins`) — точні origin-и, за замовчуванням `https://massage-e9zb.vercel.app` і `http://localhost:3000`;
+    - `CORS_ALLOWED_ORIGIN_PATTERNS` (`cors_allowed_origin_patterns`) — preview-деплої лише Vercel-проєкту `massage-e9zb`: `^https://massage-e9zb-[a-z0-9]+-olehdrs-projects\.vercel\.app$`. Branch-адреси Vercel (`massage-e9zb-git-<гілка>-…`) під шаблон не підпадають;
+    - `FRONTEND_URL` (`frontend_url`, `http://localhost:3000`) — база посилань у листах; для CORS не використовується, поки списки не порожні.
+  - Обидві змінні Terraform мають валідацію (точний origin; шаблон з `^https://…$`, екранованими крапками, без `|` і `,`). Застосунок перевіряє їх ще раз на старті.
+  - API Gateway власного CORS (`cors_configuration`) не має і заголовки застосунку не змінює: preflight `OPTIONS` проходить через маршрут `$default` до API.
+  - Зміна списку — `terraform apply` (нова ревізія task definition) і деплой API, бо workflow бере env з останньої ACTIVE ревізії.
   - Секрет: `DATABASE_URL`.
 - Міграції: `MIGRATION_DATABASE_SSL_MODE=verify-full`, `BOOKING_RUNTIME_ROLE=booking_app`, секрет `MIGRATION_DATABASE_URL`. Root filesystem лишається доступним на запис для Prisma CLI.
 

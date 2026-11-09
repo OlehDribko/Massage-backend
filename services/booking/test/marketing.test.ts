@@ -55,7 +55,7 @@ const setup = (options: { failSends?: boolean } = {}) => {
     isShuttingDown: () => false,
     probeReadiness: () => Promise.resolve("ready"),
     appVersion: undefined,
-    corsOrigin: undefined,
+    cors: undefined,
     apiRouter: api,
   });
   return {
