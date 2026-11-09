@@ -260,13 +260,39 @@ variable "firebase_project_id" {
 }
 
 variable "frontend_url" {
-  description = "FRONTEND_URL of the API: the only browser origin allowed by CORS (exact origin: scheme, host and optional port; no path, no trailing slash, no wildcard). Marketing email links use it too, but marketing is off on staging."
+  description = "FRONTEND_URL of the API: base of marketing email links (marketing is off on staging). The CORS origin only while cors_allowed_origins and cors_allowed_origin_patterns are both empty. Exact origin: scheme, host and optional port; no path, no trailing slash, no wildcard."
   type        = string
   default     = "http://localhost:3000"
 
   validation {
     condition     = can(regex("^https?://[a-z0-9.-]+(:[0-9]{1,5})?$", var.frontend_url))
     error_message = "frontend_url must be an exact origin such as https://app.example.com or http://localhost:3000 (no path, no trailing slash, no wildcard)."
+  }
+}
+
+variable "cors_allowed_origins" {
+  description = "CORS_ALLOWED_ORIGINS of the API: exact browser origins allowed by CORS (scheme, lowercase host, optional port; no path, no trailing slash, no wildcard). Independent of frontend_url, which stays the base of email links."
+  type        = list(string)
+  default     = ["https://massage-e9zb.vercel.app", "http://localhost:3000"]
+
+  validation {
+    condition     = length(var.cors_allowed_origins) <= 20 && alltrue([for origin in var.cors_allowed_origins : can(regex("^https?://[a-z0-9.-]+(:[0-9]{1,5})?$", origin))])
+    error_message = "cors_allowed_origins: at most 20 exact origins such as https://app.example.com or http://localhost:3000 (no path, no trailing slash, no wildcard)."
+  }
+}
+
+variable "cors_allowed_origin_patterns" {
+  description = "CORS_ALLOWED_ORIGIN_PATTERNS of the API: anchored regular expressions for preview deployments of this frontend project only (never every *.vercel.app). Each starts with ^https://, ends with $, escapes every dot as \\. and has no | or ,."
+  type        = list(string)
+  # Preview deployments of the Vercel project massage-e9zb (team olehdrs-projects).
+  default = ["^https://massage-e9zb-[a-z0-9]+-olehdrs-projects\\.vercel\\.app$"]
+
+  validation {
+    condition = length(var.cors_allowed_origin_patterns) <= 10 && alltrue([
+      for pattern in var.cors_allowed_origin_patterns :
+      length(pattern) <= 200 && startswith(pattern, "^https://") && endswith(pattern, "$") && !can(regex("[|,]", pattern)) && !can(regex("(^|[^\\\\])\\.", pattern))
+    ])
+    error_message = "cors_allowed_origin_patterns: at most 10 patterns, each starting with ^https://, ending with $, every dot escaped as \\., without | or , (at most 200 characters)."
   }
 }
 

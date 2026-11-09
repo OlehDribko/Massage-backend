@@ -52,7 +52,7 @@ app.use(
     isShuttingDown: shutdownState.isShuttingDown,
     probeReadiness: () => Promise.resolve("ready"),
     appVersion: undefined,
-    corsOrigin: undefined,
+    cors: undefined,
     apiRouter: undefined,
   }),
 );

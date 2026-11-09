@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { loadCorsPolicy, type CorsPolicy } from "../http/cors.js";
 import { loadNotificationConfig, type NotificationConfig } from "../notifications/config.js";
 import { parseDatabaseUrl } from "../shared/database/database-url.js";
 
@@ -178,7 +179,8 @@ export type AppConfig = {
   databaseConnectTimeoutMs: number;
   databaseQueryTimeoutMs: number;
   appVersion: string | undefined;
-  corsOrigin: string | undefined;
+  /** Browser origins allowed by CORS; undefined: no CORS headers. */
+  cors: CorsPolicy | undefined;
   shutdownTimeoutMs: number;
   readinessTimeoutMs: number;
   // Absent: no /api/me routes (authentication is unavailable, fail closed).
@@ -249,6 +251,15 @@ export const loadConfig = (env: EnvSource): ConfigResult => {
     return { ok: false, errors: marketing.errors };
   }
 
+  const corsPolicy = loadCorsPolicy({
+    allowedOrigins: env.CORS_ALLOWED_ORIGINS,
+    allowedOriginPatterns: env.CORS_ALLOWED_ORIGIN_PATTERNS,
+    frontendUrl: base.data.FRONTEND_URL,
+  });
+  if (!corsPolicy.ok) {
+    return { ok: false, errors: corsPolicy.errors };
+  }
+
   const notifications = loadNotificationConfig(env);
   if (!notifications.ok) {
     return { ok: false, errors: notifications.errors };
@@ -266,7 +277,7 @@ export const loadConfig = (env: EnvSource): ConfigResult => {
       databaseConnectTimeoutMs: base.data.DATABASE_CONNECT_TIMEOUT_MS,
       databaseQueryTimeoutMs: base.data.DATABASE_QUERY_TIMEOUT_MS,
       appVersion: base.data.APP_VERSION,
-      corsOrigin: base.data.FRONTEND_URL,
+      cors: corsPolicy.policy,
       shutdownTimeoutMs: base.data.SHUTDOWN_TIMEOUT_MS,
       readinessTimeoutMs: base.data.READINESS_TIMEOUT_MS,
       firebase: firebase.value,

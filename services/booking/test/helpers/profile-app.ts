@@ -94,7 +94,7 @@ export const createProfileTestApp = (
     isShuttingDown: () => false,
     probeReadiness: () => Promise.resolve("ready"),
     appVersion: undefined,
-    corsOrigin: undefined,
+    cors: undefined,
     apiRouter: api,
   });
 

@@ -176,7 +176,7 @@ export const createApplication = ({
     isShuttingDown,
     probeReadiness,
     appVersion: config.appVersion,
-    corsOrigin: config.corsOrigin,
+    cors: config.cors,
     apiRouter: api,
     apiDocs: config.apiDocs,
   });

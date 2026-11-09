@@ -85,7 +85,7 @@ describe("documented responses (profile, marketing, health)", () => {
       isShuttingDown: () => false,
       probeReadiness: () => Promise.resolve("ready"),
       appVersion: "0123456789abcdef0123456789abcdef01234567",
-      corsOrigin: undefined,
+      cors: undefined,
       apiRouter: api,
     });
 

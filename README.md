@@ -73,7 +73,9 @@ npm run prisma -- generate    # Prisma Client у services/booking/src/generated 
 | `DATABASE_CONNECT_TIMEOUT_MS` | `5000` | Таймаут встановлення з'єднання |
 | `DATABASE_QUERY_TIMEOUT_MS` | `30000` | Клієнтський таймаут `pg` для кожного запиту застосунку (зокрема через Prisma); після нього з'єднання знищується. Readiness має власний коротший ліміт |
 | `APP_VERSION` | — | Повертається в `/health/ready` |
-| `FRONTEND_URL` | — | CORS origin; без нього CORS-заголовки не додаються |
+| `FRONTEND_URL` | — | База посилань у листах підписки. Поки обидва списки CORS порожні, її origin — єдиний дозволений для CORS |
+| `CORS_ALLOWED_ORIGINS` | — | Точні origin-и для CORS через кому (схема, хост у нижньому регістрі, порт; без шляху, `/` у кінці й wildcard), до 20. Якщо задано цей список або шаблони, `FRONTEND_URL` для CORS не використовується |
+| `CORS_ALLOWED_ORIGIN_PATTERNS` | — | Шаблони (regex) лише для preview-деплоїв свого frontend-проєкту, через кому, до 10: `^https://…$`, кожна крапка — `\.`, без `\|` і `,`. Ніколи не `*.vercel.app` — це будь-який чужий сайт на Vercel |
 | `SHUTDOWN_TIMEOUT_MS` | `10000` | Граничний час graceful shutdown |
 | `READINESS_TIMEOUT_MS` | `2000` | Граничний час перевірки БД у `/health/ready` |
 | `REQUIRE_FIREBASE_AUTH` | `false` | Режим обов'язкової авторизації: при `true` запуск без `FIREBASE_PROJECT_ID` — помилка конфігурації |
