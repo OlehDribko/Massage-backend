@@ -236,6 +236,8 @@ const dateParam = pathParam("date", "Local date of the studio, YYYY-MM-DD", { ty
 const SERVICE_EXAMPLE = {
   id: SERVICE_ID,
   name: "Massage example",
+  description: "Un massage d’exemple pour illustrer la réponse.",
+  features: ["Première particularité.", "Seconde particularité."],
   durationMinutes: 60,
   priceCents: 8500,
   effectivePriceCents: 8500,
@@ -388,7 +390,7 @@ const paths = (): OpenApiDocument["paths"] => ({
       operationId: "listServices",
       tags: ["Catalogue"],
       summary: "List bookable services",
-      description: "Fixed catalogue; only bookable services. Photos, long descriptions and card design live in the frontend, keyed by `id`. Prices for a booking created now: see Money. `Cache-Control: no-store`. Public.",
+      description: "Fixed catalogue; only bookable services. Each service carries its client-facing `description` and `features` (French, plain text; maintained with the catalogue). Photos and card design live in the frontend, keyed by `id`. Prices for a booking created now: see Money. `Cache-Control: no-store`. Public.",
       security: PUBLIC,
       responses: {
         "200": ok("Bookable services", object({ services: { type: "array", items: ref("Service") } }), { services: [SERVICE_EXAMPLE] }),
