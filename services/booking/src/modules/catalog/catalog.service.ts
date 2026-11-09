@@ -3,13 +3,17 @@ import { AppError } from "../../shared/errors/app-error.js";
 import { pricingAt } from "./pricing.js";
 
 /**
- * Public view of a service: what the frontend needs to show and book it.
- * Photos, long descriptions and card design live in the frontend, keyed by
- * the service id.
+ * Public view of a service: what the frontend needs to show and book it,
+ * including its client-facing texts (set by data migrations). Photos and card
+ * design live in the frontend, keyed by the service id.
  */
 export type PublicServiceView = {
   id: string;
   name: string;
+  /** Short client-facing text (French); null when the service has none. */
+  description: string | null;
+  /** Client-facing features shown as a list, in order; empty when none. */
+  features: string[];
   durationMinutes: number;
   /** Regular price (integer euro cents). */
   priceCents: number;
@@ -27,6 +31,8 @@ export const toPublicServiceView = (service: Service, now: Date): PublicServiceV
   return {
     id: service.id,
     name: service.name,
+    description: service.description,
+    features: service.features,
     durationMinutes: service.durationMinutes,
     priceCents: pricing.priceCents,
     effectivePriceCents: pricing.effectivePriceCents,

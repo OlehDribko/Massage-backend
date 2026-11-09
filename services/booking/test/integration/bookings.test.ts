@@ -94,14 +94,14 @@ describe("access: guests, clients and admins", () => {
 
     const list = await request(stack.app).get("/api/services");
     expect(list.status).toBe(200);
-    // Only what the frontend needs; no description (texts live in the frontend).
+    // Only what the frontend needs; a service without texts has description null and no features.
     expect(list.body).toEqual({
       services: [
-        { id: serviceId, name: "Massage 60", durationMinutes: 60, priceCents: 6500, effectivePriceCents: 6500, salePriceCents: null, saleEndsAt: null, currency: "EUR" },
+        { id: serviceId, name: "Massage 60", description: null, features: [], durationMinutes: 60, priceCents: 6500, effectivePriceCents: 6500, salePriceCents: null, saleEndsAt: null, currency: "EUR" },
       ],
     });
     expect((await request(stack.app).get(`/api/services/${serviceId}`)).body).toEqual({
-      service: { id: serviceId, name: "Massage 60", durationMinutes: 60, priceCents: 6500, effectivePriceCents: 6500, salePriceCents: null, saleEndsAt: null, currency: "EUR" },
+      service: { id: serviceId, name: "Massage 60", description: null, features: [], durationMinutes: 60, priceCents: 6500, effectivePriceCents: 6500, salePriceCents: null, saleEndsAt: null, currency: "EUR" },
     });
     expect((await availability(serviceId, "2027-03-02")).status).toBe(200);
 
@@ -163,7 +163,7 @@ describe("catalogue", () => {
     }
     expect((await request(stack.app).get("/api/services")).body).toEqual({
       services: [
-        { id: serviceId, name: "Massage 60", durationMinutes: 60, priceCents: 6500, effectivePriceCents: 6500, salePriceCents: null, saleEndsAt: null, currency: "EUR" },
+        { id: serviceId, name: "Massage 60", description: null, features: [], durationMinutes: 60, priceCents: 6500, effectivePriceCents: 6500, salePriceCents: null, saleEndsAt: null, currency: "EUR" },
       ],
     });
   });
@@ -264,7 +264,7 @@ describe("sale price", () => {
     const during = await request(stack.app).get(`/api/services/${id}`).expect(200);
     expect(during.headers["cache-control"]).toBe("no-store");
     expect(during.body).toEqual({
-      service: { id, name: "Massage 60", durationMinutes: 60, priceCents: 8500, effectivePriceCents: 6900, salePriceCents: 6900, saleEndsAt: SALE_END, currency: "EUR" },
+      service: { id, name: "Massage 60", description: null, features: [], durationMinutes: 60, priceCents: 8500, effectivePriceCents: 6900, salePriceCents: 6900, saleEndsAt: SALE_END, currency: "EUR" },
     });
     expect((await request(stack.app).get("/api/services")).body).toMatchObject({ services: [{ id, effectivePriceCents: 6900, saleEndsAt: SALE_END }] });
 
