@@ -82,6 +82,35 @@ export const deleteException = async (tx: Tx, date: LocalDate): Promise<boolean>
   return result.count > 0;
 };
 
+/** Closed dates (ScheduleClosure) in a range → when each was closed. */
+export const loadClosures = async (db: Tx, range: { from: LocalDate; to?: LocalDate }): Promise<Map<LocalDate, Date>> => {
+  const rows = await db.scheduleClosure.findMany({
+    where: {
+      date: {
+        gte: localDateToDb(range.from),
+        ...(range.to === undefined ? {} : { lte: localDateToDb(range.to) }),
+      },
+    },
+    orderBy: { date: "asc" },
+  });
+  return new Map(rows.map((row) => [localDateFromDb(row.date), row.createdAt]));
+};
+
+export const loadClosuresOf = async (db: Tx, dates: LocalDate[]): Promise<Map<LocalDate, Date>> => {
+  const rows = await db.scheduleClosure.findMany({ where: { date: { in: dates.map(localDateToDb) } } });
+  return new Map(rows.map((row) => [localDateFromDb(row.date), row.createdAt]));
+};
+
+/** Closes the dates; already closed dates keep their closure (and its time). */
+export const putClosures = async (tx: Tx, dates: LocalDate[]): Promise<void> => {
+  await tx.scheduleClosure.createMany({ data: dates.map((date) => ({ date: localDateToDb(date) })), skipDuplicates: true });
+};
+
+/** Removes the closures of the dates (only them: the schedule underneath is untouched). */
+export const deleteClosures = async (tx: Tx, dates: LocalDate[]): Promise<void> => {
+  await tx.scheduleClosure.deleteMany({ where: { date: { in: dates.map(localDateToDb) } } });
+};
+
 export type ActiveBookingTime = {
   id: string;
   startsAt: Date;

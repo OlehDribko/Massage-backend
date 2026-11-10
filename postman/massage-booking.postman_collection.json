@@ -1838,6 +1838,97 @@
           }
         },
         {
+          "name": "Schedule: ⚠️ close dates (bookings stay)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dates\": [\n    \"2027-03-10\",\n    \"2027-03-11\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/schedule/closures",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "schedule",
+                "closures"
+              ]
+            },
+            "description": "⚠️ POST /api/admin/schedule/closures (closeScheduleDates). 1–62 distinct dates: closed for new bookings and moves; existing bookings stay valid and are listed in `bookings` (nothing is cancelled). Repeating it changes nothing. **Invented example dates: edit them before sending.**"
+          }
+        },
+        {
+          "name": "Schedule: ⚠️ reopen dates",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dates\": [\n    \"2027-03-10\",\n    \"2027-03-11\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/schedule/closures/reopen",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "schedule",
+                "closures",
+                "reopen"
+              ]
+            },
+            "description": "⚠️ POST /api/admin/schedule/closures/reopen (reopenScheduleDates). Removes only the closures: each date's own schedule (exception or weekly rule) applies again — check `effective.open`, the schedule itself may have no hours. **Invented example dates: edit them before sending.**"
+          }
+        },
+        {
           "name": "Schedule: list exceptions",
           "event": [
             {

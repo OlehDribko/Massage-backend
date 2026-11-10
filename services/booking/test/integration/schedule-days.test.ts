@@ -26,6 +26,8 @@ const daySchema = z.strictObject({
   closed: z.boolean(),
   source: z.enum(["weekly", "exception"]),
   intervals: z.array(z.strictObject({ start: z.string(), end: z.string() })),
+  closure: z.strictObject({ closedAt: z.string() }).nullable(),
+  effective: z.strictObject({ open: z.boolean(), intervals: z.array(z.strictObject({ start: z.string(), end: z.string() })) }),
 });
 const daysOf = (body: unknown) => z.strictObject({ timeZone: z.literal("Europe/Paris"), days: z.array(daySchema) }).parse(body).days;
 
@@ -76,7 +78,11 @@ describe("schedule of a week or a month", () => {
     ]).expect(200);
     expect(daysOf(changed.body).map((day) => day.date)).toEqual(["2027-03-02", "2027-03-03", "2027-03-04", "2027-03-05"]);
 
-    const week = daysOf((await getDays("2027-03-01", "2027-03-07").expect(200)).body);
+    const days = daysOf((await getDays("2027-03-01", "2027-03-07").expect(200)).body);
+    // No closures here: what can be booked is the schedule itself.
+    expect(days.every((day) => day.closure === null && day.effective.open === !day.closed)).toBe(true);
+    expect(days.map((day) => day.effective.intervals)).toEqual(days.map((day) => day.intervals));
+    const week = days.map(({ closure: _closure, effective: _effective, ...schedule }) => schedule);
     expect(week).toEqual([
       { date: "2027-03-01", weekday: 1, closed: false, source: "weekly", intervals: [{ start: "09:00", end: "20:30" }] },
       {

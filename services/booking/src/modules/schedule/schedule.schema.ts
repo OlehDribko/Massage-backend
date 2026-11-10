@@ -102,6 +102,13 @@ export const scheduleDaysSchema = z
   })
   .transform((body) => body.days);
 
+/** Dates to close or reopen: 1–62 distinct dates (any dates, e.g. picked in a month view). */
+export const scheduleClosuresSchema = z
+  .object({ dates: z.array(localDateSchema).min(1).max(MAX_DAYS_PER_REQUEST) })
+  .strict()
+  .refine((body) => new Set(body.dates).size === body.dates.length, { message: "each date at most once", path: ["dates"] })
+  .transform((body) => body.dates);
+
 /** `from`–`to` (inclusive) of a day view: both required, at most MAX_DAYS_PER_REQUEST dates. */
 const spanOf = (range: { from: string; to: string }): number | undefined =>
   localDateSchema.safeParse(range.from).success && localDateSchema.safeParse(range.to).success

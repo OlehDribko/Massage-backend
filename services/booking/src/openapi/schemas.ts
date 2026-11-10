@@ -272,15 +272,35 @@ export const scheduleDayViewSchema = z
   .strictObject({
     date: localDate,
     weekday: z.int().min(1).max(7).meta({ description: "ISO weekday, 1 = Monday … 7 = Sunday" }),
-    closed: z.boolean().meta({ description: "No working hours on this date" }),
+    closed: z.boolean().meta({ description: "The date's schedule (exception or weekly rule) has no working hours. Not about closures: see `closure`" }),
     source: z.enum(["weekly", "exception"]).meta({ description: "`weekly`: the weekly rule applies; `exception`: hours set for this date" }),
-    intervals: z.array(interval),
+    intervals: z.array(interval).meta({ description: "The date's schedule — also what the date returns to when its closure is removed" }),
+    closure: z
+      .strictObject({ closedAt: instant })
+      .nullable()
+      .meta({ description: "The date is closed for new bookings and moves (existing bookings stay); null: not closed" }),
+    effective: z
+      .strictObject({
+        open: z.boolean().meta({ description: "Something can be booked on this date (subject to booking rules and other bookings)" }),
+        intervals: z.array(interval).meta({ description: "Hours open for booking: none while closed, else the schedule" }),
+      })
+      .meta({ description: "What can be booked now" }),
   })
   .meta({ id: "ScheduleDay" });
 
 export const scheduleDaysViewSchema = z
   .strictObject({ timeZone: z.literal("Europe/Paris"), days: z.array(scheduleDayViewSchema) })
   .meta({ id: "ScheduleDays" });
+
+export const scheduleClosureResultSchema = z
+  .strictObject({
+    timeZone: z.literal("Europe/Paris"),
+    days: z.array(scheduleDayViewSchema),
+    bookings: z
+      .array(z.strictObject({ bookingId: z.uuid(), date: localDate, startsAt: instant, endsAt: instant, serviceName: z.string() }))
+      .meta({ description: "Confirmed bookings, not yet ended, on the closed dates: they stay valid (nothing is cancelled)" }),
+  })
+  .meta({ id: "ScheduleClosureResult" });
 
 export const scheduleViewSchema = z
   .strictObject({
