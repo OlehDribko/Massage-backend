@@ -22,6 +22,8 @@ export type WorkerDeps = {
   logger: Logger;
   workerId: string;
   studioEmail: string;
+  /** EMAIL_FROM_NAME: signature of client emails. */
+  senderName: string;
   /** null = no filter (production only). */
   recipientAllowlist: ReadonlySet<string> | null;
   tuning: WorkerTuning;
@@ -145,7 +147,10 @@ export const createWorker = (deps: WorkerDeps): Worker => {
       return;
     }
 
-    const email = renderEmail(parsed.event, delivery.recipientRole, studio);
+    const email = renderEmail(parsed.event, delivery.recipientRole, {
+      senderName: deps.senderName,
+      ...(studio === undefined ? {} : { studio }),
+    });
     const outcome = await deps.provider.send({
       to: recipient,
       subject: email.subject,

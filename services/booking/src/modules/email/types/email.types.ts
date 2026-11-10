@@ -6,4 +6,5 @@ export type SendTransactionalEmailType = {
   to: EmailResipient[];
   subject: string;
   htmlContent: string;
+  textContent: string;
 };

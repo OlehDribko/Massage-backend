@@ -71,6 +71,7 @@ const makeWorker = (
       logger: logs.logger,
       workerId: options.id ?? "worker-test",
       studioEmail: options.studioEmail ?? STUDIO,
+      senderName: "Стефанія Бень",
       recipientAllowlist: options.allowlist === undefined || options.allowlist === null ? null : new Set(options.allowlist),
       tuning: options.tuning ?? TUNING,
       now,

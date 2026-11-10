@@ -1,3 +1,4 @@
+import { oneLine, renderEmailLayout, type EmailDetail, type RenderedEmail } from "../shared/email/layout.js";
 import type { BookingEvent, BookingPayload } from "./event-contract.js";
 
 /**
@@ -5,11 +6,13 @@ import type { BookingEvent, BookingPayload } from "./event-contract.js";
  * values are escaped in HTML; every email has a plain-text version.
  * Client emails contain no internal identifiers (booking, profile, event ids)
  * and no studio-internal data. No links: the frontend has no agreed booking
- * page yet, and the emails are complete without one.
+ * page yet, and the emails are complete without one. Layout and colours:
+ * src/shared/email/layout.ts.
  */
 export type RecipientRole = "client" | "studio";
 
-export type RenderedEmail = { subject: string; html: string; text: string };
+export type { RenderedEmail } from "../shared/email/layout.js";
+export { escapeHtml } from "../shared/email/layout.js";
 
 /**
  * The studio's email about a new or moved booking compares the latest state
@@ -20,26 +23,6 @@ export type StudioContext =
   | { kind: "new" }
   | { kind: "moved"; previousStartsAt: string }
   | { kind: "unchanged" };
-
-const HTML_ESCAPES: Readonly<Record<string, string>> = {
-  "&": "&amp;",
-  "<": "&lt;",
-  ">": "&gt;",
-  '"': "&quot;",
-  "'": "&#39;",
-};
-
-export const escapeHtml = (value: string): string => value.replace(/[&<>"']/g, (char) => HTML_ESCAPES[char] ?? char);
-
-/** Single line, no control characters (subjects and table values). */
-const oneLine = (value: string): string =>
-  Array.from(value, (char) => {
-    const code = char.charCodeAt(0);
-    return code < 0x20 || code === 0x7f ? " " : char;
-  })
-    .join("")
-    .replace(/ {2,}/g, " ")
-    .trim();
 
 const dateTimeFormatters = new Map<string, Intl.DateTimeFormat>();
 
@@ -76,57 +59,17 @@ export const formatDuration = (minutes: number): string => `${String(minutes)}\u
 const zoneLabel = (timeZone: string): string =>
   timeZone === "Europe/Paris" ? "heure de Paris" : `fuseau ${timeZone}`;
 
-type Fact = [label: string, value: string];
-
-const render = ({
-  subject,
-  greeting,
-  paragraphs,
-  facts,
-  closing,
-}: {
-  subject: string;
-  greeting: string;
-  paragraphs: string[];
-  facts: Fact[];
-  closing: string;
-}): RenderedEmail => {
-  const cleanFacts = facts.map(([label, value]): Fact => [label, oneLine(value)]);
-  const text = [
-    greeting,
-    "",
-    ...paragraphs.flatMap((paragraph) => [paragraph, ""]),
-    ...cleanFacts.map(([label, value]) => `${label} : ${value}`),
-    "",
-    closing,
-  ].join("\n");
-  const html = [
-    "<!doctype html>",
-    '<html lang="fr"><body style="font-family:Arial,Helvetica,sans-serif;color:#222;line-height:1.5">',
-    `<p>${escapeHtml(greeting)}</p>`,
-    ...paragraphs.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`),
-    '<table role="presentation" style="border-collapse:collapse">',
-    ...cleanFacts.map(
-      ([label, value]) =>
-        `<tr><td style="padding:2px 12px 2px 0;color:#555">${escapeHtml(label)}</td><td style="padding:2px 0"><strong>${escapeHtml(value)}</strong></td></tr>`,
-    ),
-    "</table>",
-    `<p>${escapeHtml(closing)}</p>`,
-    "</body></html>",
-  ].join("\n");
-  return { subject: oneLine(subject), html, text };
-};
-
 const when = (iso: string, payload: BookingPayload): string =>
   `${formatDateTime(iso, payload.timeZone)} (${zoneLabel(payload.timeZone)})`;
 
-const serviceFacts = (payload: BookingPayload): Fact[] => [
+const serviceDetails = (payload: BookingPayload): EmailDetail[] => [
   ["Prestation", payload.service.name],
   ["Durée", formatDuration(payload.service.durationMinutes)],
-  ["Prix", `${formatPrice(payload.service.priceCents)} — paiement sur place`],
+  ["Prix", formatPrice(payload.service.priceCents)],
+  ["Paiement", "sur place, le jour du rendez-vous"],
 ];
 
-const clientFacts = (payload: BookingPayload): Fact[] => [
+const clientDetails = (payload: BookingPayload): EmailDetail[] => [
   ["Client", payload.client.name ?? "(nom non renseigné)"],
   ["E-mail", payload.client.email ?? "(non renseigné)"],
   ["Téléphone", payload.client.phone ?? "(non renseigné)"],
@@ -137,104 +80,116 @@ const greetingFor = (payload: BookingPayload): string => {
   return name === "" ? "Bonjour," : `Bonjour ${name},`;
 };
 
-const reasonFacts = (reason: string | null): Fact[] => (reason === null ? [] : [["Motif", reason]]);
+const reasonDetails = (reason: string | null): EmailDetail[] => (reason === null ? [] : [["Motif", reason]]);
 
-export const renderEmail = (
-  event: BookingEvent,
-  recipient: RecipientRole,
-  studio: StudioContext = event.type === "booking.rescheduled"
-    ? { kind: "moved", previousStartsAt: event.payload.previous.startsAt }
-    : { kind: "new" },
-): RenderedEmail => {
+export type RenderOptions = {
+  /** Sender name from configuration (EMAIL_FROM_NAME), used as the signature of client emails. */
+  senderName: string;
+  /** Studio emails about a new or moved booking; defaults to what the event itself says. */
+  studio?: StudioContext;
+};
+
+export const renderEmail = (event: BookingEvent, recipient: RecipientRole, options: RenderOptions): RenderedEmail => {
   const { payload } = event;
   const service = oneLine(payload.service.name);
+  const at = formatDateTime(payload.startsAt, payload.timeZone);
 
   if (recipient === "client") {
     const greeting = greetingFor(payload);
-    const closing = "À bientôt.";
+    const signature = ["À bientôt,", options.senderName];
     switch (event.type) {
       case "booking.created":
-        return render({
+        return renderEmailLayout({
           subject: "Votre rendez-vous est confirmé",
-          greeting,
-          paragraphs: ["Votre rendez-vous est confirmé."],
-          facts: [["Date", when(payload.startsAt, payload)], ...serviceFacts(payload)],
-          closing,
+          preheader: `${service}, ${at}`,
+          title: "Rendez-vous confirmé",
+          paragraphs: [greeting, "Votre rendez-vous est confirmé. Voici le récapitulatif."],
+          details: [["Date", when(payload.startsAt, payload)], ...serviceDetails(payload)],
+          signature,
         });
       case "booking.rescheduled":
-        return render({
+        return renderEmailLayout({
           subject: "Votre rendez-vous a été déplacé",
-          greeting,
-          paragraphs: ["Votre rendez-vous a été déplacé. Il est confirmé au nouvel horaire ci-dessous."],
-          facts: [
-            ["Ancien horaire", when(event.payload.previous.startsAt, payload)],
+          preheader: `Nouvel horaire : ${at}`,
+          title: "Rendez-vous déplacé",
+          paragraphs: [greeting, "Votre rendez-vous a été déplacé. Il est confirmé au nouvel horaire ci-dessous."],
+          details: [
             ["Nouvel horaire", when(payload.startsAt, payload)],
-            ...serviceFacts(payload),
+            ["Ancien horaire", when(event.payload.previous.startsAt, payload)],
+            ...serviceDetails(payload),
           ],
-          closing,
+          signature,
         });
       case "booking.cancelled":
-        return render({
+        return renderEmailLayout({
           subject: "Votre rendez-vous a été annulé",
-          greeting,
+          preheader: `${service}, ${at}`,
+          title: "Rendez-vous annulé",
           paragraphs: [
+            greeting,
             event.payload.cancellation.by === "client"
               ? "Votre rendez-vous a été annulé à votre demande."
               : "Le studio a annulé votre rendez-vous.",
           ],
-          facts: [
+          details: [
             ["Date", when(payload.startsAt, payload)],
             ["Prestation", payload.service.name],
             ["Durée", formatDuration(payload.service.durationMinutes)],
-            ...reasonFacts(event.payload.cancellation.reason),
+            ...reasonDetails(event.payload.cancellation.reason),
           ],
-          closing: "Vous pouvez reprendre rendez-vous à tout moment.",
+          notes: ["Vous pouvez reprendre rendez-vous à tout moment."],
+          signature,
         });
     }
   }
 
-  const closing = "Message automatique du système de réservation.";
-  if (event.type !== "booking.cancelled" && studio.kind !== "moved") {
-    return render({
-      subject: `Nouveau rendez-vous : ${service}, ${formatDateTime(payload.startsAt, payload.timeZone)}`,
-      greeting: "Bonjour,",
-      paragraphs: ["Un nouveau rendez-vous a été réservé."],
-      facts: [["Date", when(payload.startsAt, payload)], ...serviceFacts(payload), ...clientFacts(payload)],
-      closing,
+  const signature = ["Message automatique du système de réservation."];
+  const studio: StudioContext =
+    options.studio ??
+    (event.type === "booking.rescheduled" ? { kind: "moved", previousStartsAt: event.payload.previous.startsAt } : { kind: "new" });
+
+  if (event.type === "booking.cancelled") {
+    return renderEmailLayout({
+      subject: `Rendez-vous annulé : ${service}, ${at}`,
+      preheader: event.payload.cancellation.by === "client" ? "Annulé par le client" : "Annulé par le studio",
+      title: "Rendez-vous annulé",
+      paragraphs: [
+        "Bonjour,",
+        event.payload.cancellation.by === "client"
+          ? "Le client a annulé son rendez-vous."
+          : "Le rendez-vous a été annulé par le studio.",
+      ],
+      details: [
+        ["Date", when(payload.startsAt, payload)],
+        ["Annulé par", event.payload.cancellation.by === "client" ? "le client" : "le studio"],
+        ...reasonDetails(event.payload.cancellation.reason),
+        ...serviceDetails(payload),
+        ...clientDetails(payload),
+      ],
+      signature,
     });
   }
-  switch (event.type) {
-    case "booking.created":
-    case "booking.rescheduled":
-      return render({
-        subject: `Rendez-vous déplacé : ${service}, ${formatDateTime(payload.startsAt, payload.timeZone)}`,
-        greeting: "Bonjour,",
-        paragraphs: ["Le client a déplacé son rendez-vous."],
-        facts: [
-          ["Ancien horaire", when(studio.kind === "moved" ? studio.previousStartsAt : payload.startsAt, payload)],
-          ["Nouvel horaire", when(payload.startsAt, payload)],
-          ...serviceFacts(payload),
-          ...clientFacts(payload),
-        ],
-        closing,
-      });
-    case "booking.cancelled":
-      return render({
-        subject: `Rendez-vous annulé : ${service}, ${formatDateTime(payload.startsAt, payload.timeZone)}`,
-        greeting: "Bonjour,",
-        paragraphs: [
-          event.payload.cancellation.by === "client"
-            ? "Le client a annulé son rendez-vous."
-            : "Le rendez-vous a été annulé par le studio.",
-        ],
-        facts: [
-          ["Date", when(payload.startsAt, payload)],
-          ["Annulé par", event.payload.cancellation.by === "client" ? "le client" : "le studio"],
-          ...reasonFacts(event.payload.cancellation.reason),
-          ...serviceFacts(payload),
-          ...clientFacts(payload),
-        ],
-        closing,
-      });
+  if (studio.kind === "moved") {
+    return renderEmailLayout({
+      subject: `Rendez-vous déplacé : ${service}, ${at}`,
+      preheader: `Nouvel horaire : ${at}`,
+      title: "Rendez-vous déplacé",
+      paragraphs: ["Bonjour,", "Le client a déplacé son rendez-vous."],
+      details: [
+        ["Nouvel horaire", when(payload.startsAt, payload)],
+        ["Ancien horaire", when(studio.previousStartsAt, payload)],
+        ...serviceDetails(payload),
+        ...clientDetails(payload),
+      ],
+      signature,
+    });
   }
+  return renderEmailLayout({
+    subject: `Nouveau rendez-vous : ${service}, ${at}`,
+    preheader: `${service}, ${at}`,
+    title: "Nouveau rendez-vous",
+    paragraphs: ["Bonjour,", "Un nouveau rendez-vous a été réservé."],
+    details: [["Date", when(payload.startsAt, payload)], ...serviceDetails(payload), ...clientDetails(payload)],
+    signature,
+  });
 };

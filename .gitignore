@@ -2,6 +2,8 @@
 # тобто й для services/*/ (node_modules, dist, .env).
 node_modules/
 dist/
+# Local email previews (npm run email:preview)
+services/*/tmp/
 *.tsbuildinfo
 # Prisma Client (generator output inside each service)
 services/*/src/generated/
