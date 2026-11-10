@@ -872,18 +872,33 @@ const paths = (): OpenApiDocument["paths"] => ({
     get: op({
       operationId: "listBookingsOfDate",
       tags: ["Admin: bookings"],
-      summary: "Bookings starting on a local date",
-      description: "All statuses, with client contact data and email results for both recipients. Verified administrator only.",
+      summary: "Bookings starting on a local date or on every date of a range",
+      description:
+        "Either `date`, or `from` and `to` (inclusive, a week or a month: at most 62 dates), in the studio time zone. All statuses, with client contact data and email results for both recipients. One request for a whole calendar view. Verified administrator only.",
       security: PROTECTED,
-      parameters: [queryParam("date", "Local date (required)", true, "2027-03-02")],
+      parameters: [
+        queryParam("date", "Local date; not together with from/to", false, "2027-03-02"),
+        queryParam("from", "First local date of the range (with to)", false, "2027-03-01"),
+        queryParam("to", "Last local date of the range, inclusive; at most 62 dates", false, "2027-03-31"),
+      ],
       responses: withAuth(
         {
-          "200": ok("Bookings of the date", object({ date: { type: "string", format: "date" }, timeZone: { const: "Europe/Paris" }, bookings: { type: "array", items: ref("AdminBooking") } }), {
-            date: "2027-03-02",
-            timeZone: "Europe/Paris",
-            bookings: [ADMIN_BOOKING_EXAMPLE],
-          }),
-          "400": errors("Missing or invalid date", [validation("date")]),
+          "200": ok(
+            "Bookings of the date or the range, by start time",
+            {
+              oneOf: [
+                object({ date: { type: "string", format: "date" }, timeZone: { const: "Europe/Paris" }, bookings: { type: "array", items: ref("AdminBooking") } }),
+                object({
+                  from: { type: "string", format: "date" },
+                  to: { type: "string", format: "date" },
+                  timeZone: { const: "Europe/Paris" },
+                  bookings: { type: "array", items: ref("AdminBooking") },
+                }),
+              ],
+            },
+            { from: "2027-03-01", to: "2027-03-31", timeZone: "Europe/Paris", bookings: [ADMIN_BOOKING_EXAMPLE] },
+          ),
+          "400": errors("Missing or invalid date or range", [validation("date"), validation("to")]),
         },
         adminOnly(),
       ),

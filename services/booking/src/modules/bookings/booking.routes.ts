@@ -4,6 +4,7 @@ import { AppError } from "../../shared/errors/app-error.js";
 import { withValidatedBody } from "../../shared/http/validated-body.js";
 import { requireActor } from "../access/require-access.js";
 import type { BookingRules } from "../schedule/booking-rules.js";
+import { dayRangeSchema } from "../schedule/schedule.schema.js";
 import { localDateSchema } from "../schedule/zoned-time.js";
 import {
   adminCancelSchema,
@@ -146,17 +147,34 @@ export const createAdminBookingRouter = ({
     return result;
   };
 
-  // Bookings starting on a local date (studio time zone), all statuses.
+  const validationFailed = (errors: { field: string[]; message: string }[]) =>
+    new AppError(400, "Validation failed", { code: "VALIDATION_FAILED", details: { errors } });
+
+  // Bookings starting on a local date, or on every date of from–to (a week, a
+  // month: at most 62 dates), in the studio time zone; all statuses.
   router.get("/", async (req, res) => {
-    const parsed = localDateSchema.safeParse(req.query.date);
-    if (!parsed.success) {
-      throw new AppError(400, "Validation failed", {
-        code: "VALIDATION_FAILED",
-        details: { errors: [{ field: ["date"], message: "query parameter date=YYYY-MM-DD is required" }] },
-      });
+    const { date, from, to } = req.query;
+    if (date !== undefined) {
+      if (from !== undefined || to !== undefined) {
+        throw validationFailed([{ field: ["date"], message: "use either date or from and to" }]);
+      }
+      const parsed = localDateSchema.safeParse(date);
+      if (!parsed.success) {
+        throw validationFailed([{ field: ["date"], message: "must be a date YYYY-MM-DD" }]);
+      }
+      const list = await bookings.listForRange({ from: parsed.data, to: parsed.data });
+      res.status(200).json({ date: parsed.data, timeZone: rules.timeZone, bookings: await views(list) });
+      return;
     }
-    const list = await bookings.listForDate(parsed.data);
-    res.status(200).json({ date: parsed.data, timeZone: rules.timeZone, bookings: await views(list) });
+    if (from === undefined && to === undefined) {
+      throw validationFailed([{ field: ["date"], message: "query parameter date=YYYY-MM-DD, or from and to, is required" }]);
+    }
+    const range = dayRangeSchema.safeParse({ from, to });
+    if (!range.success) {
+      throw validationFailed(range.error.issues.map((issue) => ({ field: issue.path.map(String), message: issue.message })));
+    }
+    const list = await bookings.listForRange(range.data);
+    res.status(200).json({ from: range.data.from, to: range.data.to, timeZone: rules.timeZone, bookings: await views(list) });
   });
 
   router.get("/:bookingId", async (req, res) => {

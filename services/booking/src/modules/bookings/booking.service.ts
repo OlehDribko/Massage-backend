@@ -294,12 +294,13 @@ export const createBookingService = ({
   const getOwn = (client: UserProfile, id: string): Promise<BookingWithClient> => loadOwn(prisma, client, id);
 
   /** Admin: bookings starting on a local date (all statuses). */
-  const listForDate = (date: LocalDate): Promise<BookingWithClient[]> =>
+  /** Bookings starting on any local date of from–to (inclusive), studio time zone, all statuses. */
+  const listForRange = ({ from, to }: { from: LocalDate; to: LocalDate }): Promise<BookingWithClient[]> =>
     prisma.booking.findMany({
       where: {
         startsAt: {
-          gte: localDateTimeToInstant(date, 0, rules.timeZone),
-          lt: localDateTimeToInstant(addDays(date, 1), 0, rules.timeZone),
+          gte: localDateTimeToInstant(from, 0, rules.timeZone),
+          lt: localDateTimeToInstant(addDays(to, 1), 0, rules.timeZone),
         },
       },
       include: withHistory,
@@ -314,5 +315,5 @@ export const createBookingService = ({
     return booking;
   };
 
-  return { create, reschedule, cancelOwn, cancelByAdmin, listOwn, getOwn, listForDate, getAny };
+  return { create, reschedule, cancelOwn, cancelByAdmin, listOwn, getOwn, listForRange, getAny };
 };

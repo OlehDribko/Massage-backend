@@ -2040,6 +2040,60 @@
           }
         },
         {
+          "name": "Bookings: list of a range (week, month)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"scheduleDaysFrom\", \"scheduleDaysTo\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Set scheduleDaysFrom and scheduleDaysTo (YYYY-MM-DD, at most 62 dates).\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/bookings?from={{scheduleDaysFrom}}&to={{scheduleDaysTo}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "bookings"
+              ],
+              "query": [
+                {
+                  "key": "from",
+                  "value": "{{scheduleDaysFrom}}"
+                },
+                {
+                  "key": "to",
+                  "value": "{{scheduleDaysTo}}"
+                }
+              ]
+            },
+            "description": "Bookings starting on every date of from–to (inclusive, at most 62 dates), studio time zone, all statuses. Uses the same range variables as «Schedule: days of a range»."
+          }
+        },
+        {
           "name": "Bookings: get any",
           "event": [
             {

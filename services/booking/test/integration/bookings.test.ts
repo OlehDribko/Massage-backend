@@ -779,3 +779,46 @@ describe("outbox", () => {
     expect(await events()).toHaveLength(1);
   });
 });
+
+describe("admin: bookings of a range (week, month)", () => {
+  it("one request returns the bookings of every date from–to, Paris dates, all statuses, by start time", async () => {
+    const serviceId = await createService();
+    await setWeekly();
+    const first = bookingIdOf(await book(users.clientA, serviceId, paris("2027-03-02", "09:00")));
+    const cancelled = bookingIdOf(await book(users.clientB, serviceId, paris("2027-03-03", "10:00")));
+    await cancel(users.clientB, cancelled).expect(200);
+    const last = bookingIdOf(await book(users.clientA, serviceId, paris("2027-03-08", "18:00")));
+    const outside = bookingIdOf(await book(users.clientB, serviceId, paris("2027-03-09", "09:00")));
+
+    const week = await request(stack.app).get("/api/admin/bookings?from=2027-03-02&to=2027-03-08").set(asAdmin()).expect(200);
+    expect(week.body).toMatchObject({ from: "2027-03-02", to: "2027-03-08", timeZone: "Europe/Paris" });
+    const ids = z.object({ bookings: z.array(z.object({ id: z.string(), status: z.string() })) }).parse(week.body).bookings;
+    expect(ids).toEqual([
+      { id: first, status: "confirmed" },
+      { id: cancelled, status: "cancelled" },
+      { id: last, status: "confirmed" },
+    ]);
+    expect(ids.map((booking) => booking.id)).not.toContain(outside);
+
+    // The single-date form is unchanged.
+    const day = await request(stack.app).get("/api/admin/bookings?date=2027-03-09").set(asAdmin()).expect(200);
+    expect(day.body).toMatchObject({ date: "2027-03-09", bookings: [{ id: outside }] });
+  });
+
+  it("refuses a range over 62 dates, a reversed range, half a range and date together with a range", async () => {
+    for (const query of [
+      "from=2027-03-01&to=2027-05-02",
+      "from=2027-03-08&to=2027-03-02",
+      "from=2027-03-02",
+      "to=2027-03-02",
+      "date=2027-03-02&from=2027-03-01&to=2027-03-03",
+      "from=2027-02-30&to=2027-03-01",
+    ]) {
+      const response = await request(stack.app).get(`/api/admin/bookings?${query}`).set(asAdmin());
+      expect(response.status, query).toBe(400);
+      expect(response.body, query).toMatchObject({ code: "VALIDATION_FAILED" });
+    }
+    expect((await request(stack.app).get("/api/admin/bookings?from=2027-03-01&to=2027-05-01").set(asAdmin())).status).toBe(200);
+    expect((await request(stack.app).get("/api/admin/bookings?from=2027-03-01&to=2027-03-07").set(bearer(users.clientA))).status).toBe(403);
+  });
+});
