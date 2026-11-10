@@ -140,6 +140,10 @@ export const profileViewSchema = z
       .strictObject({ ready: z.boolean(), blockers: z.array(bookingBlockerSchema) })
       .meta({ description: "Informational; booking routes re-check on the server" }),
     marketing: marketingStatusSchema.nullable().meta({ description: "null unless the profile has a verified email" }),
+    marketingAvailable: z.boolean().meta({
+      description:
+        "The server offers the marketing subscription (sign-up checkbox, subscribe button, public form). Availability of the feature, not the user's subscription (see marketing)",
+    }),
   })
   .meta({ id: "ProfileView" });
 
