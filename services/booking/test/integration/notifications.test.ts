@@ -218,7 +218,7 @@ describe("planning and sending", () => {
 });
 
 describe("order, staleness and independence", () => {
-  it("client: a confirmation and a rescheduling superseded before sending are skipped, the cancellation is sent; the studio gets all three in order", async () => {
+  it("a confirmation and a rescheduling superseded before sending are skipped for both recipients; the cancellation is sent to both", async () => {
     const id = await book(users.clientA, paris("2027-03-02", "09:00"));
     await request(stack.app).post(`/api/bookings/${id}/reschedule`).set(bearer(users.clientA)).send({ startsAt: paris("2027-03-03", "14:00") }).expect(200);
     await request(stack.app).post(`/api/admin/bookings/${id}/cancel`).set(bearer(users.admin)).send({ reason: "Fermeture" }).expect(200);
@@ -227,9 +227,12 @@ describe("order, staleness and independence", () => {
     await makeWorker(fake).worker.tick();
 
     expect(fake.sent.filter((email) => email.to === STUDIO).map((email) => email.subject.split(" :")[0])).toEqual([
-      "Nouveau rendez-vous",
-      "Rendez-vous déplacé",
       "Rendez-vous annulé",
+    ]);
+    expect((await deliveries()).filter((delivery) => delivery.recipientRole === "studio")).toMatchObject([
+      { eventType: "booking.created", status: "skipped", resultCode: "superseded" },
+      { eventType: "booking.rescheduled", status: "skipped", resultCode: "superseded" },
+      { eventType: "booking.cancelled", status: "accepted" },
     ]);
     const toClient = fake.sent.filter((email) => email.to === CLIENT);
     expect(toClient.map((email) => email.subject)).toEqual(["Votre rendez-vous a été annulé"]);
@@ -269,7 +272,7 @@ describe("order, staleness and independence", () => {
     ]);
   });
 
-  it("retries keep one recipient's order; a failing studio address does not hold back the client's emails", async () => {
+  it("a failing studio address does not hold back the client's emails; a cancellation drops the studio email waiting for a retry", async () => {
     const id = await book(users.clientA, paris("2027-03-02", "09:00"));
     const fake = createFakeEmailProvider({ now });
     fake.setBehavior((email) =>
@@ -286,19 +289,19 @@ describe("order, staleness and independence", () => {
       [CLIENT, "Votre rendez-vous est confirmé"],
       [CLIENT, "Votre rendez-vous a été annulé"],
     ]);
-    // Studio: the cancellation waits behind the failing confirmation (same chain, event order).
+    // Studio: the confirmation waiting for its retry is dropped by the
+    // cancellation, which does not wait behind it; its own attempt failed too.
     const studio = (await deliveries()).filter((delivery) => delivery.recipientRole === "studio");
-    expect(studio.map((delivery) => [delivery.eventType, delivery.status])).toEqual([
-      ["booking.created", "pending"],
-      ["booking.cancelled", "pending"],
+    expect(studio.map((delivery) => [delivery.eventType, delivery.status, delivery.resultCode])).toEqual([
+      ["booking.created", "skipped", "superseded"],
+      ["booking.cancelled", "pending", null],
     ]);
-    expect(studio[1]?.attempts).toBe(0);
+    expect(studio[1]?.attempts).toBe(1);
 
     fake.setBehavior(() => "accept");
-    workerNow += 60_000;
+    workerNow += 2 * 60_000;
     await worker.tick();
     expect(fake.sent.filter((email) => email.to === STUDIO).map((email) => email.subject.split(" :")[0])).toEqual([
-      "Nouveau rendez-vous",
       "Rendez-vous annulé",
     ]);
   });
@@ -312,6 +315,272 @@ describe("order, staleness and independence", () => {
       { recipientRole: "client", status: "skipped", resultCode: "recipient_not_allowed", recipientEmail: CLIENT },
       { recipientRole: "studio", status: "accepted" },
     ]);
+  });
+});
+
+describe("studio email 30 minutes after the last change (agreed 2026-11-10)", () => {
+  const T = Date.parse("2027-03-01T07:00:00Z");
+  const MIN = 60_000;
+  const at = (offsetMinutes: number) => new Date(T + offsetMinutes * MIN).toISOString();
+  const toStudio = (fake: Fake) => fake.sent.filter((email) => email.to === STUDIO);
+  const toClient = (fake: Fake) => fake.sent.filter((email) => email.to === CLIENT);
+  const reschedule = (id: string, startsAt: string) =>
+    request(stack.app).post(`/api/bookings/${id}/reschedule`).set(bearer(users.clientA)).send({ startsAt }).expect(200);
+
+  beforeEach(() => {
+    stack.setNow(at(0));
+    workerNow = T;
+  });
+
+  it("the client's email goes at once; the studio's is due 30 minutes after the business event, by one timer", async () => {
+    await book(users.clientA, paris("2027-03-02", "09:00"));
+    const fake = createFakeEmailProvider({ now });
+    const { worker } = makeWorker(fake);
+
+    await worker.tick();
+    expect(toClient(fake).map((email) => email.subject)).toEqual(["Votre rendez-vous est confirmé"]);
+    expect(toStudio(fake)).toEqual([]);
+    const studio = (await deliveries()).find((delivery) => delivery.recipientRole === "studio");
+    expect(studio?.nextAttemptAt.toISOString()).toBe(at(30));
+    expect((await nextWorkAt(workerDb().prisma)).at?.toISOString()).toBe(at(30));
+
+    workerNow = T + 30 * MIN - 1;
+    await worker.tick();
+    expect(toStudio(fake)).toEqual([]);
+    workerNow = T + 30 * MIN;
+    await worker.tick();
+    expect(toStudio(fake).map((email) => email.subject.split(" :")[0])).toEqual(["Nouveau rendez-vous"]);
+  });
+
+  it("a move restarts the countdown; the studio gets one email with the current state and no intermediate moves", async () => {
+    const id = await book(users.clientA, paris("2027-03-02", "09:00"));
+    const fake = createFakeEmailProvider({ now });
+    const { worker } = makeWorker(fake);
+    await worker.tick();
+
+    stack.setNow(at(20));
+    await reschedule(id, paris("2027-03-03", "10:00"));
+    workerNow = T + 20 * MIN;
+    await worker.tick();
+    stack.setNow(at(25));
+    await reschedule(id, paris("2027-03-04", "15:00"));
+    workerNow = T + 25 * MIN;
+    await worker.tick();
+
+    workerNow = T + 54 * MIN;
+    await worker.tick();
+    expect(toStudio(fake)).toEqual([]);
+    workerNow = T + 55 * MIN;
+    await worker.tick();
+    const [email, ...more] = toStudio(fake);
+    expect(more).toEqual([]);
+    // Nothing reached the studio before: a new booking, at its current time.
+    expect(email?.subject).toBe("Nouveau rendez-vous : Massage 60, jeudi 4 mars 2027 à 15:00");
+    expect(email?.text).not.toMatch(/Ancien horaire|mars 2027 à 09:00|mars 2027 à 10:00/);
+    // The client got every change at once.
+    expect(toClient(fake).map((sent) => sent.subject)).toEqual([
+      "Votre rendez-vous est confirmé",
+      "Votre rendez-vous a été déplacé",
+      "Votre rendez-vous a été déplacé",
+    ]);
+    expect((await deliveries()).filter((delivery) => delivery.recipientRole === "studio").map((delivery) => delivery.resultCode)).toEqual([
+      "superseded",
+      "superseded",
+      "accepted",
+    ]);
+  });
+
+  it("after an accepted studio email, moves start a new countdown; the email compares with what the studio was told", async () => {
+    const id = await book(users.clientA, paris("2027-03-02", "09:00"));
+    const fake = createFakeEmailProvider({ now });
+    const { worker } = makeWorker(fake);
+    workerNow = T + 30 * MIN;
+    await worker.tick();
+    expect(toStudio(fake)).toHaveLength(1);
+
+    stack.setNow(at(40));
+    await reschedule(id, paris("2027-03-03", "10:00"));
+    stack.setNow(at(50));
+    await reschedule(id, paris("2027-03-04", "15:00"));
+    workerNow = T + 50 * MIN;
+    await worker.tick();
+    workerNow = T + 80 * MIN;
+    await worker.tick();
+
+    const moved = toStudio(fake)[1];
+    expect(toStudio(fake)).toHaveLength(2);
+    expect(moved?.subject.split(" :")[0]).toBe("Rendez-vous déplacé");
+    expect(moved?.text).toContain("Ancien horaire : mardi 2 mars 2027 à 09:00");
+    expect(moved?.text).toContain("Nouvel horaire : jeudi 4 mars 2027 à 15:00");
+    expect(moved?.text).not.toContain("10:00");
+  });
+
+  it("moved and back before the studio's email: nothing new to tell, skipped as unchanged", async () => {
+    const id = await book(users.clientA, paris("2027-03-02", "09:00"));
+    const fake = createFakeEmailProvider({ now });
+    const { worker } = makeWorker(fake);
+    workerNow = T + 30 * MIN;
+    await worker.tick();
+    stack.setNow(at(40));
+    await reschedule(id, paris("2027-03-03", "10:00"));
+    stack.setNow(at(45));
+    await reschedule(id, paris("2027-03-02", "09:00"));
+    workerNow = T + 75 * MIN;
+    await worker.tick();
+    expect(toStudio(fake)).toHaveLength(1);
+    expect((await deliveries()).filter((delivery) => delivery.recipientRole === "studio").map((delivery) => delivery.resultCode)).toEqual([
+      "accepted",
+      "superseded",
+      "unchanged",
+    ]);
+  });
+
+  it("repeating the same request does not restart the countdown", async () => {
+    const key = "notif-repeat-0001";
+    const create = () =>
+      request(stack.app)
+        .post("/api/bookings")
+        .set(bearer(users.clientA))
+        .set("Idempotency-Key", key)
+        .send({ serviceId, startsAt: paris("2027-03-02", "09:00") });
+    const id = bookingIdOf(await create().expect(201));
+    stack.setNow(at(20));
+    await create().expect(200);
+    await reschedule(id, paris("2027-03-02", "09:00"));
+    expect(await countRows(stack.db, `SELECT count(*)::int AS n FROM "OutboxEvent"`)).toBe(1);
+
+    const fake = createFakeEmailProvider({ now });
+    workerNow = T + 30 * MIN;
+    await makeWorker(fake).worker.tick();
+    expect(toStudio(fake)).toHaveLength(1);
+  });
+
+  it("a cancellation goes to both at once, even before the studio's first email, and drops the delayed one", async () => {
+    const id = await book(users.clientA, paris("2027-03-02", "09:00"));
+    const fake = createFakeEmailProvider({ now });
+    const { worker } = makeWorker(fake);
+    await worker.tick();
+    stack.setNow(at(5));
+    await request(stack.app).post(`/api/bookings/${id}/cancel`).set(bearer(users.clientA)).send({}).expect(200);
+    workerNow = T + 5 * MIN;
+    await worker.tick();
+
+    expect(toStudio(fake).map((email) => email.subject.split(" :")[0])).toEqual(["Rendez-vous annulé"]);
+    expect(toClient(fake).map((email) => email.subject)).toEqual(["Votre rendez-vous est confirmé", "Votre rendez-vous a été annulé"]);
+    // Nothing is left for later: no timer at 30 minutes.
+    expect(await nextWorkAt(workerDb().prisma)).toEqual({ at: null, unplanned: false });
+    workerNow = T + 60 * MIN;
+    await worker.tick();
+    expect(toStudio(fake)).toHaveLength(1);
+  });
+
+  it("an attempt running when the booking is cancelled cannot be recalled, but it is not retried and does not hold back the cancellation", async () => {
+    const id = await book(users.clientA, paris("2027-03-02", "09:00"));
+    const fake = createFakeEmailProvider({ now });
+    const { worker } = makeWorker(fake);
+    await worker.tick();
+    workerNow = T + 30 * MIN;
+
+    fake.setBehavior(() => ({ kind: "retryable", code: "provider_unavailable", retryAfterMs: null }));
+    const release = fake.hold();
+    const running = worker.tick();
+    await expect.poll(() => fake.calls()).toBe(2);
+    stack.setNow(at(31));
+    await request(stack.app).post(`/api/bookings/${id}/cancel`).set(bearer(users.clientA)).send({}).expect(200);
+    // The running attempt fails temporarily; the cancellation is accepted.
+    fake.setBehavior((email) =>
+      email.subject.startsWith("Nouveau") ? { kind: "retryable", code: "provider_unavailable", retryAfterMs: null } : "accept",
+    );
+    release();
+    await running;
+    await worker.tick();
+
+    const studio = (await deliveries()).filter((delivery) => delivery.recipientRole === "studio");
+    expect(studio.map((delivery) => [delivery.eventType, delivery.status, delivery.resultCode, delivery.attempts])).toEqual([
+      ["booking.created", "skipped", "superseded", 1],
+      ["booking.cancelled", "accepted", "accepted", 1],
+    ]);
+    expect(toStudio(fake).map((email) => email.subject.split(" :")[0])).toEqual(["Rendez-vous annulé"]);
+  });
+
+  it("an attempt the provider accepts while the booking is cancelled stays sent; the cancellation follows it", async () => {
+    const id = await book(users.clientA, paris("2027-03-02", "09:00"));
+    const fake = createFakeEmailProvider({ now });
+    const { worker } = makeWorker(fake);
+    await worker.tick();
+    workerNow = T + 30 * MIN;
+    const release = fake.hold();
+    const running = worker.tick();
+    await expect.poll(() => fake.calls()).toBe(2);
+    stack.setNow(at(31));
+    await request(stack.app).post(`/api/bookings/${id}/cancel`).set(bearer(users.clientA)).send({}).expect(200);
+    release();
+    await running;
+    await worker.tick();
+    expect(toStudio(fake).map((email) => email.subject.split(" :")[0])).toEqual(["Nouveau rendez-vous", "Rendez-vous annulé"]);
+  });
+
+  it("an expired lease of a stopped worker is dropped by the cancellation at once; that worker's late result is discarded", async () => {
+    const id = await book(users.clientA, paris("2027-03-02", "09:00"));
+    const fake = createFakeEmailProvider({ now });
+    const { worker } = makeWorker(fake);
+    await worker.tick();
+    // Another process claimed the studio's email at minute 30 and stopped.
+    const [claimed] = await claimDeliveries(workerDb().prisma, {
+      now: new Date(T + 30 * MIN),
+      owner: "worker-stopped",
+      leaseMs: TUNING.leaseMs,
+      limit: 1,
+      maxAttempts: TUNING.maxAttempts,
+    });
+    expect(claimed?.recipientRole).toBe("studio");
+
+    stack.setNow(at(32));
+    await request(stack.app).post(`/api/bookings/${id}/cancel`).set(bearer(users.clientA)).send({}).expect(200);
+    workerNow = T + 32 * MIN;
+    await worker.tick();
+    expect(toStudio(fake).map((email) => email.subject.split(" :")[0])).toEqual(["Rendez-vous annulé"]);
+
+    const late = await completeDelivery(workerDb().prisma, {
+      id: claimed?.id ?? "",
+      leaseToken: claimed?.leaseToken ?? "",
+      now: new Date(T + 33 * MIN),
+      completion: { status: "pending", nextAttemptAt: new Date(T + 34 * MIN), lastErrorCode: "provider_unavailable", refundAttempt: false },
+    });
+    expect(late).toBe(false);
+    expect((await deliveries()).find((delivery) => delivery.recipientRole === "studio")).toMatchObject({ status: "skipped", resultCode: "superseded" });
+  });
+
+  it("after a restart every committed change counts before an overdue email; the countdown runs from the business event", async () => {
+    const id = await book(users.clientA, paris("2027-03-02", "09:00"));
+    stack.setNow(at(10));
+    await reschedule(id, paris("2027-03-03", "10:00"));
+    // No sender ran meanwhile; a fresh process starts at minute 45.
+    const fake = createFakeEmailProvider({ now });
+    workerNow = T + 45 * MIN;
+    await makeWorker(fake, { id: "worker-after-restart" }).worker.tick();
+
+    // Due at minute 40 (the move + 30), not 45 + 30: sent on this first pass.
+    expect(toStudio(fake).map((email) => email.subject)).toEqual(["Nouveau rendez-vous : Massage 60, mercredi 3 mars 2027 à 10:00"]);
+    const studio = (await deliveries()).filter((delivery) => delivery.recipientRole === "studio");
+    expect(studio.map((delivery) => [delivery.resultCode, delivery.nextAttemptAt.toISOString()])).toEqual([
+      ["superseded", at(30)],
+      ["accepted", at(40)],
+    ]);
+  });
+
+  it("two API processes: the cancellation reaches each recipient once and no stale email follows", async () => {
+    const id = await book(users.clientA, paris("2027-03-02", "09:00"));
+    stack.setNow(at(10));
+    await reschedule(id, paris("2027-03-03", "10:00"));
+    stack.setNow(at(12));
+    await request(stack.app).post(`/api/bookings/${id}/cancel`).set(bearer(users.clientA)).send({}).expect(200);
+
+    const fake = createFakeEmailProvider({ now });
+    workerNow = T + 45 * MIN;
+    await Promise.all([makeWorker(fake, { id: "worker-a" }).worker.tick(), makeWorker(fake, { id: "worker-b" }).worker.tick()]);
+    expect(toStudio(fake).map((email) => email.subject.split(" :")[0])).toEqual(["Rendez-vous annulé"]);
+    expect(toClient(fake).map((email) => email.subject)).toEqual(["Votre rendez-vous a été annulé"]);
   });
 });
 
@@ -645,6 +914,24 @@ describe("in-process sending (dispatcher woken by the API)", () => {
     await dispatcher.stop();
   });
 
+  it("a delayed studio email leaves exactly one timer, at its due time; nothing touches the database before it", async () => {
+    stack.setNow("2027-03-01T07:00:00Z");
+    workerNow = Date.parse("2027-03-01T07:00:00Z");
+    const fake = createFakeEmailProvider({ now });
+    const { timers, delays } = recordedTimers();
+    const { dispatcher, counted } = startDispatcher(fake, { timers });
+    onBookingWrite = dispatcher.wake;
+    await book(users.clientA, paris("2027-03-02", "09:00"));
+    await dispatcher.idle();
+    expect(fake.sent.map((email) => email.to)).toEqual([CLIENT]);
+    expect(dispatcher.scheduledAt()?.toISOString()).toBe("2027-03-01T07:30:00.000Z");
+    expect(delays).toEqual([30 * 60_000]);
+    const before = { ...counted };
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(counted).toEqual(before);
+    await dispatcher.stop();
+  });
+
   it("start-up recovery: work committed while no sender ran is picked up on start", async () => {
     await book(users.clientA, paris("2027-03-02", "09:00")); // no sender running (hook is a no-op)
     await book(users.clientB, paris("2027-03-02", "15:00"));
@@ -717,7 +1004,13 @@ describe("notification status in the booking API", () => {
 
     const fake = createFakeEmailProvider({ now });
     fake.setBehavior((email) => (email.to === STUDIO ? { kind: "rejected", code: "provider_rejected" } : "accept"));
-    await makeWorker(fake).worker.tick();
+    const { worker } = makeWorker(fake);
+    await worker.tick();
+    // The studio's email waits for its 30 minutes.
+    const waiting = await request(stack.app).get(`/api/admin/bookings/${id}`).set(bearer(users.admin)).expect(200);
+    expect(adminNotificationsOf(waiting)).toMatchObject([{ event: "created", studio: { status: "pending", reason: "scheduled", attempts: 0 } }]);
+    workerNow += 30 * 60_000;
+    await worker.tick();
 
     const after = await request(stack.app).get(`/api/bookings/${id}`).set(bearer(users.clientA)).expect(200);
     expect(notificationOf(after)).toEqual({ event: "created", status: "accepted", reason: null });
