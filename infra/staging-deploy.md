@@ -417,11 +417,11 @@ aws ssm describe-parameters --region eu-west-3 \
 | Змінна Terraform | За замовчуванням | Дія |
 |---|---|---|
 | `enable_booking_notifications` | `false` | `ENABLE_BOOKING_NOTIFICATIONS=true`, `NOTIFICATIONS_ENVIRONMENT=staging`, `NOTIFICATION_STUDIO_EMAIL`, `NOTIFICATION_RECIPIENT_ALLOWLIST` + спільне нижче |
-| `enable_marketing_subscription` | `false` | `ENABLE_MARKETING_SUBSCRIPTION=true`, секрет `ACTION_TOKEN_SECRET`, `FRONTEND_URL` = `marketing_frontend_url` + спільне нижче |
+| `enable_marketing_subscription` | `false` | `ENABLE_MARKETING_SUBSCRIPTION=true`, `MARKETING_RECIPIENT_ALLOWLIST` (з `notification_recipient_allowlist`, обов'язковий непорожній), секрет `ACTION_TOKEN_SECRET`, `FRONTEND_URL` = `marketing_frontend_url` + спільне нижче |
 | спільне (якщо ввімкнено хоч один) | — | `EMAIL_FROM_NAME`, `EMAIL_FROM_EMAIL`, секрет `BREVO_API_KEY` (і право execution role на нього) |
 | `email_from_name` | `Стефанія Бень` | Ім'я відправника й підпис листів клієнту |
 | `email_from_email` | порожньо | Адреса відправника, **підтверджена в Brevo**. Обов'язкова при будь-якому прапорці (precondition) |
-| `notification_studio_email`, `notification_recipient_allowlist` | порожні | Лише для листів про бронювання; адреса студії має бути в allowlist. Значення — у `terraform.tfvars` (Git його ігнорує); вони потрапляють у task definition і state |
+| `notification_studio_email`, `notification_recipient_allowlist` | порожні | Адреса студії — для листів про бронювання (має бути в allowlist); allowlist — тестові одержувачі листів про бронювання й маркетингу. Значення — у `terraform.tfvars` (Git його ігнорує); вони потрапляють у task definition і state |
 | `marketing_frontend_url` | `https://massage-e9zb.vercel.app` | База посилань у листах маркетингу (`/marketing/confirm?token=…`, `/unsubscribe?token=…` — маршрути `my-app`). Стабільний frontend, не preview. Поки маркетинг вимкнено, `FRONTEND_URL` = `frontend_url`, як і раніше |
 
 Параметри SSM (SecureString, створює власник; спосіб — розділ «Секрети»):
@@ -438,7 +438,7 @@ aws ssm describe-parameters --region eu-west-3 \
 2. `terraform plan` з потрібними прапорцями й адресами → перевірка (лише нова ревізія task definition API і права execution role) → `apply`. Запущені задачі не змінюються.
 3. `Staging deploy` (`run_migrations` — якщо в релізі є нові міграції): бере нову ревізію за основу й підставляє образ. Окремої ролі БД не потрібно: `booking_app` має права на таблиці (їх видає раннер міграцій).
 
-`NOTIFICATIONS_ENVIRONMENT=staging`: без allowlist API не стартує; листи про бронювання на інші адреси отримують `skipped`. Маркетингові листи allowlist не обмежує: їх отримує лише той, хто сам вказав адресу у формі чи акаунті.
+`NOTIFICATIONS_ENVIRONMENT=staging`: без allowlist API не стартує; листи про бронювання на інші адреси отримують `skipped`. Маркетингові листи на staging обмежено тим самим списком: з `enable_marketing_subscription` задача отримує `MARKETING_RECIPIENT_ALLOWLIST` = `notification_recipient_allowlist` (precondition: список не порожній); інші адреси отримують `403 TEST_RECIPIENT_NOT_ALLOWED` без листа.
 
 ### Помилки під час запуску
 

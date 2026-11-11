@@ -157,6 +157,12 @@ export type MarketingConfig = {
   emailFromEmail: string;
   actionTokenSecret: string;
   frontendUrl: string;
+  /**
+   * MARKETING_RECIPIENT_ALLOWLIST (test environments only): marketing emails
+   * go to these addresses only; others get TEST_RECIPIENT_NOT_ALLOWED and no
+   * email. null (not set, production): no restriction.
+   */
+  recipientAllowlist: ReadonlySet<string> | null;
 };
 
 export type FirebaseCredentials =
@@ -432,6 +438,10 @@ const loadMarketingConfig = (
       ),
     };
   }
+  const allowlist = loadMarketingAllowlist(env);
+  if (!allowlist.ok) {
+    return allowlist;
+  }
 
   return {
     ok: true,
@@ -441,6 +451,33 @@ const loadMarketingConfig = (
       emailFromEmail: parsed.data.EMAIL_FROM_EMAIL,
       actionTokenSecret: parsed.data.ACTION_TOKEN_SECRET,
       frontendUrl: parsed.data.FRONTEND_URL,
+      recipientAllowlist: allowlist.value,
     },
   };
+};
+
+const allowlistEmailSchema = z.string().trim().toLowerCase().pipe(z.email());
+
+/**
+ * Optional test-recipient list of marketing emails. Refused together with
+ * NOTIFICATIONS_ENVIRONMENT=production, so production recipients are never
+ * filtered by accident (staging sets it from Terraform; production never).
+ */
+const loadMarketingAllowlist = (env: EnvSource): Loaded<ReadonlySet<string> | null> => {
+  const raw = trimmed(env.MARKETING_RECIPIENT_ALLOWLIST);
+  if (raw === undefined || raw === "") {
+    return { ok: true, value: null };
+  }
+  const entries = raw
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== "");
+  const emails = z.array(allowlistEmailSchema).min(1).safeParse(entries);
+  if (!emails.success) {
+    return { ok: false, errors: ["MARKETING_RECIPIENT_ALLOWLIST: must be a comma-separated list of email addresses"] };
+  }
+  if (trimmed(env.NOTIFICATIONS_ENVIRONMENT) === "production") {
+    return { ok: false, errors: ["MARKETING_RECIPIENT_ALLOWLIST: must not be set in production"] };
+  }
+  return { ok: true, value: new Set(emails.data) };
 };

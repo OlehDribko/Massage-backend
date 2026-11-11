@@ -34,6 +34,28 @@ const sync = (app: Parameters<typeof request>[0], token: string, body?: object) 
     ? request(app).post("/api/me/sync").set(bearer(token))
     : request(app).post("/api/me/sync").set(bearer(token)).send(body);
 
+describe("test recipient allowlist in the account", () => {
+  it("sign-up checkbox and the subscribe button: no email and no success for an address outside the list", async () => {
+    const { app, sent, marketing } = setup({ marketingRecipientAllowlist: new Set(["new@example.invalid"]) });
+    const synced = await sync(app, "google", OPT_IN);
+    expect(synced.status).toBe(200);
+    expect(synced.body).toMatchObject({ marketingOptIn: { outcome: "test_recipient_not_allowed" } });
+
+    const button = await request(app)
+      .post("/api/me/marketing/subscription")
+      .set(bearer("google"))
+      .send({ consentTextVersion: MARKETING_CONSENT_TEXT_VERSION });
+    expect(button.status).toBe(403);
+    expect(button.body).toMatchObject({ code: "TEST_RECIPIENT_NOT_ALLOWED" });
+    expect(sent).toHaveLength(0);
+    expect(marketing.all()).toHaveLength(0);
+
+    // An address on the list works as usual.
+    expect((await sync(app, "signup", OPT_IN)).body).toMatchObject({ marketingOptIn: { outcome: "confirmation_sent" } });
+    expect(sent).toHaveLength(1);
+  });
+});
+
 describe("sign-up checkbox (marketingOptIn in POST /api/me/sync)", () => {
   it("email + password: checkbox starts double opt-in; status turns true only after confirmation", async () => {
     const { app, sent, marketing, confirm } = setup();

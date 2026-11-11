@@ -140,8 +140,23 @@ describe("loadConfig", () => {
       emailFromEmail: "sender@example.invalid",
       actionTokenSecret: ACTION_SECRET,
       frontendUrl: "http://localhost:5173",
+      recipientAllowlist: null,
     });
     expect(config.cors).toEqual({ origins: ["http://localhost:5173"], patterns: [] });
+  });
+
+  it("MARKETING_RECIPIENT_ALLOWLIST: optional test recipients, lowercased; invalid entries and production refused", () => {
+    const listed = expectConfig({ ...marketingEnv, DATABASE_URL: DB_URL, MARKETING_RECIPIENT_ALLOWLIST: " Tester@Example.invalid , second@example.invalid " });
+    expect(listed.marketing?.recipientAllowlist).toEqual(new Set(["tester@example.invalid", "second@example.invalid"]));
+    expect(expectConfig({ ...marketingEnv, DATABASE_URL: DB_URL, MARKETING_RECIPIENT_ALLOWLIST: " " }).marketing?.recipientAllowlist).toBeNull();
+    expect(expectErrors({ ...marketingEnv, DATABASE_URL: DB_URL, MARKETING_RECIPIENT_ALLOWLIST: "not-an-email" })).toEqual([
+      "MARKETING_RECIPIENT_ALLOWLIST: must be a comma-separated list of email addresses",
+    ]);
+    expect(
+      expectErrors({ ...marketingEnv, DATABASE_URL: DB_URL, MARKETING_RECIPIENT_ALLOWLIST: "a@example.invalid", NOTIFICATIONS_ENVIRONMENT: "production" }),
+    ).toEqual(["MARKETING_RECIPIENT_ALLOWLIST: must not be set in production"]);
+    // Marketing off: the list is not read at all.
+    expect(expectConfig({ DATABASE_URL: DB_URL, MARKETING_RECIPIENT_ALLOWLIST: "not-an-email" }).marketing).toBeUndefined();
   });
 
   describe("Firebase", () => {

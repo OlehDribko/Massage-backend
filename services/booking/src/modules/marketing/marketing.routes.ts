@@ -37,6 +37,12 @@ export const deliveryFailed = async (service: MarketingService, email: string): 
   });
 };
 
+/** 403 in a test environment for an address outside MARKETING_RECIPIENT_ALLOWLIST: nothing recorded or sent. */
+export const testRecipientNotAllowed = (): AppError =>
+  new AppError(403, "This test environment sends marketing emails to approved test addresses only", {
+    code: "TEST_RECIPIENT_NOT_ALLOWED",
+  });
+
 /**
  * /api/marketing: public (no account needed). Guests subscribe here too;
  * nothing here creates or changes a profile.
@@ -52,6 +58,9 @@ export const createMarketingRouter = (service: MarketingService): Router => {
         { source: "subscription_form", textVersion: requireCurrentConsentText(consentTextVersion) },
         "explicit",
       );
+      if (outcome === "test_recipient_not_allowed") {
+        throw testRecipientNotAllowed();
+      }
       if (outcome === "delivery_failed") {
         throw await deliveryFailed(service, email);
       }

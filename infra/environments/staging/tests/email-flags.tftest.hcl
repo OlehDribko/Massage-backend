@@ -1,7 +1,8 @@
 # Wiring of email settings into the staging API task for every combination of
 # enable_booking_notifications and enable_marketing_subscription: one shared
 # BREVO_API_KEY while at least one is on, ACTION_TOKEN_SECRET only with
-# marketing, nothing (and FRONTEND_URL unchanged) with both off.
+# marketing, nothing (and FRONTEND_URL unchanged) with both off; marketing on
+# staging needs the test-recipient list (MARKETING_RECIPIENT_ALLOWLIST).
 # Offline: the AWS provider is mocked (no credentials, no state, plan only).
 #   terraform init -backend=false && terraform test
 
@@ -37,7 +38,7 @@ run "both_off" {
     error_message = "both off: only the base secrets"
   }
   assert {
-    condition     = length([for e in jsondecode(aws_ecs_task_definition.api.container_definitions)[0].environment : e if contains(["EMAIL_FROM_NAME", "EMAIL_FROM_EMAIL", "ENABLE_MARKETING_SUBSCRIPTION", "ENABLE_BOOKING_NOTIFICATIONS"], e.name)]) == 0
+    condition     = length([for e in jsondecode(aws_ecs_task_definition.api.container_definitions)[0].environment : e if contains(["EMAIL_FROM_NAME", "EMAIL_FROM_EMAIL", "ENABLE_MARKETING_SUBSCRIPTION", "ENABLE_BOOKING_NOTIFICATIONS", "MARKETING_RECIPIENT_ALLOWLIST"], e.name)]) == 0
     error_message = "both off: no email settings"
   }
   assert {
@@ -70,6 +71,16 @@ run "notifications_only" {
   }
 }
 
+run "marketing_without_test_recipients" {
+  command = plan
+  variables {
+    enable_booking_notifications     = false
+    enable_marketing_subscription    = true
+    notification_recipient_allowlist = []
+  }
+  expect_failures = [aws_ecs_task_definition.api]
+}
+
 run "marketing_only" {
   command = plan
   variables {
@@ -87,6 +98,10 @@ run "marketing_only" {
   assert {
     condition     = length([for e in jsondecode(aws_ecs_task_definition.api.container_definitions)[0].environment : e if e.name == "ENABLE_BOOKING_NOTIFICATIONS"]) == 0
     error_message = "marketing: notifications stay off"
+  }
+  assert {
+    condition     = join(",", [for e in jsondecode(aws_ecs_task_definition.api.container_definitions)[0].environment : e.value if e.name == "MARKETING_RECIPIENT_ALLOWLIST"]) == "studio@example.invalid,test@example.invalid"
+    error_message = "marketing on staging: only the approved test addresses"
   }
 }
 

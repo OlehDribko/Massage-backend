@@ -120,6 +120,7 @@ export const createApplication = ({
             }),
           tokens: createActionTokenService(config.marketing.actionTokenSecret),
           frontendUrl: config.marketing.frontendUrl,
+          recipientAllowlist: config.marketing.recipientAllowlist,
           logger,
         });
 

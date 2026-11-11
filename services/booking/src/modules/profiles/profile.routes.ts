@@ -13,7 +13,7 @@ import {
   type MarketingStatus,
 } from "../marketing/consent.js";
 import type { MarketingRepository } from "../marketing/marketing.repository.js";
-import { consentTextVersionSchema, deliveryFailed } from "../marketing/marketing.routes.js";
+import { consentTextVersionSchema, deliveryFailed, testRecipientNotAllowed } from "../marketing/marketing.routes.js";
 import type { MarketingService, RequestOutcome } from "../marketing/marketing.service.js";
 import { updateOwnProfileSchema } from "./profile.schema.js";
 import { toProfileView, type ProfileService } from "./profile.service.js";
@@ -151,6 +151,9 @@ export const createProfileRouter = ({
         { source: "account_request", textVersion: requireCurrentConsentText(consentTextVersion) },
         "explicit",
       );
+      if (outcome === "test_recipient_not_allowed") {
+        throw testRecipientNotAllowed();
+      }
       if (outcome === "delivery_failed") {
         throw await deliveryFailed(marketing.service, identity.email);
       }

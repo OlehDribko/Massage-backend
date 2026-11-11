@@ -19,7 +19,7 @@ type Sent = { kind: "confirm" | "confirmed"; email: string; url: string; key: st
 
 const tokenFrom = (url: string): string => new URL(url).searchParams.get("token") ?? "";
 
-const setup = (options: { failSends?: boolean } = {}) => {
+const setup = (options: { failSends?: boolean; recipientAllowlist?: Set<string> } = {}) => {
   const sent: Sent[] = [];
   let clock = Date.parse("2026-10-27T10:00:00Z");
   // Outcome of the next confirmation requests; "accepted" records the mail.
@@ -46,6 +46,7 @@ const setup = (options: { failSends?: boolean } = {}) => {
     tokens: createActionTokenService(SECRET),
     frontendUrl: FRONTEND,
     logger: logs.logger,
+    recipientAllowlist: options.recipientAllowlist ?? null,
     now: () => clock,
   });
   const api = express.Router();
@@ -406,5 +407,61 @@ describe("marketing subscription", () => {
     });
     expect(repo.byEmail("old@example.invalid")).toBeUndefined();
     expect(sent).toHaveLength(0);
+  });
+});
+
+describe("test recipient allowlist (MARKETING_RECIPIENT_ALLOWLIST)", () => {
+  it("an address outside the list: 403 TEST_RECIPIENT_NOT_ALLOWED, no provider call, nothing recorded, no success", async () => {
+    const t = setup({ recipientAllowlist: new Set(["tester@example.invalid"]) });
+    const refused = await subscribe(t.app, "Someone@Example.invalid");
+    expect(refused.status).toBe(403);
+    expect(refused.body).toEqual({
+      message: "This test environment sends marketing emails to approved test addresses only",
+      code: "TEST_RECIPIENT_NOT_ALLOWED",
+    });
+    expect(t.attempts).toEqual([]);
+    expect(t.repo.all()).toEqual([]);
+    expect(await t.service.requestSubscription("someone@example.invalid", { source: "signup_checkbox", textVersion: MARKETING_CONSENT_TEXT_VERSION }, "signup")).toBe(
+      "test_recipient_not_allowed",
+    );
+    expect(t.attempts).toEqual([]);
+  });
+
+  it("an address on the list (any case): the usual double opt-in", async () => {
+    const t = setup({ recipientAllowlist: new Set(["tester@example.invalid"]) });
+    expect((await subscribe(t.app, "Tester@Example.invalid")).body).toEqual(NEUTRAL);
+    expect(t.sent.map((mail) => mail.kind)).toEqual(["confirm"]);
+    await confirm(t.app, tokenFrom(t.sent[0]?.url ?? "http://x/")).expect(200);
+    expect(t.sent.map((mail) => mail.kind)).toEqual(["confirm", "confirmed"]);
+  });
+
+  it("covers the email after confirmation too; a refusal never changes an active subscription or blocks unsubscribing", async () => {
+    const list = new Set(["tester@example.invalid"]);
+    const t = setup({ recipientAllowlist: list });
+    await subscribe(t.app, "tester@example.invalid").expect(202);
+    const confirmUrl = t.sent[0]?.url ?? "http://x/";
+
+    // Removed from the list before confirming: the subscription becomes active, its "confirmed" email is not sent.
+    list.delete("tester@example.invalid");
+    const confirmed = await confirm(t.app, tokenFrom(confirmUrl)).expect(200);
+    expect(confirmed.body).toMatchObject({ code: "SUBSCRIBED" });
+    expect(t.sent.map((mail) => mail.kind)).toEqual(["confirm"]);
+    expect(t.repo.all()[0]).toMatchObject({ subscribed: true });
+
+    // A new request now is refused but leaves the active subscription alone.
+    expect((await subscribe(t.app, "tester@example.invalid")).status).toBe(403);
+    expect(t.repo.all()[0]).toMatchObject({ subscribed: true });
+
+    // Unsubscribing needs no email and is never restricted.
+    const subscription = t.repo.all()[0];
+    const token = createActionTokenService(SECRET).createToken("marketing_unsubscribe", subscription?.id ?? "");
+    await unsubscribe(t.app, token).expect(200);
+    expect(t.repo.all()[0]).toMatchObject({ subscribed: false });
+  });
+
+  it("without a list nothing is restricted", async () => {
+    const t = setup();
+    expect((await subscribe(t.app, "anyone@example.invalid")).body).toEqual(NEUTRAL);
+    expect(t.sent).toHaveLength(1);
   });
 });

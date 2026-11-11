@@ -154,6 +154,7 @@ export const optInOutcomeSchema = z.enum([
   "unavailable",
   "consent_text_outdated",
   "failed",
+  "test_recipient_not_allowed",
 ]);
 
 export const syncResponseSchema = profileViewSchema
