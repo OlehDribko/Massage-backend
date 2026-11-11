@@ -318,7 +318,7 @@ variable "notification_studio_email" {
 }
 
 variable "notification_recipient_allowlist" {
-  description = "The only recipients staging may email (NOTIFICATION_RECIPIENT_ALLOWLIST): approved test mailboxes. Kept out of Git (terraform.tfvars). Required when notifications are on."
+  description = "The only recipients staging may email: approved test mailboxes, used as NOTIFICATION_RECIPIENT_ALLOWLIST and MARKETING_RECIPIENT_ALLOWLIST. Kept out of Git (terraform.tfvars). Required when notifications or marketing are on."
   type        = list(string)
   default     = []
 

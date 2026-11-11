@@ -532,7 +532,10 @@ const paths = (): OpenApiDocument["paths"] => ({
           ]),
         },
         {
-          "403": [{ message: "A registered account with an email is required; guests use the subscription form", code: "REGISTERED_ACCOUNT_REQUIRED" }],
+          "403": [
+            { message: "A registered account with an email is required; guests use the subscription form", code: "REGISTERED_ACCOUNT_REQUIRED" },
+            { message: "This test environment sends marketing emails to approved test addresses only", code: "TEST_RECIPIENT_NOT_ALLOWED" },
+          ],
           "503": [
             { message: "The confirmation email could not be sent; retry in 600 seconds", code: "CONFIRMATION_EMAIL_NOT_SENT", retryAfterSeconds: 600 },
           ],
@@ -577,6 +580,7 @@ const paths = (): OpenApiDocument["paths"] => ({
           message: "If this address can receive email and is not subscribed yet, a confirmation link has been sent to it.",
         }),
         "400": errors("Invalid body", [validation("email"), INVALID_JSON]),
+        "403": errors("Test environment only (MARKETING_RECIPIENT_ALLOWLIST): the address is not an approved test address; nothing was recorded or sent", [{ message: "This test environment sends marketing emails to approved test addresses only", code: "TEST_RECIPIENT_NOT_ALLOWED" }]),
         "409": errors("The consent text shown is outdated", [
           { message: "The consent text shown is outdated; reload and show the current one", code: "CONSENT_TEXT_OUTDATED", currentConsentTextVersion: MARKETING_CONSENT_TEXT_VERSION },
         ]),

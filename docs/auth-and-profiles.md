@@ -201,7 +201,7 @@ Content-Type: application/json
 { "consentTextVersion": "2026-10-28.fr.1" }
 ```
 
-→ `202 {"outcome":"confirmation_sent"}`; `202 {"outcome":"no_action","retryAfterSeconds":412}` — лист надіслано менше 10 хв тому, кнопку «надіслати ще раз» можна активувати через вказану кількість секунд; `202 {"outcome":"no_action"}` без `retryAfterSeconds` — уже підписано; `503 CONFIRMATION_EMAIL_NOT_SENT` — лист не відправлено, нічого не змінено; `409 CONSENT_TEXT_OUTDATED` (з `currentConsentTextVersion`); `403 REGISTERED_ACCOUNT_REQUIRED` для гостя. Маршрут існує лише при `ENABLE_MARKETING_SUBSCRIPTION=true`.
+→ `202 {"outcome":"confirmation_sent"}`; `202 {"outcome":"no_action","retryAfterSeconds":412}` — лист надіслано менше 10 хв тому, кнопку «надіслати ще раз» можна активувати через вказану кількість секунд; `202 {"outcome":"no_action"}` без `retryAfterSeconds` — уже підписано; `503 CONFIRMATION_EMAIL_NOT_SENT` — лист не відправлено, нічого не змінено; `409 CONSENT_TEXT_OUTDATED` (з `currentConsentTextVersion`); `403 REGISTERED_ACCOUNT_REQUIRED` для гостя; `403 TEST_RECIPIENT_NOT_ALLOWED` — тестове середовище, адреса не в `MARKETING_RECIPIENT_ALLOWLIST` (нічого не надіслано). Маршрут існує лише при `ENABLE_MARKETING_SUBSCRIPTION=true`.
 
 #### Відновлення незавершеної підписки
 
@@ -392,6 +392,7 @@ Brevo використовується лише для листів маркет
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | при `service-account-json` | **Секрет.** Вміст JSON-ключа; `project_id` має дорівнювати `FIREBASE_PROJECT_ID`. У логи й помилки не потрапляє |
 | `FIREBASE_AUTH_EMULATOR_HOST` | ні | Лише локально й у CI: тільки при `NODE_ENV≠production`, тільки з `demo-` проєктом і без облікових даних. При `NODE_ENV=production` — **помилка запуску** (емулятор приймає непідписані токени) |
 | `ENABLE_MARKETING_SUBSCRIPTION` | ні (`false`) | Вмикає `/api/marketing`; тоді обов'язкові `BREVO_API_KEY`, `EMAIL_FROM_NAME`, `EMAIL_FROM_EMAIL`, `ACTION_TOKEN_SECRET` (≥ 32 символи), `FRONTEND_URL` |
+| `MARKETING_RECIPIENT_ALLOWLIST` | ні (лише тестові середовища) | Список адрес через кому. Задано — маркетингові листи (запит підтвердження й лист «підписку підтверджено») лише на ці адреси; для інших — `403 TEST_RECIPIENT_NOT_ALLOWED` (форма й кабінет) або `marketingOptIn.outcome: "test_recipient_not_allowed"` (чекбокс у `sync`): нічого не записано, Brevo не викликано, успіху не показано. Активну підписку й відписку обмеження не зачіпає; якщо адресу прибрали зі списку до підтвердження, підписка стане активною, а лист «підтверджено» не піде. У production не задається (разом із `NOTIFICATIONS_ENVIRONMENT=production` — помилка запуску); staging задає його з Terraform |
 | `FRONTEND_URL` | ні | База посилань у листах підписки. Для CORS — лише коли обидва списки нижче порожні (тоді дозволено лише її origin) |
 | `CORS_ALLOWED_ORIGINS` | ні | Точні origin-и для CORS через кому, до 20. Невалідний запис — помилка запуску з назвою змінної й номером запису, без значення (`CORS_ALLOWED_ORIGINS[1]: must be an exact origin …`) |
 | `CORS_ALLOWED_ORIGIN_PATTERNS` | ні | Шаблони preview-деплоїв свого проєкту, через кому, до 10: `^https://…$`, усі крапки екрановані, без `\|` і `,`. Приклад: `^https://massage-e9zb-[a-z0-9]+-olehdrs-projects\.vercel\.app$` |

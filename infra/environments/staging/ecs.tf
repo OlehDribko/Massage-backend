@@ -51,8 +51,10 @@ locals {
       { name = "EMAIL_FROM_NAME", value = var.email_from_name },
       { name = "EMAIL_FROM_EMAIL", value = coalesce(var.email_from_email, "-") },
     ] : [],
+    # Staging sends marketing emails to the approved test addresses only.
     var.enable_marketing_subscription ? [
       { name = "ENABLE_MARKETING_SUBSCRIPTION", value = "true" },
+      { name = "MARKETING_RECIPIENT_ALLOWLIST", value = join(",", var.notification_recipient_allowlist) },
     ] : [],
   )
   api_notification_secrets = concat(
@@ -173,8 +175,8 @@ resource "aws_ecs_task_definition" "api" {
       error_message = "With enable_booking_notifications, set notification_studio_email, email_from_name, email_from_email and a notification_recipient_allowlist that contains the studio mailbox."
     }
     precondition {
-      condition     = !var.enable_marketing_subscription || var.email_from_email != null
-      error_message = "With enable_marketing_subscription, set email_from_email (a sender verified in Brevo)."
+      condition     = !var.enable_marketing_subscription || (var.email_from_email != null && length(var.notification_recipient_allowlist) > 0)
+      error_message = "With enable_marketing_subscription, set email_from_email (a sender verified in Brevo) and a non-empty notification_recipient_allowlist: staging sends marketing emails to these test addresses only."
     }
   }
 }

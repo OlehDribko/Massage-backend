@@ -37,9 +37,12 @@ const uuidSchema = z.uuid();
  *   distinguished, so the answer reveals nothing about the address. Also
  *   when the outcome of sending is unknown (timeout, network, 5xx): the email
  *   may have been accepted, so the claim and its cooldown stay and a repeat
- *   inside the cooldown sends nothing (no duplicate confirmation emails).
+ *   inside the cooldown sends nothing (no duplicate confirmation emails);
+ * - test_recipient_not_allowed: a test environment with a recipient
+ *   allowlist (MARKETING_RECIPIENT_ALLOWLIST) and the address is not on it:
+ *   nothing was recorded or sent, and no success is claimed.
  */
-export type RequestOutcome = "confirmation_sent" | "delivery_failed" | "no_action";
+export type RequestOutcome = "confirmation_sent" | "delivery_failed" | "no_action" | "test_recipient_not_allowed";
 
 export type ConfirmResult = "subscribed" | "already_subscribed";
 
@@ -58,6 +61,7 @@ export const createMarketingService = ({
   tokens,
   frontendUrl,
   logger,
+  recipientAllowlist = null,
   now = () => Date.now(),
 }: {
   repository: MarketingRepository;
@@ -65,8 +69,12 @@ export const createMarketingService = ({
   tokens: ActionTokenService;
   frontendUrl: string;
   logger: Logger;
+  /** Test environments only: marketing emails go to these addresses only (lowercase). null: no restriction. */
+  recipientAllowlist?: ReadonlySet<string> | null;
   now?: () => number;
 }) => {
+  const allowed = (email: string): boolean => recipientAllowlist === null || recipientAllowlist.has(email.trim().toLowerCase());
+
   const link = (path: "/marketing/confirm" | "/unsubscribe", token: string): string => {
     const url = new URL(path, frontendUrl);
     url.searchParams.set("token", token);
@@ -78,6 +86,12 @@ export const createMarketingService = ({
     consent: ConsentRequest,
     mode: RequestMode,
   ): Promise<RequestOutcome> => {
+    // Checked first: an address outside the test allowlist gets no row, no
+    // claim, no provider call and no success.
+    if (!allowed(email)) {
+      logger.warn({ code: "recipient_not_allowed" }, "marketing email to an address outside the test allowlist refused");
+      return "test_recipient_not_allowed";
+    }
     const subscription = await repository.ensureExists(email);
     if (subscription.subscribed) {
       return "no_action";
@@ -150,6 +164,12 @@ export const createMarketingService = ({
           "/unsubscribe",
           tokens.createToken("marketing_unsubscribe", subscription.id),
         );
+        // The subscription is active either way; outside the test allowlist
+        // only its "confirmed" email is not sent (logged).
+        if (!allowed(subscription.email)) {
+          logger.warn({ code: "recipient_not_allowed" }, "subscription confirmed email skipped: address outside the test allowlist");
+          return "subscribed";
+        }
         // Sent once per successful confirmation (repository.confirm is true
         // only once per nonce); the key ties it to that confirmation.
         const outcome = await mailer.sendSubscriptionConfirmed(

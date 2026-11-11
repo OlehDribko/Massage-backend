@@ -21,7 +21,7 @@ import { createCapturingLogger } from "./logs.js";
 export type SentMail = { kind: "confirm" | "confirmed"; email: string; url: string };
 
 export const createProfileTestApp = (
-  options: { marketingEnabled?: boolean; failMarketingSends?: boolean } = {},
+  options: { marketingEnabled?: boolean; failMarketingSends?: boolean; marketingRecipientAllowlist?: ReadonlySet<string> } = {},
 ) => {
   const identities = createFakeIdentityProvider();
   const profiles = createInMemoryProfileRepository();
@@ -61,6 +61,7 @@ export const createProfileTestApp = (
           tokens: createActionTokenService("profile-test-secret-0123456789abcdef"),
           frontendUrl: "https://front.example.invalid",
           logger: logs.logger,
+          recipientAllowlist: options.marketingRecipientAllowlist ?? null,
           now: () => clock,
         });
   const service = createProfileService(profiles.repository);
