@@ -75,7 +75,8 @@ export const createProfileRouter = ({
     return toMarketingStatus(await marketing.repository.findByEmail(profile.email));
   };
 
-  const view = async (profile: UserProfile) => toProfileView(profile, await marketingStatusOf(profile));
+  const view = async (profile: UserProfile) =>
+    toProfileView(profile, await marketingStatusOf(profile), marketing.service !== undefined);
 
   const optIn = async (identity: VerifiedIdentity, textVersion: string): Promise<OptInOutcome> => {
     if (marketing.service === undefined || identity.isAnonymous || identity.email === undefined) {

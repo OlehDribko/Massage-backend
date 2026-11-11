@@ -27,10 +27,21 @@ export type ProfileView = {
    * so nobody learns the status of an address they have not proven.
    */
   marketing: MarketingStatus | null;
+  /**
+   * Whether this server offers the marketing subscription at all
+   * (ENABLE_MARKETING_SUBSCRIPTION): the frontend shows the sign-up checkbox
+   * and the account's subscribe button only when true. Not the user's
+   * subscription (that is `marketing`).
+   */
+  marketingAvailable: boolean;
 };
 
 // The Firebase UID and internal timestamps stay server-side.
-export const toProfileView = (profile: UserProfile, marketing: MarketingStatus | null): ProfileView => ({
+export const toProfileView = (
+  profile: UserProfile,
+  marketing: MarketingStatus | null,
+  marketingAvailable: boolean,
+): ProfileView => ({
   profile: {
     id: profile.id,
     role: profile.role,
@@ -45,6 +56,7 @@ export const toProfileView = (profile: UserProfile, marketing: MarketingStatus |
   },
   bookingReadiness: bookingReadiness(profile),
   marketing,
+  marketingAvailable,
 });
 
 const profileNotFound = () =>

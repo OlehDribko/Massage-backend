@@ -361,3 +361,30 @@ describe("recovering an unfinished subscription (explicit resend)", () => {
     expect(sent).toHaveLength(1);
   });
 });
+
+describe("marketingAvailable: availability of the feature, not the user's subscription", () => {
+  it("true on a server with marketing, false without; the same for guests, unverified and verified users", async () => {
+    const on = setup();
+    const off = setup({ marketingEnabled: false });
+    for (const token of ["guest", "signup", "google"]) {
+      expect((await sync(on.app, token)).body, token).toMatchObject({ marketingAvailable: true });
+      expect((await sync(off.app, token)).body, token).toMatchObject({ marketingAvailable: false });
+      expect((await request(on.app).get("/api/me").set(bearer(token))).body, token).toMatchObject({ marketingAvailable: true });
+    }
+    // Not subscribed and available: nothing about a subscription follows from the flag.
+    expect((await sync(on.app, "google")).body).toMatchObject({ marketingAvailable: true, marketing: { subscribed: false, pendingConfirmation: false } });
+  });
+
+  it("an unverified email: the checkbox starts double opt-in, but the status stays hidden until the email is verified", async () => {
+    const { app, sent, confirm } = setup();
+    const first = await sync(app, "signup", OPT_IN);
+    expect(first.body).toMatchObject({ marketingAvailable: true, marketing: null, marketingOptIn: { outcome: "confirmation_sent" } });
+    expect(sent).toHaveLength(1);
+
+    // Still unverified in Firebase: confirming the emailed link subscribes the address, the profile still hides the status.
+    await confirm(0);
+    expect((await request(app).get("/api/me").set(bearer("signup"))).body).toMatchObject({ marketing: null });
+    // Verified: the status is shown.
+    expect((await sync(app, "signup-verified")).body).toMatchObject({ marketing: { subscribed: true, pendingConfirmation: false } });
+  });
+});

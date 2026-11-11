@@ -139,6 +139,7 @@ Content-Type: application/json
     "blockers": ["email_not_verified", "phone_missing"]
   },
   "marketing": null,
+  "marketingAvailable": true,
   "marketingOptIn": {
     "outcome": "confirmation_sent",
     "currentConsentTextVersion": "2026-10-28.fr.1"
@@ -169,6 +170,12 @@ Content-Type: application/json
   "unsubscribedAt": null
 }
 ```
+
+Три стани для інтерфейсу: «не підписаний» — `subscribed: false, pendingConfirmation: false`; «очікує підтвердження» — `pendingConfirmation: true` (лист надіслано, посилання ще не відкрито; повторний лист — `POST /api/me/marketing/subscription`, з обмеженням `retryAfterSeconds`); «підписаний» — `subscribed: true`. Відписка — `DELETE /api/me/marketing/subscription` (і зі стану «очікує»). Сам чекбокс підписку не вмикає: лише посилання з листа.
+
+**`marketingAvailable`** — чи пропонує цей сервер маркетингову підписку взагалі (`ENABLE_MARKETING_SUBSCRIPTION=true`). Це доступність **функції**, а не підписка користувача. `false`: frontend не показує чекбокс реєстрації, кнопку підписки в кабінеті й публічну форму (маршрути `/api/marketing/*` і `POST /api/me/marketing/subscription` відповідають `404`). Відписка через `DELETE /api/me/marketing/subscription` працює завжди.
+
+**Користувач із непідтвердженим email** (email + пароль до переходу за посиланням Firebase): `marketingAvailable` як для всіх, `marketing: null`. Чекбокс під час реєстрації (`marketingOptIn: true`) чи `POST /api/me/marketing/subscription` надсилають лист підтвердження підписки на адресу з токена; підписка стає активною лише після переходу за посиланням з цього листа (воно саме доводить володіння адресою). Статус у профілі з'явиться після підтвердження email у Firebase і наступного `sync` (новий токен). Відписка з кабінету до підтвердження email недоступна (`403 EMAIL_NOT_VERIFIED`) — лише за посиланням з листа.
 
 `name` нового профілю береться з токена (ім'я Google), якщо воно проходить правила імені; інакше `null`.
 

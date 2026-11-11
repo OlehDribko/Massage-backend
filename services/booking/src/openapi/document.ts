@@ -307,6 +307,7 @@ const PROFILE_EXAMPLE = {
     consentTextVersion: null,
     unsubscribedAt: null,
   },
+  marketingAvailable: true,
 };
 const SCHEDULE_EXAMPLE = {
   timeZone: "Europe/Paris",
