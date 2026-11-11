@@ -85,7 +85,7 @@
 2. `Schedule: get` → `Schedule: ⚠️ replace weekly`. Години в тілі запиту вигадані, відредагуйте їх перед надсиланням.
 3. Винятки: заповніть `exceptionDate`, далі `Schedule: ⚠️ set exception of a date` або `⚠️ remove exception of a date`.
 4. Тиждень чи місяць: заповніть `scheduleDaysFrom` / `scheduleDaysTo` (`YYYY-MM-DD`, щонайбільше 62 дні) → `Schedule: days of a range (week, month)`. Для змін — `Schedule: ⚠️ set several dates (week, month)`: дати й години в тілі вигадані, відредагуйте їх перед надсиланням.
-5. Бронювання: заповніть `adminBookingsDate` для `Bookings: list of a date`, далі `Bookings: get any` і `Bookings: ⚠️ cancel (studio)` за `bookingId`.
+5. Бронювання: заповніть `adminBookingsDate` для `Bookings: list of a date` або використайте `scheduleDaysFrom` / `scheduleDaysTo` для `Bookings: list of a range (week, month)`, далі `Bookings: get any` і `Bookings: ⚠️ cancel (studio)` за `bookingId`.
 
 **Клієнт** (`3. Client`):
 1. `Bookings: ⚠️ create (Idempotency-Key)` → зберігає `bookingId`.
