@@ -29,6 +29,7 @@ const createNotifications = (config: NotificationConfig, database: Database, log
     logger,
     workerId: newWorkerId(),
     studioEmail: config.studioEmail,
+    senderName: config.brevo.senderName,
     recipientAllowlist: config.recipientAllowlist,
     tuning: DEFAULT_TUNING,
   });

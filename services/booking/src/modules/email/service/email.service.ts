@@ -1,5 +1,6 @@
 import { BrevoClient } from "@getbrevo/brevo";
 import { classifyBrevoError } from "../../../integrations/brevo/brevo-errors.js";
+import type { RenderedEmail } from "../../../shared/email/layout.js";
 import { emailTemplates } from "../templates/email.templates.js";
 import type { SendTransactionalEmailType } from "../types/email.types.js";
 
@@ -58,13 +59,14 @@ export const createBrevoMarketingMailer = ({
   });
 
   const send = async (
-    { to, subject, htmlContent }: SendTransactionalEmailType,
+    { to, subject, htmlContent, textContent }: SendTransactionalEmailType,
     idempotencyKey: string,
   ): Promise<MailOutcome> => {
     try {
       await brevo.transactionalEmails.sendTransacEmail({
         subject,
         htmlContent,
+        textContent,
         sender: { name: fromName, email: fromEmail },
         to,
         headers: { idempotencyKey },
@@ -86,24 +88,17 @@ export const createBrevoMarketingMailer = ({
     }
   };
 
+  const message = (email: string, rendered: RenderedEmail): SendTransactionalEmailType => ({
+    to: [{ email }],
+    subject: rendered.subject,
+    htmlContent: rendered.html,
+    textContent: rendered.text,
+  });
+
   return {
     sendConfirmationRequest: (email, confirmUrl, idempotencyKey) =>
-      send(
-        {
-          to: [{ email }],
-          subject: "Confirmez votre inscription aux offres",
-          htmlContent: emailTemplates.marketingConfirmationRequest(confirmUrl),
-        },
-        idempotencyKey,
-      ),
+      send(message(email, emailTemplates.marketingConfirmationRequest(confirmUrl, fromName)), idempotencyKey),
     sendSubscriptionConfirmed: (email, unsubscribeUrl, idempotencyKey) =>
-      send(
-        {
-          to: [{ email }],
-          subject: "Votre inscription aux offres est confirmée",
-          htmlContent: emailTemplates.offersSubscriptionConfirmation(unsubscribeUrl),
-        },
-        idempotencyKey,
-      ),
+      send(message(email, emailTemplates.offersSubscriptionConfirmation(unsubscribeUrl, fromName)), idempotencyKey),
   };
 };

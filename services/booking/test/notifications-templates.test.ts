@@ -12,6 +12,8 @@ import {
   rescheduledPayload,
 } from "./helpers/booking-event.js";
 
+const OPTIONS = { senderName: "Стефанія Бень" };
+
 const all = (email: RenderedEmail): string => `${email.subject}\n${email.html}\n${email.text}`;
 
 const INTERNAL = [BOOKING_ID, CLIENT_PROFILE_ID, ADMIN_PROFILE_ID, SERVICE_ID, "profileId", "bookingId", "admin"];
@@ -38,13 +40,18 @@ describe("French formatting", () => {
 
 describe("client emails: content matches the event, nothing internal", () => {
   it("booking.created", () => {
-    const email = renderEmail(eventOf("booking.created", createdPayload()), "client");
+    const email = renderEmail(eventOf("booking.created", createdPayload()), "client", OPTIONS);
     expect(email.subject).toBe("Votre rendez-vous est confirmé");
     expect(email.text).toContain("Bonjour Anna Client,");
+    expect(email.text.startsWith("Rendez-vous confirmé")).toBe(true);
+    // Signed with the configured sender name only.
+    expect(email.text.endsWith("À bientôt,\nСтефанія Бень")).toBe(true);
+    expect(all(email)).not.toMatch(/Stefania|Stefaniia/);
     expect(email.text).toContain("Date : mardi 2 mars 2027 à 09:00 (heure de Paris)");
     expect(email.text).toContain("Prestation : Massage 60");
     expect(email.text).toContain("Durée : 60\u00a0min");
-    expect(email.text).toContain("Prix : 65,00\u00a0€ — paiement sur place");
+    expect(email.text).toContain("Prix : 65,00\u00a0€");
+    expect(email.text).toContain("Paiement : sur place, le jour du rendez-vous");
     for (const internal of [...INTERNAL, "+33612345678", "anna@example.invalid"]) {
       expect(all(email)).not.toContain(internal);
     }
@@ -52,24 +59,25 @@ describe("client emails: content matches the event, nothing internal", () => {
   });
 
   it("booking.rescheduled: old and new time, complete on its own", () => {
-    const email = renderEmail(eventOf("booking.rescheduled", rescheduledPayload()), "client");
+    const email = renderEmail(eventOf("booking.rescheduled", rescheduledPayload()), "client", OPTIONS);
     expect(email.subject).toBe("Votre rendez-vous a été déplacé");
     expect(email.text).toContain("Ancien horaire : mardi 2 mars 2027 à 09:00 (heure de Paris)");
     expect(email.text).toContain("Nouvel horaire : mercredi 3 mars 2027 à 14:00 (heure de Paris)");
     expect(email.text).toContain("confirmé au nouvel horaire");
-    expect(email.text).toContain("Prix : 65,00\u00a0€ — paiement sur place");
+    expect(email.text).toContain("Prix : 65,00\u00a0€");
+    expect(email.text).toContain("Paiement : sur place, le jour du rendez-vous");
     for (const internal of INTERNAL) {
       expect(all(email)).not.toContain(internal);
     }
   });
 
   it("booking.cancelled by the client and by the studio (reason only when given)", () => {
-    const byClient = renderEmail(eventOf("booking.cancelled", cancelledPayload("client", null)), "client");
+    const byClient = renderEmail(eventOf("booking.cancelled", cancelledPayload("client", null)), "client", OPTIONS);
     expect(byClient.subject).toBe("Votre rendez-vous a été annulé");
     expect(byClient.text).toContain("annulé à votre demande");
     expect(byClient.text).not.toContain("Motif");
 
-    const byStudio = renderEmail(eventOf("booking.cancelled", cancelledPayload("admin", "Studio fermé")), "client");
+    const byStudio = renderEmail(eventOf("booking.cancelled", cancelledPayload("admin", "Studio fermé")), "client", OPTIONS);
     expect(byStudio.text).toContain("Le studio a annulé votre rendez-vous.");
     expect(byStudio.text).toContain("Motif : Studio fermé");
     expect(byStudio.text).toContain("Durée : 60\u00a0min");
@@ -82,22 +90,23 @@ describe("client emails: content matches the event, nothing internal", () => {
     const email = renderEmail(
       eventOf("booking.created", createdPayload({ client: { profileId: CLIENT_PROFILE_ID, name: null, email: "a@example.invalid", phone: null } })),
       "client",
+      OPTIONS,
     );
-    expect(email.text.startsWith("Bonjour,")).toBe(true);
+    expect(email.text).toContain("\nBonjour,\n");
   });
 });
 
 describe("studio emails: only the latest state, compared with what the studio was told", () => {
   it("a move the studio never heard of the booking before is a new booking at the current time", () => {
-    const email = renderEmail(eventOf("booking.rescheduled", rescheduledPayload()), "studio", { kind: "new" });
+    const email = renderEmail(eventOf("booking.rescheduled", rescheduledPayload()), "studio", { ...OPTIONS, studio: { kind: "new" } });
     expect(email.subject.startsWith("Nouveau rendez-vous :")).toBe(true);
     expect(email.text).not.toContain("Ancien horaire");
   });
 
   it("a move after an accepted email shows the time the studio was told, then the current one", () => {
     const email = renderEmail(eventOf("booking.rescheduled", rescheduledPayload()), "studio", {
-      kind: "moved",
-      previousStartsAt: "2027-03-01T08:00:00.000Z",
+      ...OPTIONS,
+      studio: { kind: "moved", previousStartsAt: "2027-03-01T08:00:00.000Z" },
     });
     expect(email.subject.startsWith("Rendez-vous déplacé :")).toBe(true);
     expect(email.text).toContain("Ancien horaire : lundi 1 mars 2027 à 09:00");
@@ -106,27 +115,28 @@ describe("studio emails: only the latest state, compared with what the studio wa
 
 describe("studio emails: client contacts and who cancelled", () => {
   it("booking.created", () => {
-    const email = renderEmail(eventOf("booking.created", createdPayload()), "studio");
+    const email = renderEmail(eventOf("booking.created", createdPayload()), "studio", OPTIONS);
     expect(email.subject).toBe("Nouveau rendez-vous : Massage 60, mardi 2 mars 2027 à 09:00");
     expect(email.text).toContain("Client : Anna Client");
     expect(email.text).toContain("E-mail : anna@example.invalid");
     expect(email.text).toContain("Téléphone : +33612345678");
-    expect(email.text).toContain("Prix : 65,00\u00a0€ — paiement sur place");
+    expect(email.text).toContain("Prix : 65,00\u00a0€");
+    expect(email.text).toContain("Paiement : sur place, le jour du rendez-vous");
     expect(all(email)).not.toContain(CLIENT_PROFILE_ID);
   });
 
   it("booking.rescheduled", () => {
-    const email = renderEmail(eventOf("booking.rescheduled", rescheduledPayload()), "studio");
+    const email = renderEmail(eventOf("booking.rescheduled", rescheduledPayload()), "studio", OPTIONS);
     expect(email.subject).toBe("Rendez-vous déplacé : Massage 60, mercredi 3 mars 2027 à 14:00");
     expect(email.text).toContain("Ancien horaire : mardi 2 mars 2027 à 09:00");
     expect(email.text).toContain("Nouvel horaire : mercredi 3 mars 2027 à 14:00");
   });
 
   it("booking.cancelled", () => {
-    const byClient = renderEmail(eventOf("booking.cancelled", cancelledPayload("client", null)), "studio");
+    const byClient = renderEmail(eventOf("booking.cancelled", cancelledPayload("client", null)), "studio", OPTIONS);
     expect(byClient.subject).toBe("Rendez-vous annulé : Massage 60, mardi 2 mars 2027 à 09:00");
     expect(byClient.text).toContain("Annulé par : le client");
-    const byStudio = renderEmail(eventOf("booking.cancelled", cancelledPayload("admin", "Fermeture")), "studio");
+    const byStudio = renderEmail(eventOf("booking.cancelled", cancelledPayload("admin", "Fermeture")), "studio", OPTIONS);
     expect(byStudio.text).toContain("Annulé par : le studio");
     expect(byStudio.text).toContain("Motif : Fermeture");
   });
@@ -136,7 +146,7 @@ describe("studio emails: client contacts and who cancelled", () => {
       service: { id: SERVICE_ID, name: "Massage <img src=x onerror=alert(1)>\r\nBcc: x@y", durationMinutes: 60, priceCents: 6500, currency: "EUR" },
       client: { profileId: CLIENT_PROFILE_ID, name: `"><script>alert(1)</script>`, email: "anna@example.invalid", phone: null },
     });
-    const email = renderEmail(eventOf("booking.created", hostile), "studio");
+    const email = renderEmail(eventOf("booking.created", hostile), "studio", OPTIONS);
     expect(email.html).not.toContain("<script>");
     expect(email.html).not.toContain("<img");
     expect(email.html).toContain("&lt;script&gt;");
