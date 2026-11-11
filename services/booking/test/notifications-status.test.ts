@@ -86,4 +86,14 @@ describe("notification status read model", () => {
       reason: "invalid_event",
     });
   });
+
+  it("the studio's delayed email is scheduled, not overdue; skipped as unchanged after a move and back", () => {
+    expect(recipientStatus(event(), delivery({ recipientRole: "studio", nextAttemptAt: minutes(30) }), NOW)).toMatchObject({
+      status: "pending",
+      reason: "scheduled",
+    });
+    const unchanged = recipientStatus(event(), delivery({ recipientRole: "studio", status: "skipped", resultCode: "unchanged" }), NOW);
+    expect(unchanged).toMatchObject({ status: "skipped", reason: "unchanged" });
+    expect(clientReason(unchanged)).toBeNull();
+  });
 });

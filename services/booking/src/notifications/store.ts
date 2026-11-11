@@ -22,10 +22,24 @@ export type PlanResult = { planned: PlannedEvent[]; fetched: number };
  * Each event is planned once (primary key on eventId): its recipients are
  * fixed then, so a later change of the studio address never adds deliveries
  * for an event already planned. Unusable events get a visible invalid state.
+ *
+ * Timing (agreed 2026-11-10): the client's email is due at once; the
+ * studio's email about a new or moved booking is due `studioDelayMs` after
+ * the business event (OutboxEvent.occurredAt, not the time of planning), so
+ * a late planning after a restart never restarts the countdown. A
+ * cancellation is due at once for both.
+ *
+ * A newer event supersedes, in the same transaction, the emails about the
+ * creation or an earlier move of the booking that are not sent yet:
+ * pending ones (first attempt or a scheduled retry) and in-progress ones
+ * whose lease has expired (no live worker; a late result of the old worker
+ * is fenced out by the cleared lease token). An attempt still running under
+ * a valid lease cannot be recalled; the worker drops it instead of retrying
+ * (worker.ts). Cancellation emails are never superseded.
  */
 export const planNewEvents = async (
   prisma: PrismaClient,
-  { now, studioEmail, limit }: { now: Date; studioEmail: string; limit: number },
+  { now, studioEmail, limit, studioDelayMs }: { now: Date; studioEmail: string; limit: number; studioDelayMs: number },
 ): Promise<PlanResult> => {
   const events = await prisma.outboxEvent.findMany({
     where: { notification: { is: null } },
@@ -56,13 +70,18 @@ export const planNewEvents = async (
         return { eventId: row.id, status: "invalid", reasonCode: parsed.reason };
       }
 
+      const bookingId = parsed.event.payload.bookingId;
+      await supersedeEarlier(tx, { bookingId, position: row.position, now });
+
       const common = {
         eventId: row.id,
         eventPosition: row.position,
         eventType: parsed.event.type,
-        bookingId: parsed.event.payload.bookingId,
+        bookingId,
         nextAttemptAt: now,
       };
+      const studioDueAt =
+        parsed.event.type === "booking.cancelled" ? now : new Date(row.occurredAt.getTime() + studioDelayMs);
       const clientEmail = parsed.event.payload.client.email;
       const clientEmailValid = clientEmail !== null && recipientEmailSchema.safeParse(clientEmail).success;
       await tx.notificationDelivery.createMany({
@@ -77,7 +96,7 @@ export const planNewEvents = async (
                 resultCode: clientEmail === null ? "recipient_missing" : "recipient_invalid",
                 completedAt: now,
               },
-          { ...common, recipientRole: "studio", recipientEmail: studioEmail },
+          { ...common, recipientRole: "studio", recipientEmail: studioEmail, nextAttemptAt: studioDueAt },
         ],
         skipDuplicates: true,
       });
@@ -88,6 +107,32 @@ export const planNewEvents = async (
     }
   }
   return { planned, fetched: events.length };
+};
+
+/** Emails about these events go stale once a newer event of the booking exists. */
+export const SUPERSEDABLE_EVENT_TYPES = ["booking.created", "booking.rescheduled"];
+
+const supersedeEarlier = async (
+  tx: Prisma.TransactionClient,
+  { bookingId, position, now }: { bookingId: string; position: bigint; now: Date },
+): Promise<void> => {
+  await tx.notificationDelivery.updateMany({
+    where: {
+      bookingId,
+      eventPosition: { lt: position },
+      eventType: { in: SUPERSEDABLE_EVENT_TYPES },
+      OR: [{ status: "pending" }, { status: "in_progress", leaseExpiresAt: { lte: now } }],
+    },
+    data: {
+      status: "skipped",
+      resultCode: "superseded",
+      completedAt: now,
+      leaseOwner: null,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      updatedAt: now,
+    },
+  });
 };
 
 const claimedRowSchema = z.object({
@@ -271,3 +316,27 @@ export const hasNewerEvent = async (
   prisma: PrismaClient,
   { bookingId, position }: { bookingId: string; position: bigint },
 ): Promise<boolean> => (await prisma.outboxEvent.count({ where: { aggregateId: bookingId, position: { gt: position } } })) > 0;
+
+const acceptedTimeSchema = z.array(z.object({ payload: z.unknown() }));
+
+/**
+ * The booking time the studio was last told about: the payload of the latest
+ * event before `position` whose studio email the provider accepted. null:
+ * the studio has received no email about this booking yet.
+ */
+export const lastAcceptedStudioPayload = async (
+  prisma: PrismaClient,
+  { bookingId, position }: { bookingId: string; position: bigint },
+): Promise<unknown> => {
+  const rows = await prisma.$queryRaw<unknown[]>`
+    SELECT o.payload
+      FROM "NotificationDelivery" d
+      JOIN "OutboxEvent" o ON o.id = d."eventId"
+     WHERE d."bookingId" = ${bookingId}::uuid
+       AND d."recipientRole" = 'studio'
+       AND d.status = 'accepted'
+       AND d."eventPosition" < ${position}
+     ORDER BY d."eventPosition" DESC
+     LIMIT 1`;
+  return acceptedTimeSchema.parse(rows)[0]?.payload ?? null;
+};

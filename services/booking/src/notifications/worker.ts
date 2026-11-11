@@ -1,7 +1,7 @@
 import type { PrismaClient } from "../generated/prisma/client.js";
 import type { Logger } from "../logging/logger.js";
 import type { WorkerTuning } from "./config.js";
-import { parseBookingEvent } from "./event-contract.js";
+import { bookingPayloadSchema, parseBookingEvent, type BookingEvent } from "./event-contract.js";
 import type { EmailProvider } from "./provider.js";
 import { retryAfterTooLong, retryDelayMs } from "./retry.js";
 import {
@@ -9,11 +9,12 @@ import {
   completeDelivery,
   failExhausted,
   hasNewerEvent,
+  lastAcceptedStudioPayload,
   planNewEvents,
   type ClaimedDelivery,
   type Completion,
 } from "./store.js";
-import { renderEmail } from "./templates.js";
+import { renderEmail, type StudioContext } from "./templates.js";
 
 export type WorkerDeps = {
   prisma: PrismaClient;
@@ -81,6 +82,26 @@ export const createWorker = (deps: WorkerDeps): Worker => {
     }
   };
 
+  /**
+   * What the studio's email about a new or moved booking says: the studio
+   * hears only the latest state, compared with what it was last told.
+   * - nothing accepted yet (the earlier emails were superseded): a new booking;
+   * - accepted before: moved, from the time in that email to the current one;
+   * - accepted before with the same time (moved and back): nothing to tell.
+   */
+  const studioContext = async (event: BookingEvent, position: bigint): Promise<StudioContext> => {
+    const told = bookingPayloadSchema.safeParse(
+      await lastAcceptedStudioPayload(deps.prisma, { bookingId: event.payload.bookingId, position }),
+    );
+    if (!told.success) {
+      return { kind: "new" };
+    }
+    if (Date.parse(told.data.startsAt) === Date.parse(event.payload.startsAt)) {
+      return { kind: "unchanged" };
+    }
+    return { kind: "moved", previousStartsAt: told.data.startsAt };
+  };
+
   const process = async (delivery: ClaimedDelivery): Promise<void> => {
     const parsed = parseBookingEvent(delivery);
     if (!parsed.ok) {
@@ -92,18 +113,28 @@ export const createWorker = (deps: WorkerDeps): Worker => {
       await record(delivery, { status: "failed", resultCode: "recipient_missing", lastErrorCode: null });
       return;
     }
-    // Agreed rule for stale client emails (2026-10-31): a confirmation or a
-    // rescheduling not yet accepted by the provider is skipped when a newer
-    // event of the same booking exists (the newer email is complete on its
-    // own) or the session has already started. Cancellations and all studio
-    // emails are always sent; accepted emails are never touched.
-    if (delivery.recipientRole === "client" && parsed.event.type !== "booking.cancelled") {
-      if (await hasNewerEvent(deps.prisma, { bookingId: parsed.event.payload.bookingId, position: delivery.eventPosition })) {
-        await record(delivery, { status: "skipped", resultCode: "superseded" });
-        return;
-      }
-      if (Date.parse(parsed.event.payload.startsAt) <= now().getTime()) {
-        await record(delivery, { status: "skipped", resultCode: "session_already_started" });
+    // Stale emails (agreed 2026-10-31, extended to the studio 2026-11-10): an
+    // email about the creation or a move, not yet accepted by the provider,
+    // is skipped once a newer event of the same booking exists; the newer
+    // email is complete on its own. Checked against the outbox, so changes
+    // committed before a restart count even if they are not planned yet.
+    // Cancellations are always sent; accepted emails are never touched.
+    const supersedable = parsed.event.type !== "booking.cancelled";
+    const isStale = () =>
+      hasNewerEvent(deps.prisma, { bookingId: parsed.event.payload.bookingId, position: delivery.eventPosition });
+    if (supersedable && (await isStale())) {
+      await record(delivery, { status: "skipped", resultCode: "superseded" });
+      return;
+    }
+    if (delivery.recipientRole === "client" && supersedable && Date.parse(parsed.event.payload.startsAt) <= now().getTime()) {
+      await record(delivery, { status: "skipped", resultCode: "session_already_started" });
+      return;
+    }
+    let studio: StudioContext | undefined;
+    if (delivery.recipientRole === "studio" && supersedable) {
+      studio = await studioContext(parsed.event, delivery.eventPosition);
+      if (studio.kind === "unchanged") {
+        await record(delivery, { status: "skipped", resultCode: "unchanged" });
         return;
       }
     }
@@ -114,7 +145,7 @@ export const createWorker = (deps: WorkerDeps): Worker => {
       return;
     }
 
-    const email = renderEmail(parsed.event, delivery.recipientRole);
+    const email = renderEmail(parsed.event, delivery.recipientRole, studio);
     const outcome = await deps.provider.send({
       to: recipient,
       subject: email.subject,
@@ -150,6 +181,12 @@ export const createWorker = (deps: WorkerDeps): Worker => {
           await record(delivery, { status: "failed", resultCode: "attempts_exhausted", lastErrorCode: outcome.code });
           return;
         }
+        // A newer event arrived while this attempt ran: the old email is not
+        // retried, so it neither goes out late nor holds back the newer one.
+        if (supersedable && (await isStale())) {
+          await record(delivery, { status: "skipped", resultCode: "superseded" });
+          return;
+        }
         await record(delivery, {
           status: "pending",
           nextAttemptAt: new Date(
@@ -166,7 +203,12 @@ export const createWorker = (deps: WorkerDeps): Worker => {
     // Plan everything that is new, in position order, batch by batch.
     let plannedTotal = 0;
     for (;;) {
-      const batch = await planNewEvents(deps.prisma, { now: now(), studioEmail: deps.studioEmail, limit: tuning.planBatchSize });
+      const batch = await planNewEvents(deps.prisma, {
+        now: now(),
+        studioEmail: deps.studioEmail,
+        limit: tuning.planBatchSize,
+        studioDelayMs: tuning.studioDelayMs,
+      });
       plannedTotal += batch.planned.length;
       for (const event of batch.planned.filter((item) => item.status === "invalid")) {
         logger.error({ eventId: event.eventId, code: event.reasonCode }, "outbox event cannot be used for notifications");

@@ -87,6 +87,23 @@ describe("client emails: content matches the event, nothing internal", () => {
   });
 });
 
+describe("studio emails: only the latest state, compared with what the studio was told", () => {
+  it("a move the studio never heard of the booking before is a new booking at the current time", () => {
+    const email = renderEmail(eventOf("booking.rescheduled", rescheduledPayload()), "studio", { kind: "new" });
+    expect(email.subject.startsWith("Nouveau rendez-vous :")).toBe(true);
+    expect(email.text).not.toContain("Ancien horaire");
+  });
+
+  it("a move after an accepted email shows the time the studio was told, then the current one", () => {
+    const email = renderEmail(eventOf("booking.rescheduled", rescheduledPayload()), "studio", {
+      kind: "moved",
+      previousStartsAt: "2027-03-01T08:00:00.000Z",
+    });
+    expect(email.subject.startsWith("Rendez-vous déplacé :")).toBe(true);
+    expect(email.text).toContain("Ancien horaire : lundi 1 mars 2027 à 09:00");
+  });
+});
+
 describe("studio emails: client contacts and who cancelled", () => {
   it("booking.created", () => {
     const email = renderEmail(eventOf("booking.created", createdPayload()), "studio");

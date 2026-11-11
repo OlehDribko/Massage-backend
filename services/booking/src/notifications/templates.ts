@@ -11,6 +11,16 @@ export type RecipientRole = "client" | "studio";
 
 export type RenderedEmail = { subject: string; html: string; text: string };
 
+/**
+ * The studio's email about a new or moved booking compares the latest state
+ * with what the studio was last told (worker.ts): intermediate moves are
+ * never listed.
+ */
+export type StudioContext =
+  | { kind: "new" }
+  | { kind: "moved"; previousStartsAt: string }
+  | { kind: "unchanged" };
+
 const HTML_ESCAPES: Readonly<Record<string, string>> = {
   "&": "&amp;",
   "<": "&lt;",
@@ -129,7 +139,13 @@ const greetingFor = (payload: BookingPayload): string => {
 
 const reasonFacts = (reason: string | null): Fact[] => (reason === null ? [] : [["Motif", reason]]);
 
-export const renderEmail = (event: BookingEvent, recipient: RecipientRole): RenderedEmail => {
+export const renderEmail = (
+  event: BookingEvent,
+  recipient: RecipientRole,
+  studio: StudioContext = event.type === "booking.rescheduled"
+    ? { kind: "moved", previousStartsAt: event.payload.previous.startsAt }
+    : { kind: "new" },
+): RenderedEmail => {
   const { payload } = event;
   const service = oneLine(payload.service.name);
 
@@ -178,22 +194,24 @@ export const renderEmail = (event: BookingEvent, recipient: RecipientRole): Rend
   }
 
   const closing = "Message automatique du système de réservation.";
+  if (event.type !== "booking.cancelled" && studio.kind !== "moved") {
+    return render({
+      subject: `Nouveau rendez-vous : ${service}, ${formatDateTime(payload.startsAt, payload.timeZone)}`,
+      greeting: "Bonjour,",
+      paragraphs: ["Un nouveau rendez-vous a été réservé."],
+      facts: [["Date", when(payload.startsAt, payload)], ...serviceFacts(payload), ...clientFacts(payload)],
+      closing,
+    });
+  }
   switch (event.type) {
     case "booking.created":
-      return render({
-        subject: `Nouveau rendez-vous : ${service}, ${formatDateTime(payload.startsAt, payload.timeZone)}`,
-        greeting: "Bonjour,",
-        paragraphs: ["Un nouveau rendez-vous a été réservé."],
-        facts: [["Date", when(payload.startsAt, payload)], ...serviceFacts(payload), ...clientFacts(payload)],
-        closing,
-      });
     case "booking.rescheduled":
       return render({
         subject: `Rendez-vous déplacé : ${service}, ${formatDateTime(payload.startsAt, payload.timeZone)}`,
         greeting: "Bonjour,",
         paragraphs: ["Le client a déplacé son rendez-vous."],
         facts: [
-          ["Ancien horaire", when(event.payload.previous.startsAt, payload)],
+          ["Ancien horaire", when(studio.kind === "moved" ? studio.previousStartsAt : payload.startsAt, payload)],
           ["Nouvel horaire", when(payload.startsAt, payload)],
           ...serviceFacts(payload),
           ...clientFacts(payload),

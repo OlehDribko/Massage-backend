@@ -27,6 +27,13 @@ export type WorkerTuning = {
    * failed / retry_after_too_long instead.
    */
   retryAfterCapMs: number;
+  /**
+   * The studio's email about a new or moved booking is due this long after
+   * the business event (agreed 2026-11-10: 30 min). A later change of the
+   * same booking supersedes it, so the studio gets one email with the latest
+   * state. Client emails and cancellations are not delayed.
+   */
+  studioDelayMs: number;
 };
 
 export const DEFAULT_TUNING: WorkerTuning = {
@@ -38,6 +45,7 @@ export const DEFAULT_TUNING: WorkerTuning = {
   retryDelaysMs: [60_000, 5 * 60_000],
   retryJitterRatio: 0.2,
   retryAfterCapMs: 10 * 60_000,
+  studioDelayMs: 30 * 60_000,
 };
 
 /**

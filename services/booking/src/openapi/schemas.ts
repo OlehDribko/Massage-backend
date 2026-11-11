@@ -193,8 +193,10 @@ const adminRecipient = z.strictObject({
   status: notificationState,
   reason: z
     .enum([
+      "scheduled",
       "retry_scheduled",
       "superseded",
+      "unchanged",
       "session_already_started",
       "test_environment",
       "no_valid_address",
@@ -209,6 +211,8 @@ const adminRecipient = z.strictObject({
     ])
     .nullable(),
   attempts: z.int().min(0).meta({ description: "At most 3 per recipient" }),
+  // scheduled: the studio's email about a new or moved booking waits 30 min after the change;
+  // unchanged: moved and back before it went out, the studio's last email is still right.
   lastAttemptAt: instant.nullable(),
   acceptedAt: instant.nullable(),
 });

@@ -34,8 +34,12 @@ export type ClientNotificationReason =
   | "not_sent";
 
 export type AdminNotificationReason =
+  /** The studio's email waits for its agreed delay (30 min after the change). */
+  | "scheduled"
   | "retry_scheduled"
   | "superseded"
+  /** Moved and back before the studio's email went out: the studio's last email is still right. */
+  | "unchanged"
   | "session_already_started"
   | "test_environment"
   | "no_valid_address"
@@ -125,6 +129,7 @@ const FAILED_REASONS: Record<string, AdminNotificationReason> = {
 
 const SKIPPED_REASONS: Record<string, AdminNotificationReason> = {
   superseded: "superseded",
+  unchanged: "unchanged",
   session_already_started: "session_already_started",
   recipient_not_allowed: "test_environment",
 };
@@ -160,7 +165,10 @@ export const recipientStatus = (event: EventRow, delivery: DeliveryRow | undefin
       if (delivery.nextAttemptAt.getTime() + OVERDUE_AFTER_MS < at) {
         return { ...base, status: "interrupted", reason: "processing_delayed" };
       }
-      return { ...base, status: "pending", reason: delivery.attempts > 0 ? "retry_scheduled" : null };
+      if (delivery.attempts > 0) {
+        return { ...base, status: "pending", reason: "retry_scheduled" };
+      }
+      return { ...base, status: "pending", reason: delivery.nextAttemptAt.getTime() > at ? "scheduled" : null };
   }
 };
 
@@ -174,6 +182,8 @@ export const clientReason = (status: AdminRecipientStatus): ClientNotificationRe
     case "no_valid_address":
       return status.reason;
     case null:
+    case "scheduled":
+    case "unchanged":
     case "processing_interrupted":
     case "processing_delayed":
       return null;
