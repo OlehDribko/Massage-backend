@@ -29,11 +29,16 @@ locals {
     key => "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter${name}"
   }
 
-  # Booking notifications run inside the API. Their Brevo key is wired (task
-  # secret and execution-role permission) only while they are enabled, so a
-  # missing parameter never blocks the API start when they are off.
-  brevo_api_key_parameter     = "${local.ssm_parameter_prefix}/brevo-api-key"
-  brevo_api_key_parameter_arn = "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter${local.brevo_api_key_parameter}"
+  # Email from the API: booking notifications and marketing (double opt-in)
+  # share one Brevo key, wired (task secret and execution-role permission)
+  # while at least one of them is on. The action-token secret signs marketing
+  # links only. With both off neither is wired, so missing parameters never
+  # block the API start.
+  api_email_enabled                 = var.enable_booking_notifications || var.enable_marketing_subscription
+  brevo_api_key_parameter           = "${local.ssm_parameter_prefix}/brevo-api-key"
+  brevo_api_key_parameter_arn       = "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter${local.brevo_api_key_parameter}"
+  action_token_secret_parameter     = "${local.ssm_parameter_prefix}/action-token-secret"
+  action_token_secret_parameter_arn = "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter${local.action_token_secret_parameter}"
 
   # API (runtime) and migration task: image repository, log group, secrets.
   # Only the API verifies Firebase ID tokens; the migration task never gets
@@ -47,7 +52,8 @@ locals {
           local.booking_parameter_arns.database_url,
           local.booking_parameter_arns.firebase_service_account,
         ],
-        var.enable_booking_notifications ? [local.brevo_api_key_parameter_arn] : [],
+        local.api_email_enabled ? [local.brevo_api_key_parameter_arn] : [],
+        var.enable_marketing_subscription ? [local.action_token_secret_parameter_arn] : [],
       )
     }
     migrate = {

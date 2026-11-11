@@ -260,7 +260,7 @@ variable "firebase_project_id" {
 }
 
 variable "frontend_url" {
-  description = "FRONTEND_URL of the API: base of marketing email links (marketing is off on staging). The CORS origin only while cors_allowed_origins and cors_allowed_origin_patterns are both empty. Exact origin: scheme, host and optional port; no path, no trailing slash, no wildcard."
+  description = "FRONTEND_URL of the API while marketing is off (with marketing on, marketing_frontend_url is used). The CORS origin only while cors_allowed_origins and cors_allowed_origin_patterns are both empty. Exact origin: scheme, host and optional port; no path, no trailing slash, no wildcard."
   type        = string
   default     = "http://localhost:3000"
 
@@ -329,18 +329,44 @@ variable "notification_recipient_allowlist" {
 }
 
 variable "email_from_name" {
-  description = "Sender name of booking notifications (EMAIL_FROM_NAME). Required when notifications are on."
+  description = "Sender name of booking and marketing emails (EMAIL_FROM_NAME), also the signature of client emails. Used while notifications or marketing are on."
   type        = string
-  default     = null
+  default     = "Стефанія Бень"
+
+  validation {
+    condition     = length(trimspace(var.email_from_name)) > 0 && length(var.email_from_name) <= 70 && !can(regex("[\\r\\n,]", var.email_from_name))
+    error_message = "email_from_name must be a non-empty single line (at most 70 characters, no comma)."
+  }
 }
 
 variable "email_from_email" {
-  description = "Sender address (EMAIL_FROM_EMAIL); must be a verified sender or on an authenticated domain in Brevo. Required when notifications are on."
+  description = "Sender address (EMAIL_FROM_EMAIL) of booking and marketing emails; must be a verified sender or on an authenticated domain in Brevo. Required when notifications or marketing are on."
   type        = string
   default     = null
 
   validation {
     condition     = var.email_from_email == null || can(regex("^[^@\\s,]+@[^@\\s,]+\\.[^@\\s,]+$", var.email_from_email))
     error_message = "email_from_email must be an email address."
+  }
+}
+
+# --- Marketing subscription (double opt-in, docs/auth-and-profiles.md) ---
+# Off by default. While off, the API task gets no marketing settings and no
+# ACTION_TOKEN_SECRET; the Brevo key is shared with notifications.
+
+variable "enable_marketing_subscription" {
+  description = "ENABLE_MARKETING_SUBSCRIPTION of the API. true also wires BREVO_API_KEY and ACTION_TOKEN_SECRET (both SSM parameters must exist), requires email_from_email and switches FRONTEND_URL to marketing_frontend_url."
+  type        = bool
+  default     = false
+}
+
+variable "marketing_frontend_url" {
+  description = "FRONTEND_URL while marketing is on: base of the confirm (/marketing/confirm) and unsubscribe (/unsubscribe) links in emails. The stable frontend origin, never a preview deployment."
+  type        = string
+  default     = "https://massage-e9zb.vercel.app"
+
+  validation {
+    condition     = can(regex("^https://[a-z0-9.-]+$", var.marketing_frontend_url))
+    error_message = "marketing_frontend_url must be an exact https origin such as https://app.example.com (no path, no trailing slash)."
   }
 }

@@ -138,7 +138,7 @@ jobs:
 
   # Static Terraform checks only: no AWS credentials, no backend, no plan/apply.
   terraform:
-    name: terraform (fmt, validate)
+    name: terraform (fmt, validate, test)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -167,6 +167,9 @@ jobs:
       - name: "staging: validate"
         working-directory: infra/environments/staging
         run: terraform validate
+      - name: "staging: test (mocked AWS provider, no credentials)"
+        working-directory: infra/environments/staging
+        run: terraform test
 
   # Staging deploy scripts: static analysis and tests with fixtures (no AWS).
   deploy-scripts:

@@ -35,19 +35,38 @@ locals {
   # deploy workflow. The runtime image has no curl, so Node's fetch is used.
   api_health_command = "fetch('http://127.0.0.1:${var.app_port}/health/live').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
 
-  # Booking notifications (module inside the API, docs/notifications.md).
-  # Off: nothing is added, the API defaults to ENABLE_BOOKING_NOTIFICATIONS=false.
-  api_notification_environment = var.enable_booking_notifications ? [
-    { name = "ENABLE_BOOKING_NOTIFICATIONS", value = "true" },
-    { name = "NOTIFICATIONS_ENVIRONMENT", value = "staging" },
-    { name = "NOTIFICATION_STUDIO_EMAIL", value = coalesce(var.notification_studio_email, "-") },
-    { name = "NOTIFICATION_RECIPIENT_ALLOWLIST", value = join(",", var.notification_recipient_allowlist) },
-    { name = "EMAIL_FROM_NAME", value = coalesce(var.email_from_name, "-") },
-    { name = "EMAIL_FROM_EMAIL", value = coalesce(var.email_from_email, "-") },
-  ] : []
-  api_notification_secrets = var.enable_booking_notifications ? [
-    { name = "BREVO_API_KEY", valueFrom = local.brevo_api_key_parameter_arn },
-  ] : []
+  # Booking notifications (module inside the API, docs/notifications.md) and
+  # marketing (double opt-in, docs/auth-and-profiles.md). Each flag adds only
+  # its own settings; the sender and the Brevo key are shared and added while
+  # at least one is on. Both off: nothing is added, the API defaults to
+  # ENABLE_BOOKING_NOTIFICATIONS=false and ENABLE_MARKETING_SUBSCRIPTION=false.
+  api_notification_environment = concat(
+    var.enable_booking_notifications ? [
+      { name = "ENABLE_BOOKING_NOTIFICATIONS", value = "true" },
+      { name = "NOTIFICATIONS_ENVIRONMENT", value = "staging" },
+      { name = "NOTIFICATION_STUDIO_EMAIL", value = coalesce(var.notification_studio_email, "-") },
+      { name = "NOTIFICATION_RECIPIENT_ALLOWLIST", value = join(",", var.notification_recipient_allowlist) },
+    ] : [],
+    local.api_email_enabled ? [
+      { name = "EMAIL_FROM_NAME", value = var.email_from_name },
+      { name = "EMAIL_FROM_EMAIL", value = coalesce(var.email_from_email, "-") },
+    ] : [],
+    var.enable_marketing_subscription ? [
+      { name = "ENABLE_MARKETING_SUBSCRIPTION", value = "true" },
+    ] : [],
+  )
+  api_notification_secrets = concat(
+    local.api_email_enabled ? [
+      { name = "BREVO_API_KEY", valueFrom = local.brevo_api_key_parameter_arn },
+    ] : [],
+    var.enable_marketing_subscription ? [
+      { name = "ACTION_TOKEN_SECRET", valueFrom = local.action_token_secret_parameter_arn },
+    ] : [],
+  )
+
+  # Base of marketing email links: the stable frontend while marketing is on
+  # (never a temporary preview domain); otherwise frontend_url as before.
+  api_frontend_url = var.enable_marketing_subscription ? var.marketing_frontend_url : var.frontend_url
 }
 
 resource "aws_ecs_cluster" "main" {
@@ -111,7 +130,7 @@ resource "aws_ecs_task_definition" "api" {
         { name = "FIREBASE_PROJECT_ID", value = var.firebase_project_id },
         { name = "FIREBASE_CREDENTIALS", value = "service-account-json" },
         # Base of email links; also the CORS origin when the CORS lists are empty.
-        { name = "FRONTEND_URL", value = var.frontend_url },
+        { name = "FRONTEND_URL", value = local.api_frontend_url },
         # CORS: exact origins and preview patterns (frontend_url stays the base of email links).
         { name = "CORS_ALLOWED_ORIGINS", value = join(",", var.cors_allowed_origins) },
         { name = "CORS_ALLOWED_ORIGIN_PATTERNS", value = join(",", var.cors_allowed_origin_patterns) },
@@ -152,6 +171,10 @@ resource "aws_ecs_task_definition" "api" {
         contains([for email in var.notification_recipient_allowlist : lower(email)], lower(coalesce(var.notification_studio_email, "-")))
       )
       error_message = "With enable_booking_notifications, set notification_studio_email, email_from_name, email_from_email and a notification_recipient_allowlist that contains the studio mailbox."
+    }
+    precondition {
+      condition     = !var.enable_marketing_subscription || var.email_from_email != null
+      error_message = "With enable_marketing_subscription, set email_from_email (a sender verified in Brevo)."
     }
   }
 }

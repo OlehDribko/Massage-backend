@@ -90,6 +90,11 @@ output "deploy_workflow_variables" {
 }
 
 output "brevo_api_key_parameter_name" {
-  description = "SSM SecureString read by the API only when enable_booking_notifications = true (created outside Terraform before enabling)."
+  description = "SSM SecureString read by the API while enable_booking_notifications or enable_marketing_subscription is true (created outside Terraform before enabling)."
   value       = local.brevo_api_key_parameter
+}
+
+output "action_token_secret_parameter_name" {
+  description = "SSM SecureString (at least 32 characters) read by the API only while enable_marketing_subscription is true (created outside Terraform before enabling)."
+  value       = local.action_token_secret_parameter
 }

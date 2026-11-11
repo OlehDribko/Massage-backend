@@ -210,7 +210,7 @@ aws ssm put-parameter --region eu-west-3 --type SecureString \
 rm -f "$f"
 ```
 
-Те саме зробіть для `migration-database-url`. Перевірка без виводу значення:
+Те саме зробіть для `migration-database-url` (а для листів і маркетингу — для `brevo-api-key` і `action-token-secret`, розділ «Листи й маркетинг в API»). Перевірка без виводу значення:
 
 ```sh
 aws ssm describe-parameters --region eu-west-3 \
@@ -410,19 +410,35 @@ aws ssm describe-parameters --region eu-west-3 \
 
 > **Замінено.** Попередня версія цього розділу (PR #26) описувала окремий ECS-сервіс `booking-notifications` з опитуванням БД кожні 5 с, роль БД `booking_notifier` і throttling 1 rps. Від цього відмовились: `notifications.tf` видалено, throttling — знову 2 rps. Якщо worker уже був створений у AWS, наступний `terraform plan` має явно показати видалення його ресурсів.
 
-### Листи в API (Terraform)
+### Листи й маркетинг в API (Terraform)
+
+Два незалежні прапорці. Кожен додає лише свої налаштування; відправник і ключ Brevo спільні й підключаються, коли ввімкнено **хоча б один**. Обидва вимкнені (зараз): task definition API не отримує ні змінних листів, ні секретів, а execution role — прав на них; відсутні параметри SSM запуск API не блокують, а план з обома `false` не змінює поточну ревізію.
 
 | Змінна Terraform | За замовчуванням | Дія |
 |---|---|---|
-| `enable_booking_notifications` | `false` | Вимкнено: task definition API не отримує ні змінних Notifications, ні секрету `BREVO_API_KEY`, а execution role — права на нього. Відсутній параметр SSM запуск API не блокує |
-| `notification_studio_email`, `notification_recipient_allowlist`, `email_from_name`, `email_from_email` | порожні | Обов'язкові лише при `true`; precondition вимагає, щоб адреса студії була в allowlist. Значення — у `terraform.tfvars` (Git його ігнорує); вони потрапляють у task definition і state |
+| `enable_booking_notifications` | `false` | `ENABLE_BOOKING_NOTIFICATIONS=true`, `NOTIFICATIONS_ENVIRONMENT=staging`, `NOTIFICATION_STUDIO_EMAIL`, `NOTIFICATION_RECIPIENT_ALLOWLIST` + спільне нижче |
+| `enable_marketing_subscription` | `false` | `ENABLE_MARKETING_SUBSCRIPTION=true`, секрет `ACTION_TOKEN_SECRET`, `FRONTEND_URL` = `marketing_frontend_url` + спільне нижче |
+| спільне (якщо ввімкнено хоч один) | — | `EMAIL_FROM_NAME`, `EMAIL_FROM_EMAIL`, секрет `BREVO_API_KEY` (і право execution role на нього) |
+| `email_from_name` | `Стефанія Бень` | Ім'я відправника й підпис листів клієнту |
+| `email_from_email` | порожньо | Адреса відправника, **підтверджена в Brevo**. Обов'язкова при будь-якому прапорці (precondition) |
+| `notification_studio_email`, `notification_recipient_allowlist` | порожні | Лише для листів про бронювання; адреса студії має бути в allowlist. Значення — у `terraform.tfvars` (Git його ігнорує); вони потрапляють у task definition і state |
+| `marketing_frontend_url` | `https://massage-e9zb.vercel.app` | База посилань у листах маркетингу (`/marketing/confirm?token=…`, `/unsubscribe?token=…` — маршрути `my-app`). Стабільний frontend, не preview. Поки маркетинг вимкнено, `FRONTEND_URL` = `frontend_url`, як і раніше |
+
+Параметри SSM (SecureString, створює власник; спосіб — розділ «Секрети»):
+
+| Параметр | Потрібен, коли | Значення |
+|---|---|---|
+| `/massage-staging/booking/brevo-api-key` | листи або маркетинг | Ключ Brevo API |
+| `/massage-staging/booking/action-token-secret` | маркетинг | Випадковий секрет ≥ 32 символів для підпису посилань (наприклад, `openssl rand -base64 48` у файл, не в командний рядок) |
+
+Комбінації прапорців перевіряє `infra/environments/staging/tests/email-flags.tftest.hcl` (`terraform test`, AWS-провайдер замінено моком, без облікових даних; запускається в CI).
 
 Порядок увімкнення (кожен крок — окреме погодження):
-1. **[власник]** SecureString `/massage-staging/booking/brevo-api-key` (спосіб — розділ «Секрети»).
-2. `terraform plan` з `enable_booking_notifications = true` і адресами → перевірка → `apply`. Це створює нову ревізію task definition API; запущені задачі не змінюються.
-3. `Staging deploy`: бере нову ревізію за основу й підставляє образ. Окремої ролі БД не потрібно: `booking_app` уже має права на таблиці Notifications (їх видає раннер міграцій).
+1. **[власник]** параметри SSM з таблиці вище.
+2. `terraform plan` з потрібними прапорцями й адресами → перевірка (лише нова ревізія task definition API і права execution role) → `apply`. Запущені задачі не змінюються.
+3. `Staging deploy` (`run_migrations` — якщо в релізі є нові міграції): бере нову ревізію за основу й підставляє образ. Окремої ролі БД не потрібно: `booking_app` має права на таблиці (їх видає раннер міграцій).
 
-`NOTIFICATIONS_ENVIRONMENT=staging`: без allowlist API не стартує; листи на інші адреси отримують `skipped`.
+`NOTIFICATIONS_ENVIRONMENT=staging`: без allowlist API не стартує; листи про бронювання на інші адреси отримують `skipped`. Маркетингові листи allowlist не обмежує: їх отримує лише той, хто сам вказав адресу у формі чи акаунті.
 
 ### Помилки під час запуску
 
