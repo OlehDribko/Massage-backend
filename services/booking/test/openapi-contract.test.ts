@@ -34,7 +34,15 @@ describe("documented responses (profile, marketing, health)", () => {
       .set(bearer("token-anna"))
       .send({ marketingOptIn: true, marketingConsentTextVersion: MARKETING_CONSENT_TEXT_VERSION })
       .expect(200);
-    expect(syncResponseSchema.parse(synced.body).marketingOptIn?.outcome).toBe("confirmation_sent");
+    // Verified email (the default identity): subscribed at once.
+    expect(syncResponseSchema.parse(synced.body).marketingOptIn).toMatchObject({ outcome: "subscribed", welcomeEmail: "sent" });
+    t.identities.issue("token-unverified", identity({ uid: "uid-unverified", email: "u@example.invalid", emailVerified: false }));
+    const pending = await request(t.app)
+      .post("/api/me/sync")
+      .set(bearer("token-unverified"))
+      .send({ marketingOptIn: true, marketingConsentTextVersion: MARKETING_CONSENT_TEXT_VERSION })
+      .expect(200);
+    expect(syncResponseSchema.parse(pending.body).marketingOptIn?.outcome).toBe("confirmation_sent");
     profileViewSchema.parse((await request(t.app).get("/api/me").set(bearer("token-anna")).expect(200)).body);
     profileViewSchema.parse(
       (await request(t.app).patch("/api/me").set(bearer("token-anna")).send({ name: "Anna Example", phone: "+33612345678" }).expect(200)).body,
@@ -48,11 +56,20 @@ describe("documented responses (profile, marketing, health)", () => {
     errorSchema.parse((await request(t.app).get("/api/me").set(bearer("token-new")).expect(404)).body);
   });
 
-  it("own subscription: requested, cooldown with retryAfterSeconds, outdated text, guests refused", async () => {
+  it("own subscription: verified subscribed / already, unverified requested, cooldown, outdated text, guests refused", async () => {
     const t = createProfileTestApp();
-    t.identities.issue("token-anna", identity({ uid: "uid-anna", email: "anna@example.invalid" }));
-    await request(t.app).post("/api/me/sync").set(bearer("token-anna")).expect(200);
+    t.identities.issue("token-verified", identity({ uid: "uid-verified", email: "v@example.invalid" }));
     const body = { consentTextVersion: MARKETING_CONSENT_TEXT_VERSION };
+    const direct = ownSubscriptionRequestedSchema.parse(
+      (await request(t.app).post("/api/me/marketing/subscription").set(bearer("token-verified")).send(body).expect(200)).body,
+    );
+    expect(direct).toMatchObject({ outcome: "subscribed", welcomeEmail: "sent", marketing: { subscribed: true } });
+    expect(
+      ownSubscriptionRequestedSchema.parse((await request(t.app).post("/api/me/marketing/subscription").set(bearer("token-verified")).send(body).expect(200)).body).outcome,
+    ).toBe("already_subscribed");
+
+    t.identities.issue("token-anna", identity({ uid: "uid-anna", email: "anna@example.invalid", emailVerified: false }));
+    await request(t.app).post("/api/me/sync").set(bearer("token-anna")).expect(200);
 
     expect(ownSubscriptionRequestedSchema.parse((await request(t.app).post("/api/me/marketing/subscription").set(bearer("token-anna")).send(body).expect(202)).body)).toEqual({
       outcome: "confirmation_sent",

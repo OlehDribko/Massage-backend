@@ -46,6 +46,24 @@ export type RequestOutcome = "confirmation_sent" | "delivery_failed" | "no_actio
 
 export type ConfirmResult = "subscribed" | "already_subscribed";
 
+/** What happened to the "you are subscribed" email after a direct activation. */
+export type WelcomeEmail = "sent" | "not_sent" | "unknown";
+
+/**
+ * Direct subscription of a verified, registered user's own address:
+ * - subscribed: activated now (pending confirmation, if any, superseded);
+ *   welcomeEmail tells whether the informational email was accepted;
+ * - already_subscribed: it was active; nothing changed, no email;
+ * - no_action: the sign-up checkbox after an earlier consent or unsubscribe
+ *   (never re-subscribes on its own);
+ * - test_recipient_not_allowed: outside the test allowlist; nothing changed.
+ */
+export type DirectOutcome =
+  | { outcome: "subscribed"; welcomeEmail: WelcomeEmail }
+  | { outcome: "already_subscribed" }
+  | { outcome: "no_action" }
+  | { outcome: "test_recipient_not_allowed" };
+
 export type MarketingService = ReturnType<typeof createMarketingService>;
 
 /**
@@ -143,6 +161,49 @@ export const createMarketingService = ({
     }
   };
 
+  /**
+   * Activates the subscription at once. Only for the verified email of the
+   * caller's own identity (checked by the route from the verified Firebase
+   * token, never from the request body). The welcome email follows the
+   * committed activation; its failure never undoes the subscription.
+   */
+  const subscribeVerified = async (email: string, consent: ConsentRequest, mode: RequestMode): Promise<DirectOutcome> => {
+    const address = email.trim().toLowerCase();
+    if (!allowed(address)) {
+      logger.warn({ code: "recipient_not_allowed" }, "marketing email to an address outside the test allowlist refused");
+      return { outcome: "test_recipient_not_allowed" };
+    }
+    const subscription = await repository.ensureExists(address);
+    if (subscription.subscribed) {
+      return { outcome: "already_subscribed" };
+    }
+    if (!(await repository.activate(subscription.id, { at: new Date(now()), mode, consent }))) {
+      // Lost a concurrent race (now active) or the sign-up rule refused it.
+      const current = await repository.findById(subscription.id);
+      return current?.subscribed === true ? { outcome: "already_subscribed" } : { outcome: "no_action" };
+    }
+
+    // One key per activation: a repeat of this send is recognised by Brevo; a
+    // later subscription after an unsubscribe is a new activation, a new key.
+    const activation = randomBytes(16).toString("base64url");
+    const unsubscribeUrl = link("/unsubscribe", tokens.createToken("marketing_unsubscribe", subscription.id));
+    const sent = await mailer.sendSubscriptionConfirmed(
+      subscription.email,
+      unsubscribeUrl,
+      idempotencyKeyFor("marketing_subscription_activated", subscription.id, activation),
+    );
+    if (sent.kind !== "accepted") {
+      logger.error(
+        { code: sent.kind === "rate_limited" ? "rate_limited" : sent.code },
+        "subscription activated; welcome email not accepted",
+      );
+    }
+    return {
+      outcome: "subscribed",
+      welcomeEmail: sent.kind === "accepted" ? "sent" : sent.kind === "uncertain" ? "unknown" : "not_sent",
+    };
+  };
+
   const claimsOf = (token: string, purpose: "marketing_confirm" | "marketing_unsubscribe") => {
     const claims = tokens.verifyToken(token, purpose);
     if (!uuidSchema.safeParse(claims.subjectId).success) {
@@ -217,5 +278,5 @@ export const createMarketingService = ({
     return remaining > 0 ? Math.ceil(remaining / 1000) : 0;
   };
 
-  return { requestSubscription, confirm, unsubscribeByToken, resendAvailableInSeconds };
+  return { requestSubscription, subscribeVerified, confirm, unsubscribeByToken, resendAvailableInSeconds };
 };

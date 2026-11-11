@@ -11,10 +11,11 @@ import {
   requireCurrentConsentText,
   toMarketingStatus,
   type MarketingStatus,
+  type ConsentRequest,
 } from "../marketing/consent.js";
 import type { MarketingRepository } from "../marketing/marketing.repository.js";
 import { consentTextVersionSchema, deliveryFailed, testRecipientNotAllowed } from "../marketing/marketing.routes.js";
-import type { MarketingService, RequestOutcome } from "../marketing/marketing.service.js";
+import type { MarketingService, RequestOutcome, WelcomeEmail } from "../marketing/marketing.service.js";
 import { updateOwnProfileSchema } from "./profile.schema.js";
 import { toProfileView, type ProfileService } from "./profile.service.js";
 
@@ -37,6 +38,9 @@ export const ownSubscriptionSchema = z.object({ consentTextVersion: consentTextV
 /**
  * Result of `marketingOptIn: true` in a sync. The profile sync itself
  * succeeded in every case.
+ * - subscribed / already_subscribed: a verified, registered identity is
+ *   subscribed at once (no confirmation link); welcomeEmail tells whether
+ *   the "you are subscribed" email was accepted;
  * - unavailable: marketing is switched off, or the session has no email
  *   (guests use the public subscription form);
  * - consent_text_outdated: the client showed another text version;
@@ -44,6 +48,8 @@ export const ownSubscriptionSchema = z.object({ consentTextVersion: consentTextV
  */
 export type OptInOutcome =
   | RequestOutcome
+  | "subscribed"
+  | "already_subscribed"
   | "unavailable"
   | "consent_text_outdated"
   | "failed";
@@ -78,22 +84,26 @@ export const createProfileRouter = ({
   const view = async (profile: UserProfile) =>
     toProfileView(profile, await marketingStatusOf(profile), marketing.service !== undefined);
 
-  const optIn = async (identity: VerifiedIdentity, textVersion: string): Promise<OptInOutcome> => {
+  const optIn = async (
+    identity: VerifiedIdentity,
+    textVersion: string,
+  ): Promise<{ outcome: OptInOutcome; welcomeEmail?: WelcomeEmail }> => {
     if (marketing.service === undefined || identity.isAnonymous || identity.email === undefined) {
-      return "unavailable";
+      return { outcome: "unavailable" };
     }
     if (textVersion !== MARKETING_CONSENT_TEXT_VERSION) {
-      return "consent_text_outdated";
+      return { outcome: "consent_text_outdated" };
     }
+    const consent: ConsentRequest = { source: "signup_checkbox", textVersion };
     try {
-      return await marketing.service.requestSubscription(
-        identity.email,
-        { source: "signup_checkbox", textVersion },
-        "signup",
-      );
+      // email_verified from the verified Firebase token, never from the body.
+      if (identity.emailVerified) {
+        return await marketing.service.subscribeVerified(identity.email, consent, "signup");
+      }
+      return { outcome: await marketing.service.requestSubscription(identity.email, consent, "signup") };
     } catch (error) {
       logger.error({ error: describeError(error) }, "marketing opt-in during profile sync failed");
-      return "failed";
+      return { outcome: "failed" };
     }
   };
 
@@ -105,15 +115,15 @@ export const createProfileRouter = ({
       const identity = requireIdentity(req);
       const profile = await profiles.sync(identity);
 
-      const outcome =
+      const result =
         body?.marketingOptIn === true && body.marketingConsentTextVersion !== undefined
           ? await optIn(identity, body.marketingConsentTextVersion)
           : undefined;
 
       res.status(200).json({
         ...(await view(profile)),
-        ...(outcome !== undefined
-          ? { marketingOptIn: { outcome, currentConsentTextVersion: MARKETING_CONSENT_TEXT_VERSION } }
+        ...(result !== undefined
+          ? { marketingOptIn: { ...result, currentConsentTextVersion: MARKETING_CONSENT_TEXT_VERSION } }
           : {}),
       });
     }),
@@ -132,8 +142,10 @@ export const createProfileRouter = ({
     }),
   );
 
-  // Explicit (re-)subscription by a signed-in user, also after unsubscribing.
-  // Double opt-in: the status becomes true only after the emailed link.
+  // Explicit (re-)subscription of the signed-in user's own address, also after
+  // unsubscribing. Verified email (from the verified Firebase token): active
+  // at once, 200, plus a "you are subscribed" email. Unverified: double opt-in,
+  // 202, active only after the emailed link. There is no address in the body.
   router.post(
     "/marketing/subscription",
     withValidatedBody(ownSubscriptionSchema, async ({ consentTextVersion }, res, _next, req) => {
@@ -146,11 +158,17 @@ export const createProfileRouter = ({
           code: "REGISTERED_ACCOUNT_REQUIRED",
         });
       }
-      const outcome = await marketing.service.requestSubscription(
-        identity.email,
-        { source: "account_request", textVersion: requireCurrentConsentText(consentTextVersion) },
-        "explicit",
-      );
+      const consent: ConsentRequest = { source: "account_request", textVersion: requireCurrentConsentText(consentTextVersion) };
+      if (identity.emailVerified) {
+        const direct = await marketing.service.subscribeVerified(identity.email, consent, "explicit");
+        if (direct.outcome === "test_recipient_not_allowed") {
+          throw testRecipientNotAllowed();
+        }
+        const status = toMarketingStatus(await marketing.repository.findByEmail(identity.email.trim().toLowerCase()));
+        res.status(200).json({ ...direct, marketing: status });
+        return;
+      }
+      const outcome = await marketing.service.requestSubscription(identity.email, consent, "explicit");
       if (outcome === "test_recipient_not_allowed") {
         throw testRecipientNotAllowed();
       }

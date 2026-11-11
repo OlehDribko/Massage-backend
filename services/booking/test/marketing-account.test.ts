@@ -1,6 +1,7 @@
 import jwt from "jsonwebtoken";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import { MARKETING_CONSENT_TEXT_VERSION } from "../src/modules/marketing/consent.js";
 import { CONFIRMATION_COOLDOWN_MS } from "../src/modules/marketing/marketing.service.js";
 import { identity } from "./helpers/fake-identity.js";
@@ -17,6 +18,9 @@ const setup = (options: Parameters<typeof createProfileTestApp>[0] = {}) => {
   context.identities.issue("signup-verified", identity({ uid: "uid-new", email: "new@example.invalid", emailVerified: true, issuedAt: new Date("2026-10-28T10:05:00Z") }));
   // Google sign-in: email verified by Google.
   context.identities.issue("google", identity({ uid: "uid-google", email: "g@example.invalid", emailVerified: true, signInProvider: "google.com" }));
+  // Another email + password account, not verified yet, and the same account after verification.
+  context.identities.issue("pending", identity({ uid: "uid-pending", email: "p@example.invalid", emailVerified: false, issuedAt: new Date("2026-10-28T10:00:00Z") }));
+  context.identities.issue("pending-verified", identity({ uid: "uid-pending", email: "p@example.invalid", emailVerified: true, issuedAt: new Date("2026-10-28T10:05:00Z") }));
   context.identities.issue("guest", identity({ uid: "uid-guest", isAnonymous: true, signInProvider: "anonymous", email: undefined, emailVerified: false }));
   const confirmToken = async (token: string) => {
     const service = context.marketingService;
@@ -91,19 +95,18 @@ describe("sign-up checkbox (marketingOptIn in POST /api/me/sync)", () => {
     });
   });
 
-  it("Google: same flow, status pending until the link is confirmed", async () => {
-    const { app, sent, confirm } = setup();
+  it("verified email (Google): the checkbox subscribes at once, with a welcome email and no confirmation link", async () => {
+    const { app, sent } = setup();
 
     const response = await sync(app, "google", OPT_IN);
 
     expect(response.body).toMatchObject({
       profile: { signInProvider: "google.com", emailVerified: true },
-      marketing: { subscribed: false, pendingConfirmation: true },
-      marketingOptIn: { outcome: "confirmation_sent" },
+      marketing: { subscribed: true, pendingConfirmation: false, consentSource: "signup_checkbox", consentTextVersion: MARKETING_CONSENT_TEXT_VERSION },
+      marketingOptIn: { outcome: "subscribed", welcomeEmail: "sent" },
     });
-    expect(sent).toHaveLength(1);
-    expect(await confirm(0)).toBe("subscribed");
-    expect((await sync(app, "google")).body).toMatchObject({ marketing: { subscribed: true } });
+    expect(sent.map((mail) => [mail.kind, mail.email])).toEqual([["confirmed", "g@example.invalid"]]);
+    expect(sent[0]?.url).toMatch(/^https:\/\/front\.example\.invalid\/unsubscribe\?token=/);
   });
 
   it.each([
@@ -124,7 +127,7 @@ describe("sign-up checkbox (marketingOptIn in POST /api/me/sync)", () => {
     expect(marketing.all()).toHaveLength(0);
   });
 
-  it("repeated and parallel syncs with the checkbox send one email only", async () => {
+  it("repeated and parallel syncs with the checkbox subscribe once and send one email only", async () => {
     const { app, sent } = setup();
 
     const parallel = await Promise.all(Array.from({ length: 10 }, () => sync(app, "google", OPT_IN)));
@@ -137,9 +140,8 @@ describe("sign-up checkbox (marketingOptIn in POST /api/me/sync)", () => {
   });
 
   it("never unsubscribes a subscriber through an absent or false checkbox", async () => {
-    const { app, confirm } = setup();
+    const { app } = setup();
     await sync(app, "google", OPT_IN);
-    await confirm(0);
 
     await sync(app, "google");
     await sync(app, "google", { marketingOptIn: false });
@@ -147,52 +149,55 @@ describe("sign-up checkbox (marketingOptIn in POST /api/me/sync)", () => {
     expect((await sync(app, "google")).body).toMatchObject({ marketing: { subscribed: true } });
   });
 
-  it("after unsubscribing, the checkbox never re-subscribes; only an explicit request does", async () => {
-    const { app, sent, confirm } = setup();
+  it("after unsubscribing, the checkbox never re-subscribes; only an explicit request does (a new consent cycle)", async () => {
+    const { app, sent, marketing, advance } = setup();
     await sync(app, "google", OPT_IN);
-    await confirm(0);
+    const firstConsent = marketing.byEmail("g@example.invalid")?.consentGivenAt;
 
     const unsubscribed = await request(app).delete("/api/me/marketing/subscription").set(bearer("google"));
     expect(unsubscribed.status).toBe(200);
     expect(unsubscribed.body).toMatchObject({ marketing: { subscribed: false, consentSource: "signup_checkbox" } });
     expect(unsubscribed.body).not.toMatchObject({ marketing: { unsubscribedAt: null } });
 
+    // Login, a plain sync or a repeated sign-up checkbox never re-subscribes.
+    expect((await sync(app, "google")).body).toMatchObject({ marketing: { subscribed: false } });
     const resync = await sync(app, "google", OPT_IN);
     expect(resync.body).toMatchObject({ marketing: { subscribed: false }, marketingOptIn: { outcome: "no_action" } });
-    expect(sent.filter((mail) => mail.kind === "confirm")).toHaveLength(1);
+    expect(sent).toHaveLength(1);
 
+    advance(60_000);
     const explicit = await request(app)
       .post("/api/me/marketing/subscription")
       .set(bearer("google"))
       .send({ consentTextVersion: MARKETING_CONSENT_TEXT_VERSION });
-    expect(explicit.status).toBe(202);
-    expect(explicit.body).toEqual({ outcome: "confirmation_sent" });
-    expect((await sync(app, "google")).body).toMatchObject({ marketing: { subscribed: false, pendingConfirmation: true } });
-
-    expect(await confirm(sent.length - 1)).toBe("subscribed");
-    expect((await sync(app, "google")).body).toMatchObject({
+    expect(explicit.status).toBe(200);
+    expect(explicit.body).toMatchObject({
+      outcome: "subscribed",
+      welcomeEmail: "sent",
       marketing: { subscribed: true, consentSource: "account_request", unsubscribedAt: null },
     });
+    expect(sent).toHaveLength(2);
+    expect(marketing.byEmail("g@example.invalid")?.consentGivenAt?.getTime()).toBeGreaterThan(firstConsent?.getTime() ?? Infinity);
   });
 
-  it("a failed confirmation email does not break the sign-up and is reported honestly", async () => {
+  it("unverified email: a failed confirmation email does not break the sign-up and is reported honestly", async () => {
     const { app, marketing, profiles, logs } = setup({ failMarketingSends: true });
 
-    const response = await sync(app, "google", OPT_IN);
+    const response = await sync(app, "pending", OPT_IN);
 
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({
-      profile: { email: "g@example.invalid" },
-      marketing: { subscribed: false, pendingConfirmation: false },
+      profile: { email: "p@example.invalid" },
+      marketing: null,
       marketingOptIn: { outcome: "delivery_failed" },
     });
     expect(profiles.all()).toHaveLength(1);
-    expect(marketing.byEmail("g@example.invalid")).toMatchObject({ subscribed: false, confirmationSentAt: null });
+    expect(marketing.byEmail("p@example.invalid")).toMatchObject({ subscribed: false, confirmationSentAt: null });
     expect(logs.raw()).not.toContain("PROVIDER_SENTINEL");
 
     const explicit = await request(app)
       .post("/api/me/marketing/subscription")
-      .set(bearer("google"))
+      .set(bearer("pending"))
       .send({ consentTextVersion: MARKETING_CONSENT_TEXT_VERSION });
     expect(explicit.status).toBe(503);
     // Refused by the provider: nothing is blocked, the default hint.
@@ -202,11 +207,11 @@ describe("sign-up checkbox (marketingOptIn in POST /api/me/sync)", () => {
 
   it("explicit request after a provider 429: the hint is the stored block; a repeat before it does not call the provider", async () => {
     const { app, setMarketingRateLimited, sendAttempts, advance } = setup();
-    await sync(app, "google");
+    await sync(app, "pending");
     setMarketingRateLimited(90_000);
     const body = { consentTextVersion: MARKETING_CONSENT_TEXT_VERSION };
 
-    const refused = await request(app).post("/api/me/marketing/subscription").set(bearer("google")).send(body);
+    const refused = await request(app).post("/api/me/marketing/subscription").set(bearer("pending")).send(body);
     expect(refused.status).toBe(503);
     expect(refused.body).toEqual({
       message: "The confirmation email could not be sent; retry in 90 seconds",
@@ -218,13 +223,13 @@ describe("sign-up checkbox (marketingOptIn in POST /api/me/sync)", () => {
 
     setMarketingRateLimited(undefined);
     advance(30_000);
-    const early = await request(app).post("/api/me/marketing/subscription").set(bearer("google")).send(body);
+    const early = await request(app).post("/api/me/marketing/subscription").set(bearer("pending")).send(body);
     expect(early.status).toBe(202);
     expect(early.body).toEqual({ outcome: "no_action", retryAfterSeconds: 60 });
     expect(sendAttempts()).toBe(1);
 
     advance(60_001);
-    const later = await request(app).post("/api/me/marketing/subscription").set(bearer("google")).send(body);
+    const later = await request(app).post("/api/me/marketing/subscription").set(bearer("pending")).send(body);
     expect(later.body).toEqual({ outcome: "confirmation_sent" });
     expect(sendAttempts()).toBe(2);
   });
@@ -306,7 +311,7 @@ describe("account actions", () => {
   });
 });
 
-describe("recovering an unfinished subscription (explicit resend)", () => {
+describe("recovering an unfinished subscription (explicit resend, unverified email)", () => {
   const resend = (app: Parameters<typeof request>[0], token: string) =>
     request(app)
       .post("/api/me/marketing/subscription")
@@ -315,33 +320,33 @@ describe("recovering an unfinished subscription (explicit resend)", () => {
 
   it("lost email: syncs never resend; the explicit resend is rate-limited and replaces the old link", async () => {
     const { app, sent, confirm, advance } = setup();
-    await sync(app, "google", OPT_IN);
+    await sync(app, "pending", OPT_IN);
 
     for (let i = 0; i < 3; i += 1) {
-      expect((await sync(app, "google", OPT_IN)).body).toMatchObject({ marketingOptIn: { outcome: "no_action" } });
+      expect((await sync(app, "pending", OPT_IN)).body).toMatchObject({ marketingOptIn: { outcome: "no_action" } });
     }
-    const tooSoon = await resend(app, "google");
+    const tooSoon = await resend(app, "pending");
     expect(tooSoon.status).toBe(202);
     expect(tooSoon.body).toEqual({ outcome: "no_action", retryAfterSeconds: CONFIRMATION_COOLDOWN_MS / 1000 });
     advance(CONFIRMATION_COOLDOWN_MS / 2);
-    expect((await resend(app, "google")).body).toEqual({ outcome: "no_action", retryAfterSeconds: CONFIRMATION_COOLDOWN_MS / 2000 });
+    expect((await resend(app, "pending")).body).toEqual({ outcome: "no_action", retryAfterSeconds: CONFIRMATION_COOLDOWN_MS / 2000 });
     expect(sent).toHaveLength(1);
 
     advance(CONFIRMATION_COOLDOWN_MS / 2 + 1);
-    expect((await resend(app, "google")).body).toEqual({ outcome: "confirmation_sent" });
+    expect((await resend(app, "pending")).body).toEqual({ outcome: "confirmation_sent" });
     expect(sent).toHaveLength(2);
-    expect((await resend(app, "google")).body).toMatchObject({ outcome: "no_action" });
+    expect((await resend(app, "pending")).body).toMatchObject({ outcome: "no_action" });
 
     // The lost (first) link no longer works; the new one does.
     await expect(confirm(0)).rejects.toMatchObject({ statusCode: 400 });
     expect(await confirm(1)).toBe("subscribed");
-    expect((await resend(app, "google")).body).toEqual({ outcome: "no_action" });
+    expect((await resend(app, "pending")).body).toEqual({ outcome: "no_action" });
   });
 
   it("expired link: rejected, nothing changes, an explicit resend issues a working link", async () => {
     const { app, marketing, sent, confirm, confirmToken, advance } = setup();
-    await sync(app, "google", OPT_IN);
-    const row = marketing.byEmail("g@example.invalid");
+    await sync(app, "pending", OPT_IN);
+    const row = marketing.byEmail("p@example.invalid");
     const expired = jwt.sign(
       { userId: row?.id, purpose: "marketing_confirm", nonce: row?.confirmationNonce },
       "profile-test-secret-0123456789abcdef",
@@ -350,36 +355,36 @@ describe("recovering an unfinished subscription (explicit resend)", () => {
     advance(7 * 24 * 60 * 60 * 1000);
 
     await expect(confirmToken(expired)).rejects.toMatchObject({ statusCode: 400 });
-    expect((await sync(app, "google")).body).toMatchObject({ marketing: { subscribed: false, pendingConfirmation: true } });
+    expect((await sync(app, "pending-verified")).body).toMatchObject({ marketing: { subscribed: false, pendingConfirmation: true } });
 
-    expect((await resend(app, "google")).body).toEqual({ outcome: "confirmation_sent" });
+    expect((await resend(app, "pending")).body).toEqual({ outcome: "confirmation_sent" });
     expect(await confirm(sent.length - 1)).toBe("subscribed");
-    expect((await sync(app, "google")).body).toMatchObject({
+    expect((await sync(app, "pending-verified")).body).toMatchObject({
       marketing: { subscribed: true, consentSource: "account_request" },
     });
   });
 
   it("failed delivery: no cooldown is charged; a retry sends once and later syncs send nothing", async () => {
     const { app, sent, confirm, setMarketingSendsFailing } = setup({ failMarketingSends: true });
-    expect((await sync(app, "google", OPT_IN)).body).toMatchObject({ marketingOptIn: { outcome: "delivery_failed" } });
-    const failed = await resend(app, "google");
+    expect((await sync(app, "pending", OPT_IN)).body).toMatchObject({ marketingOptIn: { outcome: "delivery_failed" } });
+    const failed = await resend(app, "pending");
     expect(failed.status).toBe(503);
     expect(failed.headers["retry-after"]).toBe("60");
 
     setMarketingSendsFailing(false);
-    expect((await resend(app, "google")).body).toEqual({ outcome: "confirmation_sent" });
-    expect((await sync(app, "google", OPT_IN)).body).toMatchObject({ marketingOptIn: { outcome: "no_action" } });
+    expect((await resend(app, "pending")).body).toEqual({ outcome: "confirmation_sent" });
+    expect((await sync(app, "pending", OPT_IN)).body).toMatchObject({ marketingOptIn: { outcome: "no_action" } });
     expect(sent).toHaveLength(1);
     expect(await confirm(0)).toBe("subscribed");
   });
 
   it("failed delivery at sign-up: the same checkbox sent again by a sync retry sends once", async () => {
     const { app, sent, setMarketingSendsFailing } = setup({ failMarketingSends: true });
-    await sync(app, "google", OPT_IN);
+    await sync(app, "pending", OPT_IN);
     setMarketingSendsFailing(false);
 
-    expect((await sync(app, "google", OPT_IN)).body).toMatchObject({ marketingOptIn: { outcome: "confirmation_sent" } });
-    expect((await sync(app, "google", OPT_IN)).body).toMatchObject({ marketingOptIn: { outcome: "no_action" } });
+    expect((await sync(app, "pending", OPT_IN)).body).toMatchObject({ marketingOptIn: { outcome: "confirmation_sent" } });
+    expect((await sync(app, "pending", OPT_IN)).body).toMatchObject({ marketingOptIn: { outcome: "no_action" } });
     expect(sent).toHaveLength(1);
   });
 });
@@ -408,5 +413,118 @@ describe("marketingAvailable: availability of the feature, not the user's subscr
     expect((await request(app).get("/api/me").set(bearer("signup"))).body).toMatchObject({ marketing: null });
     // Verified: the status is shown.
     expect((await sync(app, "signup-verified")).body).toMatchObject({ marketing: { subscribed: true, pendingConfirmation: false } });
+  });
+});
+
+describe("direct subscription of a verified, registered user's own address (POST /api/me/marketing/subscription)", () => {
+  const subscribe = (app: Parameters<typeof request>[0], token: string, body: object = { consentTextVersion: MARKETING_CONSENT_TEXT_VERSION }) =>
+    request(app).post("/api/me/marketing/subscription").set(bearer(token)).send(body);
+
+  it("active at once (200 subscribed) with the consent recorded and one welcome email; a repeat is already_subscribed, no new email", async () => {
+    const { app, sent, marketing } = setup();
+    const first = await subscribe(app, "google");
+    expect(first.status).toBe(200);
+    expect(Object.keys(z.object({}).passthrough().parse(first.body)).sort()).toEqual(["marketing", "outcome", "welcomeEmail"]);
+    expect(first.body).toMatchObject({
+      outcome: "subscribed",
+      welcomeEmail: "sent",
+      marketing: { subscribed: true, pendingConfirmation: false, consentSource: "account_request", consentTextVersion: MARKETING_CONSENT_TEXT_VERSION },
+    });
+    expect(marketing.byEmail("g@example.invalid")).toMatchObject({ subscribed: true, confirmationNonce: null });
+    expect(sent.map((mail) => mail.kind)).toEqual(["confirmed"]);
+
+    const again = await subscribe(app, "google");
+    expect(again.status).toBe(200);
+    expect(again.body).toMatchObject({ outcome: "already_subscribed", marketing: { subscribed: true } });
+    expect(again.body).not.toHaveProperty("welcomeEmail");
+    expect(sent).toHaveLength(1);
+  });
+
+  it("parallel requests: one activation, one welcome email", async () => {
+    const { app, sent, marketing } = setup();
+    const responses = await Promise.all(Array.from({ length: 10 }, () => subscribe(app, "google")));
+    expect(responses.every((response) => response.status === 200)).toBe(true);
+    const outcomes = responses.map((response) => z.object({ outcome: z.string() }).parse(response.body).outcome);
+    expect(outcomes.filter((outcome) => outcome === "subscribed")).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome === "already_subscribed")).toHaveLength(9);
+    expect(marketing.all()).toHaveLength(1);
+    expect(sent).toHaveLength(1);
+  });
+
+  it("pending → active: a waiting confirmation becomes the active subscription and its old link stops working", async () => {
+    const { app, sent, confirm, marketing } = setup();
+    await sync(app, "pending", OPT_IN);
+    expect(sent.map((mail) => mail.kind)).toEqual(["confirm"]);
+
+    const direct = await subscribe(app, "pending-verified");
+    expect(direct.body).toMatchObject({ outcome: "subscribed", marketing: { subscribed: true, pendingConfirmation: false } });
+    expect(marketing.byEmail("p@example.invalid")).toMatchObject({ confirmationNonce: null, consentSource: "account_request" });
+    // The old link changes nothing: no second welcome email, and after unsubscribing it cannot re-subscribe.
+    expect(await confirm(0)).toBe("already_subscribed");
+    expect(sent.map((mail) => mail.kind)).toEqual(["confirm", "confirmed"]);
+    await request(app).delete("/api/me/marketing/subscription").set(bearer("pending-verified")).expect(200);
+    await expect(confirm(0)).rejects.toMatchObject({ statusCode: 400 });
+    expect(marketing.byEmail("p@example.invalid")?.subscribed).toBe(false);
+  });
+
+  it("only the caller's own verified address: no address can be given; unverified keeps double opt-in", async () => {
+    const { app, sent, marketing } = setup();
+    for (const body of [
+      { consentTextVersion: MARKETING_CONSENT_TEXT_VERSION, email: "other@example.invalid" },
+      { consentTextVersion: MARKETING_CONSENT_TEXT_VERSION, emailVerified: true },
+    ]) {
+      expect((await subscribe(app, "pending", body)).status).toBe(400);
+    }
+    expect(marketing.all()).toHaveLength(0);
+
+    const unverified = await subscribe(app, "pending");
+    expect(unverified.status).toBe(202);
+    expect(unverified.body).toEqual({ outcome: "confirmation_sent" });
+    expect(marketing.byEmail("p@example.invalid")?.subscribed).toBe(false);
+    expect(sent.map((mail) => [mail.kind, mail.email])).toEqual([["confirm", "p@example.invalid"]]);
+  });
+
+  it("anonymous, invalid, expired and revoked tokens never activate anything", async () => {
+    const { app, identities, marketing, sent } = setup();
+    identities.fail("revoked-token", "revoked");
+    identities.fail("expired-token", "expired");
+    expect((await subscribe(app, "guest")).status).toBe(403);
+    for (const token of ["not-a-token", "revoked-token", "expired-token"]) {
+      expect((await subscribe(app, token)).status, token).toBe(401);
+      expect((await sync(app, token, OPT_IN)).status, token).toBe(401);
+    }
+    expect(marketing.all()).toHaveLength(0);
+    expect(sent).toHaveLength(0);
+  });
+
+  it("a failed welcome email keeps the active subscription and is reported as such, not as a failed subscription", async () => {
+    const { app, marketing, sent } = setup({ failMarketingSends: true });
+    const response = await subscribe(app, "google");
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ outcome: "subscribed", welcomeEmail: "not_sent", marketing: { subscribed: true } });
+    expect(marketing.byEmail("g@example.invalid")?.subscribed).toBe(true);
+    expect(sent).toHaveLength(0);
+
+    const checkbox = await sync(setup({ failMarketingSends: true }).app, "google", OPT_IN);
+    expect(checkbox.body).toMatchObject({ marketingOptIn: { outcome: "subscribed", welcomeEmail: "not_sent" }, marketing: { subscribed: true } });
+  });
+
+  it("unsubscribe, then a new explicit request: a new activation with a new welcome email", async () => {
+    const { app, sent } = setup();
+    await subscribe(app, "google");
+    await request(app).delete("/api/me/marketing/subscription").set(bearer("google")).expect(200);
+    const again = await subscribe(app, "google");
+    expect(again.body).toMatchObject({ outcome: "subscribed", welcomeEmail: "sent" });
+    expect(sent.map((mail) => mail.kind)).toEqual(["confirmed", "confirmed"]);
+  });
+
+  it("test allowlist and disabled marketing: nothing is activated", async () => {
+    const limited = setup({ marketingRecipientAllowlist: new Set(["new@example.invalid"]) });
+    expect((await subscribe(limited.app, "google")).body).toMatchObject({ code: "TEST_RECIPIENT_NOT_ALLOWED" });
+    expect(limited.marketing.all()).toHaveLength(0);
+
+    const off = setup({ marketingEnabled: false });
+    expect((await subscribe(off.app, "google")).status).toBe(404);
+    expect((await sync(off.app, "google", OPT_IN)).body).toMatchObject({ marketingOptIn: { outcome: "unavailable" }, marketing: { subscribed: false } });
   });
 });

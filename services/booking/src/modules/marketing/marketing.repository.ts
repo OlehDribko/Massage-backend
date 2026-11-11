@@ -42,6 +42,14 @@ export type MarketingRepository = {
   throttleConfirmation: (id: string, nonce: string, cooldownAnchor: Date) => Promise<void>;
   /** Subscribes if the nonce is the current one, recording the consent. */
   confirm: (id: string, nonce: string, at: Date) => Promise<boolean>;
+  /**
+   * Subscribes at once (a verified, registered user's own address): records
+   * the consent, ends any pending confirmation (its link no longer works).
+   * Atomic and conditional on not being subscribed: of concurrent requests
+   * exactly one wins (true); "signup" also refuses after an earlier consent
+   * or unsubscribe, like claimConfirmation.
+   */
+  activate: (id: string, activation: { at: Date; mode: RequestMode; consent: ConsentRequest }) => Promise<boolean>;
   /** Idempotent; also cancels an outstanding confirmation. */
   unsubscribe: (id: string, at: Date) => Promise<void>;
 };
@@ -124,6 +132,21 @@ export const createMarketingRepository = (prisma: PrismaClient): MarketingReposi
         consentGivenAt: at,
         consentSource: row.confirmationSource,
         consentTextVersion: row.confirmationTextVersion,
+        unsubscribedAt: null,
+        ...clearedConfirmation,
+      },
+    });
+    return result.count === 1;
+  },
+
+  activate: async (id, { at, mode, consent }) => {
+    const result = await prisma.marketingSubscription.updateMany({
+      where: { id, subscribed: false, ...(mode === "signup" ? { unsubscribedAt: null, consentGivenAt: null } : {}) },
+      data: {
+        subscribed: true,
+        consentGivenAt: at,
+        consentSource: consent.source,
+        consentTextVersion: consent.textVersion,
         unsubscribedAt: null,
         ...clearedConfirmation,
       },

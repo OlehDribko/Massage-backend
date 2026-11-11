@@ -2526,7 +2526,7 @@
                 "subscription"
               ]
             },
-            "description": "⚠️ POST /api/me/marketing/subscription (requestOwnSubscription). When enabled, sends a confirmation email (at most once per 10 minutes). On staging with MARKETING_RECIPIENT_ALLOWLIST only approved test addresses get email; any other address → `403 TEST_RECIPIENT_NOT_ALLOWED` (nothing recorded or sent; in a sync with the checkbox: `marketingOptIn.outcome: \"test_recipient_not_allowed\"`)."
+            "description": "⚠️ POST /api/me/marketing/subscription (requestOwnSubscription). When enabled, sends a confirmation email (at most once per 10 minutes). On staging with MARKETING_RECIPIENT_ALLOWLIST only approved test addresses get email; any other address → `403 TEST_RECIPIENT_NOT_ALLOWED` (nothing recorded or sent; in a sync with the checkbox: `marketingOptIn.outcome: \"test_recipient_not_allowed\"`). Verified email (from the token): `200 { outcome: \"subscribed\" | \"already_subscribed\", welcomeEmail?, marketing }` — active at once, a welcome email follows. Unverified email: `202` double opt-in as before."
           }
         },
         {

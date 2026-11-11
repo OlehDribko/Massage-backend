@@ -45,12 +45,16 @@ let app: Express;
 let logs: CapturedLogs;
 const admin = createEmulatorAdmin();
 const mails: { email: string; url: string }[] = [];
+const welcomes: { email: string; url: string }[] = [];
 const mailer: MarketingMailer = {
   sendConfirmationRequest: (email, url) => {
     mails.push({ email, url });
     return Promise.resolve({ kind: "accepted" });
   },
-  sendSubscriptionConfirmed: () => Promise.resolve({ kind: "accepted" }),
+  sendSubscriptionConfirmed: (email, url) => {
+    welcomes.push({ email, url });
+    return Promise.resolve({ kind: "accepted" });
+  },
 };
 
 const profileResponseSchema = z.object({ profile: z.object({ id: z.uuid() }) });
@@ -226,7 +230,7 @@ describe("guest → registered client (Auth Emulator + PostgreSQL)", () => {
 describe("sign-up with the marketing checkbox (emulator + PostgreSQL)", () => {
   const optIn = { marketingOptIn: true, marketingConsentTextVersion: MARKETING_CONSENT_TEXT_VERSION };
 
-  it("email + password and Google: one confirmation email each, status false until confirmed", async () => {
+  it("email + password: one confirmation email, status false until confirmed; Google (verified by the real token): active at once, one welcome email", async () => {
     const password = await client.signUp("checkbox@example.invalid", PASSWORD);
     const google = await client.signInWithGoogle({ sub: "google-checkbox", email: "checkbox.google@example.invalid", email_verified: true });
     if ("error" in google) {
@@ -241,18 +245,37 @@ describe("sign-up with the marketing checkbox (emulator + PostgreSQL)", () => {
 
     expect(passwordSyncs.every((response) => response.status === 200)).toBe(true);
     expect(mails.filter((mail) => mail.email === "checkbox@example.invalid")).toHaveLength(1);
-    expect(mails.filter((mail) => mail.email === "checkbox.google@example.invalid")).toHaveLength(1);
+    expect(mails.filter((mail) => mail.email === "checkbox.google@example.invalid")).toHaveLength(0);
+    expect(welcomes.filter((mail) => mail.email === "checkbox.google@example.invalid")).toHaveLength(1);
     expect(passwordSyncs[0]?.body).toMatchObject({ profile: { emailVerified: false }, marketing: null });
     expect(googleSync.body).toMatchObject({
-      marketing: { subscribed: false, pendingConfirmation: true },
-      marketingOptIn: { outcome: "confirmation_sent" },
+      marketing: { subscribed: true, pendingConfirmation: false, consentSource: "signup_checkbox" },
+      marketingOptIn: { outcome: "subscribed", welcomeEmail: "sent" },
     });
 
-    // Firebase email verification does not subscribe.
+    // Firebase email verification does not subscribe on its own.
     await admin.auth.updateUser(password.localId, { emailVerified: true });
     await nextSecond();
     const verified = await client.signIn("checkbox@example.invalid", PASSWORD);
-    expect((await sync(verified.idToken)).body).toMatchObject({ marketing: { subscribed: false } });
+    expect((await sync(verified.idToken)).body).toMatchObject({ marketing: { subscribed: false, pendingConfirmation: true } });
+
+    // Verified now (real token): the explicit request activates at once and supersedes the pending link.
+    const direct = await request(app)
+      .post("/api/me/marketing/subscription")
+      .set(bearer(verified.idToken))
+      .send({ consentTextVersion: MARKETING_CONSENT_TEXT_VERSION });
+    expect(direct.status).toBe(200);
+    expect(direct.body).toMatchObject({ outcome: "subscribed", marketing: { subscribed: true, pendingConfirmation: false } });
+
+    // An unverified real token never activates directly.
+    const other = await client.signUp("checkbox.unverified@example.invalid", PASSWORD);
+    await sync(other.idToken);
+    const unverified = await request(app)
+      .post("/api/me/marketing/subscription")
+      .set(bearer(other.idToken))
+      .send({ consentTextVersion: MARKETING_CONSENT_TEXT_VERSION });
+    expect(unverified.status).toBe(202);
+    expect(unverified.body).toEqual({ outcome: "confirmation_sent" });
   });
 });
 
