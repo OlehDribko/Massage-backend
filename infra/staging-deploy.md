@@ -431,6 +431,8 @@ aws ssm describe-parameters --region eu-west-3 \
 | `/massage-staging/booking/brevo-api-key` | листи або маркетинг | Ключ Brevo API |
 | `/massage-staging/booking/action-token-secret` | маркетинг | Випадковий секрет ≥ 32 символів для підпису посилань (наприклад, `openssl rand -base64 48` у файл, не в командний рядок) |
 
+Комбінації прапорців перевіряє `infra/environments/staging/tests/email-flags.tftest.hcl` (`terraform test`, AWS-провайдер замінено моком, без облікових даних; запускається в CI).
+
 Порядок увімкнення (кожен крок — окреме погодження):
 1. **[власник]** параметри SSM з таблиці вище.
 2. `terraform plan` з потрібними прапорцями й адресами → перевірка (лише нова ревізія task definition API і права execution role) → `apply`. Запущені задачі не змінюються.
