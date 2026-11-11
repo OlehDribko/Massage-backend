@@ -946,8 +946,8 @@
         "tags": [
           "Marketing"
         ],
-        "summary": "Subscribe to offers / send the confirmation again",
-        "description": "Explicit (re-)subscription of the signed-in user's email, also after unsubscribing. Double opt-in: subscribed only after the emailed link (POST /api/marketing/subscriptions/confirm). At most one confirmation email per address per 10 minutes: inside that interval (or while a provider rate limit lasts) the answer is `no_action` with `retryAfterSeconds`; `no_action` without it means already subscribed. When the outcome of sending is unknown (timeout), `no_action` too: the email may have been sent. Registered users only (not guests); only when marketing is enabled.",
+        "summary": "Subscribe the signed-in user's own address (verified: at once; unverified: double opt-in)",
+        "description": "Explicit (re-)subscription of the signed-in user's own email (from the verified Firebase token; there is no address in the body), also after unsubscribing. **Verified email** (`email_verified` in the token): active at once, `200 { outcome: \"subscribed\", welcomeEmail, marketing }` and a 'you are subscribed' email with an unsubscribe link; a waiting confirmation link stops working; `already_subscribed` when it was active (no email). A failed welcome email never undoes the subscription (`welcomeEmail: \"not_sent\"`, or `\"unknown\"` after a timeout). **Unverified email**: double opt-in, `202`, subscribed only after the emailed link (POST /api/marketing/subscriptions/confirm); at most one confirmation email per address per 10 minutes: inside that interval (or while a provider rate limit lasts) `no_action` with `retryAfterSeconds`; when the outcome of sending is unknown (timeout), `no_action` too. Registered users only (not guests); only when marketing is enabled.",
         "security": [
           {
             "firebaseIdToken": []
@@ -978,8 +978,30 @@
           }
         },
         "responses": {
+          "200": {
+            "description": "Verified email: subscribed now, or already subscribed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnSubscriptionRequested"
+                },
+                "example": {
+                  "outcome": "subscribed",
+                  "welcomeEmail": "sent",
+                  "marketing": {
+                    "subscribed": true,
+                    "pendingConfirmation": false,
+                    "consentGivenAt": "2027-02-20T10:06:00.000Z",
+                    "consentSource": "account_request",
+                    "consentTextVersion": "2026-10-28.fr.1",
+                    "unsubscribedAt": null
+                  }
+                }
+              }
+            }
+          },
           "202": {
-            "description": "Requested",
+            "description": "Unverified email: confirmation requested",
             "content": {
               "application/json": {
                 "schema": {
@@ -6584,6 +6606,8 @@
               "outcome": {
                 "type": "string",
                 "enum": [
+                  "subscribed",
+                  "already_subscribed",
                   "confirmation_sent",
                   "delivery_failed",
                   "no_action",
@@ -6591,6 +6615,15 @@
                   "consent_text_outdated",
                   "failed",
                   "test_recipient_not_allowed"
+                ]
+              },
+              "welcomeEmail": {
+                "description": "Only with outcome subscribed: whether the 'you are subscribed' email was accepted by the provider; the subscription is active either way",
+                "type": "string",
+                "enum": [
+                  "sent",
+                  "not_sent",
+                  "unknown"
                 ]
               },
               "currentConsentTextVersion": {
@@ -6618,9 +6651,25 @@
           "outcome": {
             "type": "string",
             "enum": [
+              "subscribed",
+              "already_subscribed",
               "confirmation_sent",
               "no_action"
+            ],
+            "description": "subscribed / already_subscribed (200): verified email, active at once or already active. confirmation_sent / no_action (202): unverified email, double opt-in"
+          },
+          "welcomeEmail": {
+            "description": "Only with subscribed: whether the 'you are subscribed' email was accepted by the provider; the subscription is active either way",
+            "type": "string",
+            "enum": [
+              "sent",
+              "not_sent",
+              "unknown"
             ]
+          },
+          "marketing": {
+            "description": "With subscribed / already_subscribed: the current subscription status",
+            "$ref": "#/components/schemas/MarketingStatus"
           },
           "retryAfterSeconds": {
             "description": "no_action while a confirmation was sent recently (or after a provider rate limit): seconds until 'send again' may send",

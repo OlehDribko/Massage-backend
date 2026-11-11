@@ -544,14 +544,26 @@ const paths = (): OpenApiDocument["paths"] => ({
     post: op({
       operationId: "requestOwnSubscription",
       tags: ["Marketing"],
-      summary: "Subscribe to offers / send the confirmation again",
+      summary: "Subscribe the signed-in user's own address (verified: at once; unverified: double opt-in)",
       description:
-        "Explicit (re-)subscription of the signed-in user's email, also after unsubscribing. Double opt-in: subscribed only after the emailed link (POST /api/marketing/subscriptions/confirm). At most one confirmation email per address per 10 minutes: inside that interval (or while a provider rate limit lasts) the answer is `no_action` with `retryAfterSeconds`; `no_action` without it means already subscribed. When the outcome of sending is unknown (timeout), `no_action` too: the email may have been sent. Registered users only (not guests); only when marketing is enabled.",
+        "Explicit (re-)subscription of the signed-in user's own email (from the verified Firebase token; there is no address in the body), also after unsubscribing. **Verified email** (`email_verified` in the token): active at once, `200 { outcome: \"subscribed\", welcomeEmail, marketing }` and a 'you are subscribed' email with an unsubscribe link; a waiting confirmation link stops working; `already_subscribed` when it was active (no email). A failed welcome email never undoes the subscription (`welcomeEmail: \"not_sent\"`, or `\"unknown\"` after a timeout). **Unverified email**: double opt-in, `202`, subscribed only after the emailed link (POST /api/marketing/subscriptions/confirm); at most one confirmation email per address per 10 minutes: inside that interval (or while a provider rate limit lasts) `no_action` with `retryAfterSeconds`; when the outcome of sending is unknown (timeout), `no_action` too. Registered users only (not guests); only when marketing is enabled.",
       security: PROTECTED,
       requestBody: { required: true, content: json(input(ownSubscriptionSchema), { consentTextVersion: MARKETING_CONSENT_TEXT_VERSION }) },
       responses: withAuth(
         {
-          "202": ok("Requested", ref("OwnSubscriptionRequested"), { outcome: "no_action", retryAfterSeconds: 412 }),
+          "200": ok("Verified email: subscribed now, or already subscribed", ref("OwnSubscriptionRequested"), {
+            outcome: "subscribed",
+            welcomeEmail: "sent",
+            marketing: {
+              subscribed: true,
+              pendingConfirmation: false,
+              consentGivenAt: "2027-02-20T10:06:00.000Z",
+              consentSource: "account_request",
+              consentTextVersion: MARKETING_CONSENT_TEXT_VERSION,
+              unsubscribedAt: null,
+            },
+          }),
+          "202": ok("Unverified email: confirmation requested", ref("OwnSubscriptionRequested"), { outcome: "no_action", retryAfterSeconds: 412 }),
           "400": errors("Invalid body", [validation("consentTextVersion"), INVALID_JSON]),
           "404": errors("Marketing is not enabled", [{ message: "Not found", code: "NOT_FOUND" }]),
           "409": errors("The consent text shown is outdated", [

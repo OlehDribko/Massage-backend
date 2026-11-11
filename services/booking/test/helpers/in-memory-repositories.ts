@@ -162,6 +162,21 @@ export const createInMemoryMarketingRepository = () => {
       });
       return Promise.resolve(true);
     },
+    activate: (id, { at, mode, consent }) => {
+      const row = rows.get(id);
+      if (row === undefined || row.subscribed || (mode === "signup" && (row.unsubscribedAt !== null || row.consentGivenAt !== null))) {
+        return Promise.resolve(false);
+      }
+      update(id, {
+        subscribed: true,
+        consentGivenAt: at,
+        consentSource: consent.source,
+        consentTextVersion: consent.textVersion,
+        unsubscribedAt: null,
+        ...cleared,
+      });
+      return Promise.resolve(true);
+    },
     unsubscribe: (id, at) => {
       const row = rows.get(id);
       if (row !== undefined && (row.subscribed || row.confirmationNonce !== null)) {

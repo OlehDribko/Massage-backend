@@ -148,6 +148,8 @@ export const profileViewSchema = z
   .meta({ id: "ProfileView" });
 
 export const optInOutcomeSchema = z.enum([
+  "subscribed",
+  "already_subscribed",
   "confirmation_sent",
   "delivery_failed",
   "no_action",
@@ -160,7 +162,14 @@ export const optInOutcomeSchema = z.enum([
 export const syncResponseSchema = profileViewSchema
   .extend({
     marketingOptIn: z
-      .strictObject({ outcome: optInOutcomeSchema, currentConsentTextVersion: z.string() })
+      .strictObject({
+        outcome: optInOutcomeSchema,
+        welcomeEmail: z
+          .enum(["sent", "not_sent", "unknown"])
+          .optional()
+          .meta({ description: "Only with outcome subscribed: whether the 'you are subscribed' email was accepted by the provider; the subscription is active either way" }),
+        currentConsentTextVersion: z.string(),
+      })
       .optional()
       .meta({ description: "Only when the request had marketingOptIn: true; the sync itself succeeded in every case" }),
   })
@@ -168,7 +177,15 @@ export const syncResponseSchema = profileViewSchema
 
 export const ownSubscriptionRequestedSchema = z
   .strictObject({
-    outcome: z.enum(["confirmation_sent", "no_action"]),
+    outcome: z.enum(["subscribed", "already_subscribed", "confirmation_sent", "no_action"]).meta({
+      description:
+        "subscribed / already_subscribed (200): verified email, active at once or already active. confirmation_sent / no_action (202): unverified email, double opt-in",
+    }),
+    welcomeEmail: z
+      .enum(["sent", "not_sent", "unknown"])
+      .optional()
+      .meta({ description: "Only with subscribed: whether the 'you are subscribed' email was accepted by the provider; the subscription is active either way" }),
+    marketing: marketingStatusSchema.optional().meta({ description: "With subscribed / already_subscribed: the current subscription status" }),
     retryAfterSeconds: z
       .int()
       .positive()

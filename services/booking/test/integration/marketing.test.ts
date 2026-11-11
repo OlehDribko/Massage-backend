@@ -205,3 +205,52 @@ describe("marketing subscription in PostgreSQL", () => {
     ).toBe("23514");
   });
 });
+
+describe("direct activation of a verified user's own address (PostgreSQL)", () => {
+  const ACCOUNT_REQUEST: ConsentRequest = { source: "account_request", textVersion: MARKETING_CONSENT_TEXT_VERSION };
+  const CHECKBOX: ConsentRequest = { source: "signup_checkbox", textVersion: MARKETING_CONSENT_TEXT_VERSION };
+
+  it("parallel requests on real rows: one activation, consent recorded, one welcome email", async () => {
+    const marketing = service();
+    const before = sent.length;
+    const results = await Promise.all(Array.from({ length: 10 }, () => marketing.subscribeVerified("Direct@Example.invalid", ACCOUNT_REQUEST, "explicit")));
+    expect(results.filter((result) => result.outcome === "subscribed")).toHaveLength(1);
+    expect(results.filter((result) => result.outcome === "already_subscribed")).toHaveLength(9);
+    expect(sent.length - before).toBe(1);
+    expect(await rowOf("direct@example.invalid")).toEqual({
+      subscribed: true,
+      source: "account_request",
+      version: MARKETING_CONSENT_TEXT_VERSION,
+      hasConsentDate: true,
+      hasUnsubscribedDate: false,
+      pending: false,
+    });
+  });
+
+  it("pending → active clears the confirmation; the sign-up checkbox after an unsubscribe does not re-activate, the button does", async () => {
+    const marketing = service();
+    expect(await marketing.requestSubscription("switch@example.invalid", FORM, "explicit")).toBe("confirmation_sent");
+    expect(await rowOf("switch@example.invalid")).toMatchObject({ subscribed: false, pending: true });
+    expect(await marketing.subscribeVerified("switch@example.invalid", ACCOUNT_REQUEST, "explicit")).toMatchObject({ outcome: "subscribed" });
+    expect(await rowOf("switch@example.invalid")).toMatchObject({ subscribed: true, pending: false, source: "account_request" });
+
+    const unsubscribe = createActionTokenService(SECRET).createToken(
+      "marketing_unsubscribe",
+      (await createMarketingRepository(database.prisma).findByEmail("switch@example.invalid"))?.id ?? "",
+    );
+    await marketing.unsubscribeByToken(unsubscribe);
+    expect(await marketing.subscribeVerified("switch@example.invalid", CHECKBOX, "signup")).toEqual({ outcome: "no_action" });
+    expect(await rowOf("switch@example.invalid")).toMatchObject({ subscribed: false, hasUnsubscribedDate: true });
+    expect(await marketing.subscribeVerified("switch@example.invalid", ACCOUNT_REQUEST, "explicit")).toMatchObject({ outcome: "subscribed" });
+    expect(await rowOf("switch@example.invalid")).toMatchObject({ subscribed: true, hasUnsubscribedDate: false });
+  });
+
+  it("a welcome email the provider refuses leaves the subscription active", async () => {
+    const refusing: MarketingMailer = { ...mailer, sendSubscriptionConfirmed: () => Promise.resolve({ kind: "not_sent", code: "provider_rejected" }) };
+    expect(await service(undefined, refusing).subscribeVerified("refused@example.invalid", ACCOUNT_REQUEST, "explicit")).toEqual({
+      outcome: "subscribed",
+      welcomeEmail: "not_sent",
+    });
+    expect(await rowOf("refused@example.invalid")).toMatchObject({ subscribed: true });
+  });
+});

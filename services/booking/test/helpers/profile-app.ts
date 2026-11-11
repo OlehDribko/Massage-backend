@@ -48,6 +48,9 @@ export const createProfileTestApp = (
       return Promise.resolve({ kind: "accepted" });
     },
     sendSubscriptionConfirmed: (email, url) => {
+      if (mail.failing) {
+        return Promise.resolve({ kind: "not_sent", code: "provider_rejected" });
+      }
       sent.push({ kind: "confirmed", email, url });
       return Promise.resolve({ kind: "accepted" });
     },

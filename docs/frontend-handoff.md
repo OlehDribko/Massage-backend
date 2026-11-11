@@ -10,7 +10,11 @@
 
 ## Стан розгортання
 
-Код у `develop`; **на staging ще не розгорнуто** (окремий пакет розгортання). Листи про бронювання й маркетинг на staging **вимкнені**: `booking.notification` = `null`, `notifications` = `[]`, `marketingAvailable` = `false`, маршрути маркетингу → `404`. Інтерфейс має коректно працювати і в цьому стані.
+Перевіряйте фактичну версію staging у `GET /health/ready` (`version` = commit SHA) — staging може відставати від `develop`.
+
+- З 2026-11-11 на staging розгорнуто `841f4ee`: листи про бронювання й маркетинг **увімкнені**, але лише для погоджених тестових адрес (інші → `skipped` / `403 TEST_RECIPIENT_NOT_ALLOWED`).
+- Пряма підписка підтвердженого користувача (`outcome: "subscribed"` / `"already_subscribed"`) — у `develop` після PR про пряму підписку; до її деплою staging відповідає за старим правилом (`202 confirmation_sent` і для підтвердженого email).
+- Інтерфейс має коректно працювати і з вимкненими функціями: `booking.notification` = `null`, `notifications` = `[]`, `marketingAvailable` = `false`, маршрути маркетингу → `404`.
 
 ## Інструкція для frontend-агента
 
@@ -90,16 +94,36 @@ marketingAvailable відомий лише з завантаженого про�
   pendingConfirmation=true → «очікує підтвердження за посиланням з листа» (кнопки «Надіслати лист ще раз» і «Відписатися»);
   subscribed=true → «підписані» (кнопка «Відписатися»).
 Текст згоди й версія — MARKETING_CONSENT (version "2026-10-28.fr.1") поряд з кожним чекбоксом/кнопкою; чекбокс за замовчуванням не відмічений; сам по собі підписку не вмикає.
-Реєстрація: POST /api/me/sync { "marketingOptIn": true, "marketingConsentTextVersion": "2026-10-28.fr.1" } (лише якщо відмічено)
-→ 200 профіль + "marketingOptIn": { "outcome": "confirmation_sent"|"delivery_failed"|"no_action"|"unavailable"|"consent_text_outdated"|"failed"|"test_recipient_not_allowed", "currentConsentTextVersion" }
-(синхронізація успішна за будь-якого outcome; confirmation_sent → «перевірте пошту»;
-test_recipient_not_allowed → лист не надіслано: тестове середовище, адреса не в списку — успіх не показуй).
-Кабінет: POST /api/me/marketing/subscription { "consentTextVersion": "2026-10-28.fr.1" } → 202 { "outcome": "confirmation_sent"|"no_action", "retryAfterSeconds"? }
-(retryAfterSeconds → «повторно можна через N с»); 403 REGISTERED_ACCOUNT_REQUIRED (гість), 403 TEST_RECIPIENT_NOT_ALLOWED (тестове середовище:
-адреса не в списку, нічого не надіслано), 409 CONSENT_TEXT_OUTDATED { currentConsentTextVersion },
-503 CONFIRMATION_EMAIL_NOT_SENT { retryAfterSeconds }. Відписка: DELETE /api/me/marketing/subscription → 200 профіль (403 EMAIL_NOT_VERIFIED до підтвердження email).
-Публічна форма (наявна): POST /api/marketing/subscriptions { email, consentTextVersion } → 202 { code: "SUBSCRIPTION_REQUESTED" } (однакова відповідь для будь-якої адреси);
-403 TEST_RECIPIENT_NOT_ALLOWED; 409 CONSENT_TEXT_OUTDATED; 503 CONFIRMATION_EMAIL_NOT_SENT { retryAfterSeconds }; 404 — маркетинг вимкнено.
+Підтверджена ідентичність = profile ready, profile.data.profile.authState === "registered" і profile.data.profile.emailVerified === true
+(сервер перевіряє те саме за Firebase-токеном; frontend лише вибирає маршрут, нічого не «доводить» тілом запиту).
+
+Вибір маршруту:
+- Кабінет: завжди POST /api/me/marketing/subscription (адреси в тілі немає — лише власна адреса з токена).
+- Головна сторінка (форма розсилки):
+  - підтверджена ідентичність і адреса у формі = власна profile.data.profile.email (або форма показує лише кнопку «Підписатися з <email>»)
+    → POST /api/me/marketing/subscription — підписка активна одразу;
+  - гість, немає/не завантажено профіль, email не підтверджено, або введено ІНШУ адресу → публічний POST /api/marketing/subscriptions
+    (підтвердження через лист). Ніколи не надсилай Bearer-маршрут для чужої адреси — його й неможливо: адреси в тілі немає.
+
+POST /api/me/marketing/subscription { "consentTextVersion": "2026-10-28.fr.1" }:
+- 200 { "outcome": "subscribed", "welcomeEmail": "sent"|"not_sent"|"unknown", "marketing": MarketingStatus } — підтверджений email, підписка АКТИВНА:
+  «Vous êtes inscrit·e». welcomeEmail ≠ "sent" — підписка все одно активна; можна тихо додати «l’e-mail de bienvenue n’a pas pu être envoyé», без помилки підписки.
+- 200 { "outcome": "already_subscribed", "marketing" } — уже була активна; нового листа немає.
+- 202 { "outcome": "confirmation_sent" } — email не підтверджено: «перевірте пошту, підтвердіть за посиланням»;
+  202 { "outcome": "no_action", "retryAfterSeconds"? } — лист уже надіслано нещодавно (повторно через N с) або результат невідомий.
+- 403 REGISTERED_ACCOUNT_REQUIRED (гість), 403 TEST_RECIPIENT_NOT_ALLOWED (тестове середовище: адреса не в списку, нічого не змінено й не надіслано),
+  409 CONSENT_TEXT_OUTDATED { currentConsentTextVersion }, 503 CONFIRMATION_EMAIL_NOT_SENT { retryAfterSeconds } (лише непідтверджений email), 404 — маркетинг вимкнено.
+Після 200 онови статус із поля marketing (або GET /api/me). Не називай активну підписку «лист надіслано».
+
+Реєстрація: POST /api/me/sync { "marketingOptIn": true, "marketingConsentTextVersion": "2026-10-28.fr.1" } (лише якщо чекбокс відмічено)
+→ 200 профіль (поле marketing уже з новим станом) + "marketingOptIn": { "outcome", "welcomeEmail"?, "currentConsentTextVersion" }, outcome:
+  "subscribed" (підтверджений email, наприклад Google: активна одразу; welcomeEmail як вище) | "already_subscribed" |
+  "confirmation_sent" (непідтверджений email: перевірте пошту) | "no_action" (наприклад, раніше відписався — чекбокс сам не поновлює, лише кнопка) |
+  "delivery_failed" | "unavailable" | "consent_text_outdated" | "failed" | "test_recipient_not_allowed" (успіх не показуй).
+Синхронізація успішна за будь-якого outcome. Звичайний sync без marketingOptIn, вхід і підтвердження email ніколи не підписують.
+Відписка: DELETE /api/me/marketing/subscription → 200 профіль (403 EMAIL_NOT_VERIFIED до підтвердження email); нова підписка після неї — та сама кнопка.
+Публічна форма: POST /api/marketing/subscriptions { email, consentTextVersion } → 202 { code: "SUBSCRIPTION_REQUESTED" } (однакова відповідь для будь-якої адреси,
+підписка — лише після посилання з листа); 403 TEST_RECIPIENT_NOT_ALLOWED; 409 CONSENT_TEXT_OUTDATED; 503 CONFIRMATION_EMAIL_NOT_SENT { retryAfterSeconds }; 404 — маркетинг вимкнено.
 Сторінки посилань /marketing/confirm?token= і /unsubscribe?token= уже є — не змінюй їх шляхів.
 
 Перевірка: unit-тести відображення станів; не покладайся на фіктивні дані замість контрактів; не вмикай маркетинг/листи на staging.
