@@ -83,7 +83,7 @@
 **Адміністратор** (`5. Admin`, після призначення ролі власником):
 1. `Profile: sync (admin)` — тест `role is admin` стане зеленим лише після призначення ролі. Скрипт зберігає `adminProfileId`.
 2. `Schedule: get` → `Schedule: ⚠️ replace weekly`. Години в тілі запиту вигадані, відредагуйте їх перед надсиланням.
-3. Винятки: заповніть `exceptionDate`, далі `Schedule: ⚠️ set exception of a date` або `⚠️ remove exception of a date`.
+3. Винятки: заповніть `exceptionDate`, далі `Schedule: ⚠️ set exception of a date` або `⚠️ remove exception of a date`. Закрити кілька дат без скасування записів — `Schedule: ⚠️ close dates (bookings stay)`, відкрити — `Schedule: ⚠️ reopen dates` (дати в тілі вигадані).
 4. Тиждень чи місяць: заповніть `scheduleDaysFrom` / `scheduleDaysTo` (`YYYY-MM-DD`, щонайбільше 62 дні) → `Schedule: days of a range (week, month)`. Для змін — `Schedule: ⚠️ set several dates (week, month)`: дати й години в тілі вигадані, відредагуйте їх перед надсиланням.
 5. Бронювання: заповніть `adminBookingsDate` для `Bookings: list of a date` або використайте `scheduleDaysFrom` / `scheduleDaysTo` для `Bookings: list of a range (week, month)`, далі `Bookings: get any` і `Bookings: ⚠️ cancel (studio)` за `bookingId`.
 

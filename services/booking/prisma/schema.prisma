@@ -157,6 +157,14 @@ model ScheduleException {
   intervals ScheduleExceptionInterval[]
 }
 
+/// A date closed for new bookings and moves on top of its schedule (weekly
+/// rule or exception), kept apart so reopening restores that schedule.
+/// Existing bookings of the date stay valid; nothing is cancelled.
+model ScheduleClosure {
+  date      DateTime @id @db.Date
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+}
+
 model ScheduleExceptionInterval {
   id          String            @id @default(uuid()) @db.Uuid
   date        DateTime          @db.Date

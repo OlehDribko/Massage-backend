@@ -5,6 +5,7 @@ import type { BookingRules } from "./booking-rules.js";
 import {
   dayRangeSchema,
   formatLocalTime,
+  scheduleClosuresSchema,
   scheduleDaysSchema,
   scheduleExceptionSchema,
   weeklyScheduleSchema,
@@ -29,6 +30,9 @@ const exceptionsView = (exceptions: Map<LocalDate, MinuteInterval[]>) =>
     intervals: intervals.map(intervalView),
   }));
 
+// closed / source / intervals: the date's schedule (unchanged meaning; what a
+// reopened date returns to). closure: a ScheduleClosure. effective: what can
+// be booked now.
 const daysView = (days: DayView[]) =>
   days.map((day) => ({
     date: day.date,
@@ -36,6 +40,8 @@ const daysView = (days: DayView[]) =>
     closed: day.intervals.length === 0,
     source: day.source,
     intervals: day.intervals.map(intervalView),
+    closure: day.closure === null ? null : { closedAt: day.closure.closedAt.toISOString() },
+    effective: { open: day.effective.length > 0, intervals: day.effective.map(intervalView) },
   }));
 
 const dateParam = (req: Request): LocalDate => {
@@ -131,6 +137,23 @@ export const createAdminScheduleRouter = ({
     "/days",
     withValidatedBody(scheduleDaysSchema, async (changes, res) => {
       res.status(200).json({ timeZone: rules.timeZone, days: daysView(await schedule.setDays(changes)) });
+    }),
+  );
+
+  // Close dates for new bookings and moves; existing bookings stay and are listed.
+  router.post(
+    "/closures",
+    withValidatedBody(scheduleClosuresSchema, async (dates, res) => {
+      const result = await schedule.closeDates(dates);
+      res.status(200).json({ timeZone: rules.timeZone, days: daysView(result.days), bookings: result.bookings });
+    }),
+  );
+
+  // Remove the closures only; the dates' schedule applies again.
+  router.post(
+    "/closures/reopen",
+    withValidatedBody(scheduleClosuresSchema, async (dates, res) => {
+      res.status(200).json({ timeZone: rules.timeZone, days: daysView(await schedule.reopenDates(dates)) });
     }),
   );
 

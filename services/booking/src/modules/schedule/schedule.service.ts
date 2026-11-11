@@ -5,9 +5,13 @@ import type { CalendarTransaction, Tx } from "./calendar-transaction.js";
 import {
   activeBookingTimes,
   dayScheduleOf,
+  deleteClosures,
   deleteException,
+  loadClosures,
+  loadClosuresOf,
   loadExceptions,
   loadWeekly,
+  putClosures,
   putDays,
   putException,
   replaceWeekly,
@@ -18,8 +22,24 @@ import { addDays, daysBetween, isoWeekday, localDateTimeOf, type LocalDate } fro
 
 export type ScheduleConflict = { bookingId: string; startsAt: string; endsAt: string; serviceName: string };
 
-/** Working hours in effect on one date. */
-export type DayView = { date: LocalDate; weekday: number; intervals: MinuteInterval[]; source: "weekly" | "exception" };
+/**
+ * One date for the admin calendar:
+ * - intervals / source: the schedule of the date (its exception, else the
+ *   weekly rule) — also what the date returns to when a closure is removed;
+ * - closure: the date is closed for new bookings and moves (ScheduleClosure);
+ * - effective: what can be booked: nothing while closed, else the schedule.
+ */
+export type DayView = {
+  date: LocalDate;
+  weekday: number;
+  intervals: MinuteInterval[];
+  source: "weekly" | "exception";
+  closure: { closedAt: Date } | null;
+  effective: MinuteInterval[];
+};
+
+/** A confirmed booking, not yet ended, on one of the dates of a closure. */
+export type BookingOnDate = ScheduleConflict & { date: LocalDate };
 
 export type ScheduleService = ReturnType<typeof createScheduleService>;
 
@@ -122,14 +142,72 @@ export const createScheduleService = ({
     dates: LocalDate[],
     weekly: WeeklyInterval[],
     exceptions: Map<LocalDate, MinuteInterval[]>,
+    closures: Map<LocalDate, Date>,
   ): DayView[] =>
-    dates.map((date) => ({ date, weekday: isoWeekday(date), ...dayScheduleOf(date, weekly, exceptions) }));
+    dates.map((date) => {
+      const schedule = dayScheduleOf(date, weekly, exceptions);
+      const closedAt = closures.get(date);
+      return {
+        date,
+        weekday: isoWeekday(date),
+        ...schedule,
+        closure: closedAt === undefined ? null : { closedAt },
+        effective: closedAt === undefined ? schedule.intervals : [],
+      };
+    });
 
-  /** Hours in effect on every date of [from, to] (a week, a month): the exception of the date, else the weekly rule. */
+  /** Every date of [from, to] (a week, a month): its schedule, closure and what can be booked. */
   const getDays = async (range: { from: LocalDate; to: LocalDate }): Promise<DayView[]> => {
     const dates = Array.from({ length: daysBetween(range.from, range.to) + 1 }, (_, index) => addDays(range.from, index));
-    return daysOf(dates, await loadWeekly(prisma), await loadExceptions(prisma, range));
+    return daysOf(dates, await loadWeekly(prisma), await loadExceptions(prisma, range), await loadClosures(prisma, range));
   };
+
+  /** Current views of some dates, read inside the transaction that changed them. */
+  const viewsOf = async (tx: Tx, dates: LocalDate[]): Promise<DayView[]> => {
+    const sorted = [...new Set(dates)].sort();
+    const first = sorted[0];
+    const last = sorted.at(-1);
+    if (first === undefined || last === undefined) {
+      return [];
+    }
+    const exceptions = await loadExceptions(tx, { from: first, to: last });
+    return daysOf(sorted, await loadWeekly(tx), exceptions, await loadClosuresOf(tx, sorted));
+  };
+
+  /**
+   * Closes the dates for new bookings and moves, all at once, under the
+   * calendar lock; closing a closed date again changes nothing. Existing
+   * bookings stay valid and are not checked against the closure (no
+   * SCHEDULE_CONFLICT, no cancellation): they are returned so the admin can
+   * contact the clients. Time freed later on these dates stays closed.
+   */
+  const closeDates = (dates: LocalDate[]): Promise<{ days: DayView[]; bookings: BookingOnDate[] }> =>
+    calendar(async (tx) => {
+      await putClosures(tx, dates);
+      const current = now();
+      const selected = new Set(dates);
+      const bookings = (await activeBookingTimes(tx, { from: current }))
+        .filter((booking) => booking.endsAt.getTime() > current.getTime() && selected.has(localDateOf(booking.startsAt)))
+        .map((booking) => ({
+          bookingId: booking.id,
+          date: localDateOf(booking.startsAt),
+          startsAt: booking.startsAt.toISOString(),
+          endsAt: booking.endsAt.toISOString(),
+          serviceName: booking.serviceName,
+        }));
+      return { days: await viewsOf(tx, dates), bookings };
+    });
+
+  /**
+   * Removes only the closures of the dates; their schedule (exception or
+   * weekly rule) applies again, which may itself have no hours. Reopening an
+   * open date changes nothing.
+   */
+  const reopenDates = (dates: LocalDate[]): Promise<DayView[]> =>
+    calendar(async (tx) => {
+      await deleteClosures(tx, dates);
+      return viewsOf(tx, dates);
+    });
 
   /**
    * Several dates at once, all or nothing: own intervals ([] = day off) or
@@ -153,8 +231,8 @@ export const createScheduleService = ({
         await conflictsWith(tx, (date) => (changed.has(date) ? dayScheduleOf(date, weekly, exceptions).intervals : undefined)),
       );
       await putDays(tx, { exceptions, weekly: backToWeekly });
-      return daysOf([...changed].sort(), weekly, exceptions);
+      return viewsOf(tx, [...changed]);
     });
 
-  return { getWeekly, listExceptions, setWeekly, setException, removeException, getDays, setDays };
+  return { getWeekly, listExceptions, setWeekly, setException, removeException, getDays, setDays, closeDates, reopenDates };
 };

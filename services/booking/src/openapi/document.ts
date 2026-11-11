@@ -5,7 +5,13 @@ import { actionTokenSchema } from "../modules/email/schema/email.schema.js";
 import { adminCancelSchema, createBookingSchema, rescheduleBookingSchema } from "../modules/bookings/booking.schema.js";
 import { ownSubscriptionSchema, syncSchema } from "../modules/profiles/profile.routes.js";
 import { updateOwnProfileSchema } from "../modules/profiles/profile.schema.js";
-import { MAX_DAYS_PER_REQUEST, scheduleDaysSchema, scheduleExceptionSchema, weeklyScheduleSchema } from "../modules/schedule/schedule.schema.js";
+import {
+  MAX_DAYS_PER_REQUEST,
+  scheduleClosuresSchema,
+  scheduleDaysSchema,
+  scheduleExceptionSchema,
+  weeklyScheduleSchema,
+} from "../modules/schedule/schedule.schema.js";
 import { DEFAULT_BOOKING_RULES } from "../modules/schedule/booking-rules.js";
 import {
   adminBookingSchema,
@@ -23,6 +29,7 @@ import {
   readySchema,
   scheduleExceptionViewSchema,
   scheduleDayViewSchema,
+  scheduleClosureResultSchema,
   scheduleDaysViewSchema,
   scheduleViewSchema,
   syncResponseSchema,
@@ -121,6 +128,7 @@ const COMPONENT_SCHEMAS = {
   ScheduleException: scheduleExceptionViewSchema,
   ScheduleDay: scheduleDayViewSchema,
   ScheduleDays: scheduleDaysViewSchema,
+  ScheduleClosureResult: scheduleClosureResultSchema,
   Live: liveSchema,
   Ready: readySchema,
   NotReady: notReadySchema,
@@ -309,13 +317,31 @@ const SCHEDULE_EXAMPLE = {
   exceptions: [{ date: "2027-03-08", closed: true, intervals: [] }],
 };
 
+const OPEN = (intervals: Json[]) => ({ closure: null, effective: { open: intervals.length > 0, intervals } });
 const SCHEDULE_DAYS_EXAMPLE = {
   timeZone: "Europe/Paris",
   days: [
-    { date: "2027-03-01", weekday: 1, closed: false, source: "exception", intervals: [{ start: "09:00", end: "13:00" }, { start: "14:00", end: "20:30" }] },
-    { date: "2027-03-02", weekday: 2, closed: true, source: "exception", intervals: [] },
-    { date: "2027-03-03", weekday: 3, closed: false, source: "weekly", intervals: [{ start: "09:00", end: "20:30" }] },
+    {
+      date: "2027-03-01",
+      weekday: 1,
+      closed: false,
+      source: "exception",
+      intervals: [{ start: "09:00", end: "13:00" }, { start: "14:00", end: "20:30" }],
+      ...OPEN([{ start: "09:00", end: "13:00" }, { start: "14:00", end: "20:30" }]),
+    },
+    { date: "2027-03-02", weekday: 2, closed: true, source: "exception", intervals: [], ...OPEN([]) },
+    { date: "2027-03-03", weekday: 3, closed: false, source: "weekly", intervals: [{ start: "09:00", end: "20:30" }], ...OPEN([{ start: "09:00", end: "20:30" }]) },
   ],
+};
+
+const CLOSED_DAY_EXAMPLE = {
+  date: "2027-03-10",
+  weekday: 3,
+  closed: false,
+  source: "weekly",
+  intervals: [{ start: "09:00", end: "20:30" }],
+  closure: { closedAt: "2027-03-01T08:00:00.000Z" },
+  effective: { open: false, intervals: [] },
 };
 
 const rules = DEFAULT_BOOKING_RULES;
@@ -807,6 +833,49 @@ const paths = (): OpenApiDocument["paths"] => ({
           "200": ok("Hours now in effect on these dates", ref("ScheduleDays"), SCHEDULE_DAYS_EXAMPLE),
           "400": errors("Invalid body", [validation("days"), INVALID_JSON]),
           "409": errors("Active bookings would fall outside the working hours", [scheduleConflict()]),
+        },
+        { ...adminOnly(), "503": [{ message: "The calendar is busy; retry shortly", code: "CALENDAR_BUSY", retryAfterSeconds: 2 }] },
+      ),
+    }),
+  },
+  "/api/admin/schedule/closures": {
+    post: op({
+      operationId: "closeScheduleDates",
+      tags: ["Admin: schedule"],
+      summary: "Close dates for new bookings and moves (existing bookings stay)",
+      description: `1–${String(MAX_DAYS_PER_REQUEST)} distinct dates, all at once under the calendar lock. A closure is a layer on top of the date's schedule: no new booking or move to these dates, time freed later by a cancellation or a move stays closed. Existing bookings stay valid, are not cancelled and are listed in \`bookings\` so the clients can be contacted. Closing a closed date again changes nothing. Other schedule changes keep their \`409 SCHEDULE_CONFLICT\` checks. Verified administrator only.`,
+      security: PROTECTED,
+      requestBody: { required: true, content: json(input(scheduleClosuresSchema), { dates: ["2027-03-10", "2027-03-11"] }) },
+      responses: withAuth(
+        {
+          "200": ok("The dates, now closed, and their bookings", ref("ScheduleClosureResult"), {
+            timeZone: "Europe/Paris",
+            days: [CLOSED_DAY_EXAMPLE],
+            bookings: [
+              { bookingId: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", date: "2027-03-10", startsAt: "2027-03-10T09:00:00.000Z", endsAt: "2027-03-10T10:00:00.000Z", serviceName: "Massage 60" },
+            ],
+          }),
+          "400": errors("Invalid body", [validation("dates"), INVALID_JSON]),
+        },
+        { ...adminOnly(), "503": [{ message: "The calendar is busy; retry shortly", code: "CALENDAR_BUSY", retryAfterSeconds: 2 }] },
+      ),
+    }),
+  },
+  "/api/admin/schedule/closures/reopen": {
+    post: op({
+      operationId: "reopenScheduleDates",
+      tags: ["Admin: schedule"],
+      summary: "Remove the closures of dates",
+      description: `1–${String(MAX_DAYS_PER_REQUEST)} distinct dates. Only the closures go: each date's own schedule (its exception, else the weekly rule) applies again — which may itself have no hours (\`effective.open: false\`). Reopening an open date changes nothing. Verified administrator only.`,
+      security: PROTECTED,
+      requestBody: { required: true, content: json(input(scheduleClosuresSchema), { dates: ["2027-03-10"] }) },
+      responses: withAuth(
+        {
+          "200": ok("The dates with their schedule in effect again", ref("ScheduleDays"), {
+            timeZone: "Europe/Paris",
+            days: [{ ...CLOSED_DAY_EXAMPLE, ...OPEN([{ start: "09:00", end: "20:30" }]) }],
+          }),
+          "400": errors("Invalid body", [validation("dates"), INVALID_JSON]),
         },
         { ...adminOnly(), "503": [{ message: "The calendar is busy; retry shortly", code: "CALENDAR_BUSY", retryAfterSeconds: 2 }] },
       ),
