@@ -19,7 +19,8 @@
     "prisma": "DOTENV_CONFIG_PATH=${DOTENV_CONFIG_PATH:-../../.env} prisma",
     "migrate:deploy": "tsx --env-file-if-exists=${DOTENV_CONFIG_PATH:-../../.env} src/migrate/run-migrations.ts",
     "emulator:auth": "npx --yes firebase-tools@15.34.1 emulators:start --only auth --project demo-massage-it --config test/integration/firebase.json",
-    "email:preview": "node --import tsx test/tools/email-previews.ts"
+    "email:preview": "node --import tsx test/tools/email-previews.ts",
+    "openapi:export": "node --import tsx test/tools/export-openapi.ts"
   },
   "dependencies": {
     "@getbrevo/brevo": "^6.0.3",
