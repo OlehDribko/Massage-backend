@@ -15,6 +15,13 @@ const localTime = z.string().meta({ description: "Local time of the studio, HH:M
 const uuid = z.uuid();
 const cents = z.int().min(0).meta({ description: "Integer euro cents" });
 
+const giftCardStatus = z
+  .enum(["new", "in_progress", "completed", "cancelled"])
+  .meta({
+    description:
+      "completed = manual handling finished (not a payment or an issued card); cancelled = closed (kept); both can be reopened to in_progress",
+  });
+
 // --- Errors -----------------------------------------------------------------
 
 export const bookingBlockerSchema = z.enum([
@@ -25,6 +32,9 @@ export const bookingBlockerSchema = z.enum([
   "not_a_client",
 ]);
 
+/** Error blockers: the booking ones, plus phone_invalid (GIFT_CARD_REQUEST_NOT_READY only: the stored phone no longer passes the format rules). */
+const errorBlockerSchema = z.enum([...bookingBlockerSchema.options, "phone_invalid"]);
+
 export const errorSchema = z
   .strictObject({
     message: z.string().meta({ description: "Human-readable, English; do not parse" }),
@@ -33,7 +43,10 @@ export const errorSchema = z
       .array(z.strictObject({ field: z.array(z.union([z.string(), z.number()])), message: z.string() }))
       .optional()
       .meta({ description: "VALIDATION_FAILED: one entry per invalid field" }),
-    blockers: z.array(bookingBlockerSchema).optional().meta({ description: "BOOKING_NOT_READY: what still prevents booking" }),
+    blockers: z
+      .array(errorBlockerSchema)
+      .optional()
+      .meta({ description: "BOOKING_NOT_READY, GIFT_CARD_REQUEST_NOT_READY: what still prevents booking or a gift card request (phone_invalid: gift card requests only)" }),
     reason: z
       .enum(["too_soon", "beyond_horizon", "outside_schedule", "taken"])
       .optional()
@@ -41,12 +54,21 @@ export const errorSchema = z
     retryAfterSeconds: z
       .int()
       .optional()
-      .meta({ description: "When to retry (also sent as the Retry-After header): AUTH_UNAVAILABLE, CALENDAR_BUSY, CONFIRMATION_EMAIL_NOT_SENT" }),
+      .meta({
+        description:
+          "When to retry (also sent as the Retry-After header): AUTH_UNAVAILABLE, CALENDAR_BUSY, CONFIRMATION_EMAIL_NOT_SENT, GIFT_CARD_REQUEST_BUSY, GIFT_CARD_REQUEST_LIMIT_REACHED",
+      }),
     currentConsentTextVersion: z.string().optional().meta({ description: "CONSENT_TEXT_OUTDATED: the version to show instead" }),
     conflicts: z
       .array(z.strictObject({ bookingId: uuid, startsAt: instant, endsAt: instant, serviceName: z.string() }))
       .optional()
       .meta({ description: "SCHEDULE_CONFLICT: active bookings the change would leave outside working hours" }),
+    from: giftCardStatus.optional().meta({ description: "GIFT_CARD_STATUS_TRANSITION_NOT_ALLOWED: the current status" }),
+    to: giftCardStatus.optional().meta({ description: "GIFT_CARD_STATUS_TRANSITION_NOT_ALLOWED: the requested status" }),
+    allowed: z
+      .array(giftCardStatus)
+      .optional()
+      .meta({ description: "GIFT_CARD_STATUS_TRANSITION_NOT_ALLOWED: statuses that may be set from the current one" }),
   })
   .meta({ id: "Error", examples: [{ message: "Validation failed", code: "VALIDATION_FAILED", errors: [{ field: ["startsAt"], message: "Invalid ISO datetime" }] }] });
 
@@ -286,6 +308,73 @@ export const adminBookingSchema = z
     notifications: z.array(adminNotificationSchema).meta({ description: "Client and studio results for every change, oldest first; empty when emails are off" }),
   })
   .meta({ id: "AdminBooking" });
+
+// --- Gift card requests -----------------------------------------------------------
+
+const giftCardBase = {
+  id: uuid,
+  number: z.int().min(1).meta({ description: "Short request number for people (n° 42), shown in the studio email" }),
+  status: giftCardStatus,
+  amountCents: z.int().min(1).meta({ description: "Integer euro cents, chosen by the client (no fixed values)" }),
+  currency: z.string().meta({ examples: ["EUR"], description: "Always EUR, set by the server" }),
+  description: z.string().nullable().meta({ description: "The client's text (1–1000 characters) or null" }),
+  preferredContactChannel: z
+    .enum(["email", "phone", "whatsapp"])
+    .meta({ description: "How the client prefers to be contacted by hand; no messaging integration" }),
+  createdAt: instant,
+};
+
+const giftCardClientNotification = z
+  .strictObject({
+    status: notificationState,
+    reason: z
+      .enum(["retry_scheduled", "superseded", "session_already_started", "test_environment", "no_valid_address", "not_sent"])
+      .nullable(),
+  })
+  .meta({ description: "The studio's email about the request (the client gets none). Separate from status: a failed email never changes the request" });
+
+export const clientGiftCardRequestSchema = z
+  .strictObject({
+    ...giftCardBase,
+    notification: giftCardClientNotification.nullable().meta({ description: "null when emails are off on this server" }),
+  })
+  .meta({ id: "GiftCardRequest" });
+
+export const adminGiftCardRequestSchema = z
+  .strictObject({
+    ...giftCardBase,
+    client: z
+      .strictObject({ profileId: uuid, name: z.string(), email: z.string(), phone: z.string() })
+      .meta({ description: "Snapshot at submission (email from the verified identity; phone format-checked, NOT verified). Later profile changes do not touch it" }),
+    updatedAt: instant,
+    allowedStatuses: z.array(giftCardStatus).meta({ description: "Statuses that may be set next (UI hint; the server re-checks)" }),
+    history: z
+      .array(
+        z.strictObject({
+          fromStatus: giftCardStatus.nullable().meta({ description: "null: the submission" }),
+          toStatus: giftCardStatus,
+          at: instant,
+          by: z
+            .strictObject({ profileId: uuid, role: z.enum(["client", "admin"]), name: z.string().nullable(), email: z.string().nullable() })
+            .meta({ description: "Who made the change (current name and email of that profile)" }),
+        }),
+      )
+      .meta({ description: "Oldest first: the submission, then every status change" }),
+    notification: adminRecipient
+      .nullable()
+      .meta({ description: "The studio's email about the request; null when emails are off on this server" }),
+  })
+  .meta({ id: "AdminGiftCardRequest" });
+
+export const adminGiftCardRequestListSchema = z
+  .strictObject({
+    timeZone: z.string().meta({ examples: ["Europe/Paris"], description: "Time zone of createdFrom / createdTo" }),
+    page: z.int().min(1),
+    pageSize: z.int().min(1).max(100),
+    total: z.int().min(0).meta({ description: "Requests matching the filters, all pages" }),
+    giftCardRequests: z.array(adminGiftCardRequestSchema).meta({ description: "Newest first" }),
+  })
+  .meta({ id: "AdminGiftCardRequestList" });
 
 // --- Admin schedule -------------------------------------------------------------
 

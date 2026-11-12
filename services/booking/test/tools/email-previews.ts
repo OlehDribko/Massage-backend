@@ -5,6 +5,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { emailTemplates } from "../../src/modules/email/templates/email.templates.js";
+import { renderGiftCardRequestEmail } from "../../src/notifications/gift-card-template.js";
 import { renderEmail, type RenderedEmail } from "../../src/notifications/templates.js";
 import { escapeHtml } from "../../src/shared/email/layout.js";
 import { cancelledPayload, createdPayload, eventOf, rescheduledPayload } from "../helpers/booking-event.js";
@@ -26,6 +27,23 @@ const previews: [name: string, email: RenderedEmail][] = [
   ["studio-new-after-moves", renderEmail(rescheduled, "studio", { ...options, studio: { kind: "new" } })],
   ["studio-moved", renderEmail(rescheduled, "studio", options)],
   ["studio-cancelled", renderEmail(eventOf("booking.cancelled", cancelledPayload("client", null)), "studio", options)],
+  [
+    "studio-gift-card-request",
+    renderGiftCardRequestEmail({
+      type: "gift_card_request.created",
+      payload: {
+        requestId: "5b6c7d8e-9f01-4a2b-8c3d-4e5f6a7b8c9d",
+        number: 42,
+        timeZone: "Europe/Paris",
+        amountCents: 15000,
+        currency: "EUR",
+        description: "Pour l’anniversaire de ma sœur, si possible avant samedi.",
+        preferredContactChannel: "whatsapp",
+        client: { profileId: "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f", name: "Anna Example", email: "anna@example.invalid", phone: "+33612345678" },
+        createdAt: "2027-03-01T07:00:00.000Z",
+      },
+    }),
+  ],
   ["marketing-confirmation-request", emailTemplates.marketingConfirmationRequest(`${FRONTEND}/marketing/confirm?token=preview`, SENDER)],
   ["marketing-subscription-confirmed", emailTemplates.offersSubscriptionConfirmation(`${FRONTEND}/unsubscribe?token=preview`, SENDER)],
 ];

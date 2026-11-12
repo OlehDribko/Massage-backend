@@ -3,7 +3,7 @@
   "info": {
     "title": "Massage booking API",
     "version": "1.0.0",
-    "description": "Booking API of the massage studio (modular monolith, one application). All payloads are JSON.\n\n## Try it out runs real operations\n\"Try it out\" sends real requests to **this server**, in the environment you opened the page from: bookings are created, profiles and schedules change, emails can be sent. Use test accounts and test data.\n\n## Sign-in happens in Firebase, not in this API\nGoogle, email/password and anonymous (guest) sign-in are done by the frontend with the **Firebase Authentication client SDK**. This API has no sign-in, sign-up or password routes. It only receives the resulting **Firebase ID token** in `Authorization: Bearer <token>` and verifies it on every request (signature, project, expiry, revocation, disabled account).\n\nTo try protected operations: obtain an ID token from your own Firebase session in the frontend (`await auth.currentUser.getIdToken()`), click **Authorize** and paste it. ID tokens expire after about an hour. The page does not keep the token after a reload. Never paste tokens of other people.\n\n## Who may do what\n- **Public** (no token): catalogue, availability, health, the marketing subscription form and its email links. A token sent to a public route is ignored.\n- **Guest**: Firebase anonymous session. Has a profile (`POST /api/me/sync`), sees and cancels own bookings, but **cannot book** (`BOOKING_NOT_READY` with `anonymous_session`).\n- **Registered client**: role `client`, not anonymous. To book or reschedule, the email must be verified and the profile needs a name and a phone (`bookingReadiness.blockers` lists what is missing).\n- **Administrator**: role `admin` (assigned by the owner with a command, never through the API), not anonymous, **verified email**. Only administrators use `/api/admin`; they do not book for themselves.\n\nRoutes under `/api/me`, `/api/bookings` and `/api/admin` exist only when Firebase is configured on the server; `/api/marketing` and `POST /api/me/marketing/subscription` only when marketing is enabled (otherwise `404 NOT_FOUND`).\n\n## Money\nInteger **euro cents**, currency `EUR` (8500 = 85,00 €).\n- `priceCents` — regular price; `effectivePriceCents` — price of a booking created **now**.\n- `salePriceCents` and `saleEndsAt` — only while a sale is active (server time strictly before `saleEndsAt`), otherwise both `null`. Exactly at `saleEndsAt` the regular price applies.\n- The price is decided by the server at the **moment the booking is created** (not the session date) and stored in the booking (`service.priceCents` of the booking). Rescheduling, the end of a sale and catalogue changes never change it. Prices in requests are not accepted.\n\n## Time\n- Requests: instants in ISO 8601 **with an offset** (`2027-03-02T08:00:00Z` or `2027-03-02T09:00:00+01:00`). Responses: UTC (`…Z`).\n- Business time zone: **Europe/Paris** (summer and winter time). Local dates are `YYYY-MM-DD`, local times `HH:MM`.\n- One minimum break of **15 minutes** between two sessions.\n- **Grid of starts:** every 15 minutes from the start of a free stretch: the start of a working interval, or the end of the previous session plus the break. The session must fit in the working interval (the break after the last session need not).\n- **Latest start 19:00** local time (inclusive).\n- A new start (booking or rescheduling) must be at least **12 h** from now and not later than the end of the local day **today + 45 days**.\n- **Rescheduling** by the client only while **more than 12 h** remain before the current start; the service and the agreed price stay.\n- **Cancelling** (client or admin) only **before the start**.\n\n## Idempotency-Key\nRequired on `POST /api/bookings` only: 8–128 characters `[A-Za-z0-9_-]` (a UUID fits), one per booking attempt of the client. A repeat with the same key and the same request returns the original booking (`200`, header `Idempotent-Replayed: true`) with its original price, even after a sale has ended; no second booking or event. The same key with a different request is `422 IDEMPOTENCY_KEY_REUSED`. Rescheduling and cancelling are idempotent without a key: a repeat answers `changed: false`.\n\n## Email status\nBooking emails are separate from the booking status. `accepted` means **accepted by the email provider for sending, not delivered to the mailbox**. A failed email never cancels or changes the booking.\n\n## retryAfterSeconds\n- In errors (also the `Retry-After` header, and in the message): `AUTH_UNAVAILABLE` (5 s), `CALENDAR_BUSY` (2 s), `CONFIRMATION_EMAIL_NOT_SENT`: the remaining resend block of the address after a provider rate limit (until the provider's Retry-After, or 10 minutes), otherwise 60 s. A retry before that sends nothing and answers `no_action`.\n- In `POST /api/me/marketing/subscription` with `outcome: \"no_action\"`: seconds until \"send again\" may send a new confirmation email (10-minute interval after a sent email; after a provider rate limit, until the provider's Retry-After).\n\n## Errors\n`{ \"message\": \"…\", \"code\": \"…\" }` plus fields of some codes (`errors`, `blockers`, `reason`, `retryAfterSeconds`, `currentConsentTextVersion`, `conflicts`). Unknown fields in request bodies are rejected (`400 VALIDATION_FAILED`). Malformed JSON: `400 INVALID_JSON`; body over 16 kB: `413 PAYLOAD_TOO_LARGE`; unknown route: `404 NOT_FOUND`."
+    "description": "Booking API of the massage studio (modular monolith, one application). All payloads are JSON.\n\n## Try it out runs real operations\n\"Try it out\" sends real requests to **this server**, in the environment you opened the page from: bookings are created, profiles and schedules change, emails can be sent. Use test accounts and test data.\n\n## Sign-in happens in Firebase, not in this API\nGoogle, email/password and anonymous (guest) sign-in are done by the frontend with the **Firebase Authentication client SDK**. This API has no sign-in, sign-up or password routes. It only receives the resulting **Firebase ID token** in `Authorization: Bearer <token>` and verifies it on every request (signature, project, expiry, revocation, disabled account).\n\nTo try protected operations: obtain an ID token from your own Firebase session in the frontend (`await auth.currentUser.getIdToken()`), click **Authorize** and paste it. ID tokens expire after about an hour. The page does not keep the token after a reload. Never paste tokens of other people.\n\n## Who may do what\n- **Public** (no token): catalogue, availability, health, the marketing subscription form and its email links. A token sent to a public route is ignored.\n- **Guest**: Firebase anonymous session. Has a profile (`POST /api/me/sync`), sees and cancels own bookings, but **cannot book** (`BOOKING_NOT_READY` with `anonymous_session`).\n- **Registered client**: role `client`, not anonymous. To book or reschedule, the email must be verified and the profile needs a name and a phone (`bookingReadiness.blockers` lists what is missing).\n- **Gift card requests** (`POST /api/gift-card-requests`): the same profile requirements as booking (`GIFT_CARD_REQUEST_NOT_READY` with the same `blockers`); guests cannot submit.\n- **Administrator**: role `admin` (assigned by the owner with a command, never through the API), not anonymous, **verified email**. Only administrators use `/api/admin`; they do not book for themselves.\n\nRoutes under `/api/me`, `/api/bookings`, `/api/gift-card-requests` and `/api/admin` exist only when Firebase is configured on the server; `/api/marketing` and `POST /api/me/marketing/subscription` only when marketing is enabled (otherwise `404 NOT_FOUND`).\n\n## Money\nInteger **euro cents**, currency `EUR` (8500 = 85,00 €).\n- `priceCents` — regular price; `effectivePriceCents` — price of a booking created **now**.\n- `salePriceCents` and `saleEndsAt` — only while a sale is active (server time strictly before `saleEndsAt`), otherwise both `null`. Exactly at `saleEndsAt` the regular price applies.\n- The price is decided by the server at the **moment the booking is created** (not the session date) and stored in the booking (`service.priceCents` of the booking). Rescheduling, the end of a sale and catalogue changes never change it. Prices in requests are not accepted.\n\n## Time\n- Requests: instants in ISO 8601 **with an offset** (`2027-03-02T08:00:00Z` or `2027-03-02T09:00:00+01:00`). Responses: UTC (`…Z`).\n- Business time zone: **Europe/Paris** (summer and winter time). Local dates are `YYYY-MM-DD`, local times `HH:MM`.\n- One minimum break of **15 minutes** between two sessions.\n- **Grid of starts:** every 15 minutes from the start of a free stretch: the start of a working interval, or the end of the previous session plus the break. The session must fit in the working interval (the break after the last session need not).\n- **Latest start 19:00** local time (inclusive).\n- A new start (booking or rescheduling) must be at least **12 h** from now and not later than the end of the local day **today + 45 days**.\n- **Rescheduling** by the client only while **more than 12 h** remain before the current start; the service and the agreed price stay.\n- **Cancelling** (client or admin) only **before the start**.\n\n## Idempotency-Key\nRequired on `POST /api/bookings` and `POST /api/gift-card-requests` (the same rules for both; below for bookings): 8–128 characters `[A-Za-z0-9_-]` (a UUID fits), one per booking attempt of the client. A repeat with the same key and the same request returns the original booking (`200`, header `Idempotent-Replayed: true`) with its original price, even after a sale has ended; no second booking or event. The same key with a different request is `422 IDEMPOTENCY_KEY_REUSED`. Rescheduling and cancelling are idempotent without a key: a repeat answers `changed: false`.\n\n## Email status\nBooking emails are separate from the booking status. `accepted` means **accepted by the email provider for sending, not delivered to the mailbox**. A failed email never cancels or changes the booking.\n\n## retryAfterSeconds\n- In errors (also the `Retry-After` header, and in the message): `AUTH_UNAVAILABLE` (5 s), `CALENDAR_BUSY` (2 s), `GIFT_CARD_REQUEST_BUSY` (2 s), `GIFT_CARD_REQUEST_LIMIT_REACHED` (until the oldest of the client's requests of the last 24 h is 24 h old), `CONFIRMATION_EMAIL_NOT_SENT`: the remaining resend block of the address after a provider rate limit (until the provider's Retry-After, or 10 minutes), otherwise 60 s. A retry before that sends nothing and answers `no_action`.\n- In `POST /api/me/marketing/subscription` with `outcome: \"no_action\"`: seconds until \"send again\" may send a new confirmation email (10-minute interval after a sent email; after a provider rate limit, until the provider's Retry-After).\n\n## Errors\n`{ \"message\": \"…\", \"code\": \"…\" }` plus fields of some codes (`errors`, `blockers`, `reason`, `retryAfterSeconds`, `currentConsentTextVersion`, `conflicts`). Unknown fields in request bodies are rejected (`400 VALIDATION_FAILED`). Malformed JSON: `400 INVALID_JSON`; body over 16 kB: `413 PAYLOAD_TOO_LARGE`; unknown route: `404 NOT_FOUND`."
   },
   "servers": [
     {
@@ -43,6 +43,14 @@
     {
       "name": "Admin: bookings",
       "description": "All bookings (verified administrator)"
+    },
+    {
+      "name": "Gift card requests",
+      "description": "A client asks the studio for a gift card, handled by hand (Firebase ID token)"
+    },
+    {
+      "name": "Admin: gift card requests",
+      "description": "Gift card requests and their status (verified administrator)"
     }
   ],
   "paths": {
@@ -3051,6 +3059,348 @@
         }
       }
     },
+    "/api/gift-card-requests": {
+      "post": {
+        "operationId": "createGiftCardRequest",
+        "tags": [
+          "Gift card requests"
+        ],
+        "summary": "Ask the studio for a gift card",
+        "description": "A request handled by hand by the studio: no online payment, no card code, no tracking of its use. Only a client ready as for booking (registered, verified email, name, phone; not an admin). Name and phone come from the profile, the email from the verified identity: the body never carries contacts (unknown fields are `400`). They are copied into the request: later profile changes do not touch it. The phone is format-checked, not verified. Currency EUR, set by the server; any whole number of cents > 0 within the stored range (no fixed values, no minimum or maximum). `description`: optional, at most 1000 characters after trimming; empty or only spaces is stored as null; no control characters except line breaks and tabs. `preferredContactChannel`: how the client wants to be contacted by hand (`whatsapp` is only a preference, there is no WhatsApp integration). Requires `Idempotency-Key` (see Idempotency-Key; one key per request the client decides to send). At most 5 new requests per client in 24 hours (replays do not count). The studio gets one email at once (no delay); `notification` shows its state, separate from `status`: a failed email never cancels the request. The client gets no email. Does not take the masseuse's time (no calendar lock).",
+        "security": [
+          {
+            "firebaseIdToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "8–128 characters [A-Za-z0-9_-]; one per request the client decides to send. Repeat it with the same body to retry safely.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{8,128}$"
+            },
+            "example": "6a1f0c9e-3b2d-4e5f-8a7b-9c0d1e2f3a4b"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "amountCents": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 2147483647
+                  },
+                  "description": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "maxLength": 1000
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "preferredContactChannel": {
+                    "type": "string",
+                    "enum": [
+                      "email",
+                      "phone",
+                      "whatsapp"
+                    ]
+                  }
+                },
+                "required": [
+                  "amountCents",
+                  "preferredContactChannel"
+                ],
+                "additionalProperties": false
+              },
+              "example": {
+                "amountCents": 15000,
+                "description": "Pour l’anniversaire de ma sœur",
+                "preferredContactChannel": "whatsapp"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Repeat of an earlier request with the same key: the original request",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "true",
+                "schema": {
+                  "type": "string",
+                  "const": "true"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "giftCardRequest": {
+                      "$ref": "#/components/schemas/GiftCardRequest"
+                    }
+                  },
+                  "required": [
+                    "giftCardRequest"
+                  ],
+                  "additionalProperties": false
+                },
+                "example": {
+                  "giftCardRequest": {
+                    "id": "5b6c7d8e-9f01-4a2b-8c3d-4e5f6a7b8c9d",
+                    "number": 42,
+                    "status": "new",
+                    "amountCents": 15000,
+                    "currency": "EUR",
+                    "description": "Pour l’anniversaire de ma sœur",
+                    "preferredContactChannel": "whatsapp",
+                    "createdAt": "2027-03-01T07:00:00.000Z",
+                    "notification": {
+                      "status": "accepted",
+                      "reason": null
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Request recorded (status new)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "giftCardRequest": {
+                      "$ref": "#/components/schemas/GiftCardRequest"
+                    }
+                  },
+                  "required": [
+                    "giftCardRequest"
+                  ],
+                  "additionalProperties": false
+                },
+                "example": {
+                  "giftCardRequest": {
+                    "id": "5b6c7d8e-9f01-4a2b-8c3d-4e5f6a7b8c9d",
+                    "number": 42,
+                    "status": "new",
+                    "amountCents": 15000,
+                    "currency": "EUR",
+                    "description": "Pour l’anniversaire de ma sœur",
+                    "preferredContactChannel": "whatsapp",
+                    "createdAt": "2027-03-01T07:00:00.000Z",
+                    "notification": {
+                      "status": "pending",
+                      "reason": null
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body or key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "VALIDATION_FAILED": {
+                    "value": {
+                      "message": "Validation failed",
+                      "code": "VALIDATION_FAILED",
+                      "errors": [
+                        {
+                          "field": [
+                            "amountCents"
+                          ],
+                          "message": "Invalid input"
+                        }
+                      ]
+                    }
+                  },
+                  "IDEMPOTENCY_KEY_REQUIRED": {
+                    "value": {
+                      "message": "Idempotency-Key header is required",
+                      "code": "IDEMPOTENCY_KEY_REQUIRED"
+                    }
+                  },
+                  "IDEMPOTENCY_KEY_INVALID": {
+                    "value": {
+                      "message": "Idempotency-Key must be 8–128 characters of A–Z, a–z, 0–9, _ or -",
+                      "code": "IDEMPOTENCY_KEY_INVALID"
+                    }
+                  },
+                  "INVALID_JSON": {
+                    "value": {
+                      "message": "Malformed JSON request body",
+                      "code": "INVALID_JSON"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No, invalid, expired or revoked ID token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "AUTH_REQUIRED": {
+                    "value": {
+                      "message": "Authentication required",
+                      "code": "AUTH_REQUIRED"
+                    }
+                  },
+                  "INVALID_TOKEN": {
+                    "value": {
+                      "message": "Invalid ID token",
+                      "code": "INVALID_TOKEN"
+                    }
+                  },
+                  "TOKEN_EXPIRED": {
+                    "value": {
+                      "message": "ID token expired; refresh it and retry",
+                      "code": "TOKEN_EXPIRED"
+                    }
+                  },
+                  "SESSION_REVOKED": {
+                    "value": {
+                      "message": "Session revoked; sign in again",
+                      "code": "SESSION_REVOKED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "ACCOUNT_DISABLED": {
+                    "value": {
+                      "message": "Account disabled",
+                      "code": "ACCOUNT_DISABLED"
+                    }
+                  },
+                  "GIFT_CARD_REQUEST_NOT_READY": {
+                    "value": {
+                      "message": "Profile is not ready for a gift card request",
+                      "code": "GIFT_CARD_REQUEST_NOT_READY",
+                      "blockers": [
+                        "email_not_verified",
+                        "phone_missing"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Key reused for another request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "IDEMPOTENCY_KEY_REUSED": {
+                    "value": {
+                      "message": "This Idempotency-Key was already used for a different request",
+                      "code": "IDEMPOTENCY_KEY_REUSED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests of this client in 24 hours",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying (same as retryAfterSeconds)",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "GIFT_CARD_REQUEST_LIMIT_REACHED": {
+                    "value": {
+                      "message": "Too many gift card requests; retry later",
+                      "code": "GIFT_CARD_REQUEST_LIMIT_REACHED",
+                      "retryAfterSeconds": 3600
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying (same as retryAfterSeconds)",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "AUTH_UNAVAILABLE": {
+                    "value": {
+                      "message": "Authentication is temporarily unavailable; retry later",
+                      "code": "AUTH_UNAVAILABLE",
+                      "retryAfterSeconds": 5
+                    }
+                  },
+                  "GIFT_CARD_REQUEST_BUSY": {
+                    "value": {
+                      "message": "Gift card requests are busy; retry shortly",
+                      "code": "GIFT_CARD_REQUEST_BUSY",
+                      "retryAfterSeconds": 2
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/schedule": {
       "get": {
         "operationId": "getSchedule",
@@ -5920,6 +6270,779 @@
           }
         }
       }
+    },
+    "/api/admin/gift-card-requests": {
+      "get": {
+        "operationId": "listGiftCardRequests",
+        "tags": [
+          "Admin: gift card requests"
+        ],
+        "summary": "Gift card requests, newest first",
+        "description": "Paginated (`page` from 1, `pageSize` 1–100, default 20; `total` counts all pages). Filters: `status`, and the creation date range `createdFrom`–`createdTo` (local dates of the studio time zone, inclusive, either one alone). Full data with the client's contact snapshot, history and the studio email state. Verified administrator only.",
+        "security": [
+          {
+            "firebaseIdToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "description": "Only requests with this status",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "new",
+                "in_progress",
+                "completed",
+                "cancelled"
+              ]
+            },
+            "example": "new"
+          },
+          {
+            "name": "createdFrom",
+            "in": "query",
+            "required": false,
+            "description": "Created on or after this local date",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
+            "example": "2027-03-01"
+          },
+          {
+            "name": "createdTo",
+            "in": "query",
+            "required": false,
+            "description": "Created on or before this local date (inclusive)",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
+            "example": "2027-03-31"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "description": "Page number, from 1 (default 1)",
+            "schema": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$"
+            },
+            "example": "1"
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "required": false,
+            "description": "Requests per page, 1–100 (default 20)",
+            "schema": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$"
+            },
+            "example": "20"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of requests",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminGiftCardRequestList"
+                },
+                "example": {
+                  "timeZone": "Europe/Paris",
+                  "page": 1,
+                  "pageSize": 20,
+                  "total": 1,
+                  "giftCardRequests": [
+                    {
+                      "id": "5b6c7d8e-9f01-4a2b-8c3d-4e5f6a7b8c9d",
+                      "number": 42,
+                      "status": "in_progress",
+                      "amountCents": 15000,
+                      "currency": "EUR",
+                      "description": "Pour l’anniversaire de ma sœur",
+                      "preferredContactChannel": "whatsapp",
+                      "createdAt": "2027-03-01T07:00:00.000Z",
+                      "client": {
+                        "profileId": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+                        "name": "Anna Example",
+                        "email": "anna@example.invalid",
+                        "phone": "+33612345678"
+                      },
+                      "updatedAt": "2027-03-01T09:30:00.000Z",
+                      "allowedStatuses": [
+                        "completed",
+                        "cancelled"
+                      ],
+                      "history": [
+                        {
+                          "fromStatus": null,
+                          "toStatus": "new",
+                          "at": "2027-03-01T07:00:00.000Z",
+                          "by": {
+                            "profileId": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+                            "role": "client",
+                            "name": "Anna Example",
+                            "email": "anna@example.invalid"
+                          }
+                        },
+                        {
+                          "fromStatus": "new",
+                          "toStatus": "in_progress",
+                          "at": "2027-03-01T09:30:00.000Z",
+                          "by": {
+                            "profileId": "2e3f4051-6b7c-4d8e-9fa0-1b2c3d4e5f60",
+                            "role": "admin",
+                            "name": "Studio Example",
+                            "email": "studio@example.invalid"
+                          }
+                        }
+                      ],
+                      "notification": {
+                        "status": "accepted",
+                        "reason": null,
+                        "attempts": 1,
+                        "lastAttemptAt": "2027-03-01T07:00:01.000Z",
+                        "acceptedAt": "2027-03-01T07:00:01.000Z"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid filters or page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "VALIDATION_FAILED": {
+                    "value": {
+                      "message": "Validation failed",
+                      "code": "VALIDATION_FAILED",
+                      "errors": [
+                        {
+                          "field": [
+                            "pageSize"
+                          ],
+                          "message": "Invalid input"
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No, invalid, expired or revoked ID token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "AUTH_REQUIRED": {
+                    "value": {
+                      "message": "Authentication required",
+                      "code": "AUTH_REQUIRED"
+                    }
+                  },
+                  "INVALID_TOKEN": {
+                    "value": {
+                      "message": "Invalid ID token",
+                      "code": "INVALID_TOKEN"
+                    }
+                  },
+                  "TOKEN_EXPIRED": {
+                    "value": {
+                      "message": "ID token expired; refresh it and retry",
+                      "code": "TOKEN_EXPIRED"
+                    }
+                  },
+                  "SESSION_REVOKED": {
+                    "value": {
+                      "message": "Session revoked; sign in again",
+                      "code": "SESSION_REVOKED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "ACCOUNT_DISABLED": {
+                    "value": {
+                      "message": "Account disabled",
+                      "code": "ACCOUNT_DISABLED"
+                    }
+                  },
+                  "FORBIDDEN": {
+                    "value": {
+                      "message": "Forbidden",
+                      "code": "FORBIDDEN"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Firebase cannot be reached to verify the token",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying (same as retryAfterSeconds)",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "AUTH_UNAVAILABLE": {
+                    "value": {
+                      "message": "Authentication is temporarily unavailable; retry later",
+                      "code": "AUTH_UNAVAILABLE",
+                      "retryAfterSeconds": 5
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/gift-card-requests/{requestId}": {
+      "get": {
+        "operationId": "getGiftCardRequest",
+        "tags": [
+          "Admin: gift card requests"
+        ],
+        "summary": "One gift card request",
+        "description": "Full data, the status history and the studio email state. Verified administrator only.",
+        "security": [
+          {
+            "firebaseIdToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "requestId",
+            "in": "path",
+            "required": true,
+            "description": "Gift card request id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "example": "5b6c7d8e-9f01-4a2b-8c3d-4e5f6a7b8c9d"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "giftCardRequest": {
+                      "$ref": "#/components/schemas/AdminGiftCardRequest"
+                    }
+                  },
+                  "required": [
+                    "giftCardRequest"
+                  ],
+                  "additionalProperties": false
+                },
+                "example": {
+                  "giftCardRequest": {
+                    "id": "5b6c7d8e-9f01-4a2b-8c3d-4e5f6a7b8c9d",
+                    "number": 42,
+                    "status": "in_progress",
+                    "amountCents": 15000,
+                    "currency": "EUR",
+                    "description": "Pour l’anniversaire de ma sœur",
+                    "preferredContactChannel": "whatsapp",
+                    "createdAt": "2027-03-01T07:00:00.000Z",
+                    "client": {
+                      "profileId": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+                      "name": "Anna Example",
+                      "email": "anna@example.invalid",
+                      "phone": "+33612345678"
+                    },
+                    "updatedAt": "2027-03-01T09:30:00.000Z",
+                    "allowedStatuses": [
+                      "completed",
+                      "cancelled"
+                    ],
+                    "history": [
+                      {
+                        "fromStatus": null,
+                        "toStatus": "new",
+                        "at": "2027-03-01T07:00:00.000Z",
+                        "by": {
+                          "profileId": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+                          "role": "client",
+                          "name": "Anna Example",
+                          "email": "anna@example.invalid"
+                        }
+                      },
+                      {
+                        "fromStatus": "new",
+                        "toStatus": "in_progress",
+                        "at": "2027-03-01T09:30:00.000Z",
+                        "by": {
+                          "profileId": "2e3f4051-6b7c-4d8e-9fa0-1b2c3d4e5f60",
+                          "role": "admin",
+                          "name": "Studio Example",
+                          "email": "studio@example.invalid"
+                        }
+                      }
+                    ],
+                    "notification": {
+                      "status": "accepted",
+                      "reason": null,
+                      "attempts": 1,
+                      "lastAttemptAt": "2027-03-01T07:00:01.000Z",
+                      "acceptedAt": "2027-03-01T07:00:01.000Z"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No, invalid, expired or revoked ID token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "AUTH_REQUIRED": {
+                    "value": {
+                      "message": "Authentication required",
+                      "code": "AUTH_REQUIRED"
+                    }
+                  },
+                  "INVALID_TOKEN": {
+                    "value": {
+                      "message": "Invalid ID token",
+                      "code": "INVALID_TOKEN"
+                    }
+                  },
+                  "TOKEN_EXPIRED": {
+                    "value": {
+                      "message": "ID token expired; refresh it and retry",
+                      "code": "TOKEN_EXPIRED"
+                    }
+                  },
+                  "SESSION_REVOKED": {
+                    "value": {
+                      "message": "Session revoked; sign in again",
+                      "code": "SESSION_REVOKED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "ACCOUNT_DISABLED": {
+                    "value": {
+                      "message": "Account disabled",
+                      "code": "ACCOUNT_DISABLED"
+                    }
+                  },
+                  "FORBIDDEN": {
+                    "value": {
+                      "message": "Forbidden",
+                      "code": "FORBIDDEN"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "GIFT_CARD_REQUEST_NOT_FOUND": {
+                    "value": {
+                      "message": "Gift card request not found",
+                      "code": "GIFT_CARD_REQUEST_NOT_FOUND"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Firebase cannot be reached to verify the token",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying (same as retryAfterSeconds)",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "AUTH_UNAVAILABLE": {
+                    "value": {
+                      "message": "Authentication is temporarily unavailable; retry later",
+                      "code": "AUTH_UNAVAILABLE",
+                      "retryAfterSeconds": 5
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/gift-card-requests/{requestId}/status": {
+      "patch": {
+        "operationId": "setGiftCardRequestStatus",
+        "tags": [
+          "Admin: gift card requests"
+        ],
+        "summary": "Set the status of a gift card request",
+        "description": "Allowed: `new` → `in_progress`, `completed` or `cancelled`; `in_progress` → `completed` or `cancelled`; `completed` → `in_progress` and `cancelled` → `in_progress` (to correct a mistake; never back to `new`). `completed` = manual handling finished — not a payment confirmation or an issued card; `cancelled` = mistaken, duplicate or withdrawn, kept in the list. Setting the current status again answers `changed: false` and adds no history entry. Every change, a reopening too, is recorded with its time and administrator; none creates a request or sends an email. No deleting or editing of requests. Verified administrator only.",
+        "security": [
+          {
+            "firebaseIdToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "requestId",
+            "in": "path",
+            "required": true,
+            "description": "Gift card request id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "example": "5b6c7d8e-9f01-4a2b-8c3d-4e5f6a7b8c9d"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "new",
+                      "in_progress",
+                      "completed",
+                      "cancelled"
+                    ]
+                  }
+                },
+                "required": [
+                  "status"
+                ],
+                "additionalProperties": false
+              },
+              "example": {
+                "status": "in_progress"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Status set (or already that status)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "giftCardRequest": {
+                      "$ref": "#/components/schemas/AdminGiftCardRequest"
+                    },
+                    "changed": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "giftCardRequest",
+                    "changed"
+                  ],
+                  "additionalProperties": false
+                },
+                "example": {
+                  "giftCardRequest": {
+                    "id": "5b6c7d8e-9f01-4a2b-8c3d-4e5f6a7b8c9d",
+                    "number": 42,
+                    "status": "in_progress",
+                    "amountCents": 15000,
+                    "currency": "EUR",
+                    "description": "Pour l’anniversaire de ma sœur",
+                    "preferredContactChannel": "whatsapp",
+                    "createdAt": "2027-03-01T07:00:00.000Z",
+                    "client": {
+                      "profileId": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+                      "name": "Anna Example",
+                      "email": "anna@example.invalid",
+                      "phone": "+33612345678"
+                    },
+                    "updatedAt": "2027-03-01T09:30:00.000Z",
+                    "allowedStatuses": [
+                      "completed",
+                      "cancelled"
+                    ],
+                    "history": [
+                      {
+                        "fromStatus": null,
+                        "toStatus": "new",
+                        "at": "2027-03-01T07:00:00.000Z",
+                        "by": {
+                          "profileId": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+                          "role": "client",
+                          "name": "Anna Example",
+                          "email": "anna@example.invalid"
+                        }
+                      },
+                      {
+                        "fromStatus": "new",
+                        "toStatus": "in_progress",
+                        "at": "2027-03-01T09:30:00.000Z",
+                        "by": {
+                          "profileId": "2e3f4051-6b7c-4d8e-9fa0-1b2c3d4e5f60",
+                          "role": "admin",
+                          "name": "Studio Example",
+                          "email": "studio@example.invalid"
+                        }
+                      }
+                    ],
+                    "notification": {
+                      "status": "accepted",
+                      "reason": null,
+                      "attempts": 1,
+                      "lastAttemptAt": "2027-03-01T07:00:01.000Z",
+                      "acceptedAt": "2027-03-01T07:00:01.000Z"
+                    }
+                  },
+                  "changed": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "VALIDATION_FAILED": {
+                    "value": {
+                      "message": "Validation failed",
+                      "code": "VALIDATION_FAILED",
+                      "errors": [
+                        {
+                          "field": [
+                            "status"
+                          ],
+                          "message": "Invalid input"
+                        }
+                      ]
+                    }
+                  },
+                  "INVALID_JSON": {
+                    "value": {
+                      "message": "Malformed JSON request body",
+                      "code": "INVALID_JSON"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No, invalid, expired or revoked ID token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "AUTH_REQUIRED": {
+                    "value": {
+                      "message": "Authentication required",
+                      "code": "AUTH_REQUIRED"
+                    }
+                  },
+                  "INVALID_TOKEN": {
+                    "value": {
+                      "message": "Invalid ID token",
+                      "code": "INVALID_TOKEN"
+                    }
+                  },
+                  "TOKEN_EXPIRED": {
+                    "value": {
+                      "message": "ID token expired; refresh it and retry",
+                      "code": "TOKEN_EXPIRED"
+                    }
+                  },
+                  "SESSION_REVOKED": {
+                    "value": {
+                      "message": "Session revoked; sign in again",
+                      "code": "SESSION_REVOKED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "ACCOUNT_DISABLED": {
+                    "value": {
+                      "message": "Account disabled",
+                      "code": "ACCOUNT_DISABLED"
+                    }
+                  },
+                  "FORBIDDEN": {
+                    "value": {
+                      "message": "Forbidden",
+                      "code": "FORBIDDEN"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "GIFT_CARD_REQUEST_NOT_FOUND": {
+                    "value": {
+                      "message": "Gift card request not found",
+                      "code": "GIFT_CARD_REQUEST_NOT_FOUND"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Not allowed from the current status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "GIFT_CARD_STATUS_TRANSITION_NOT_ALLOWED": {
+                    "value": {
+                      "message": "This status change is not allowed",
+                      "code": "GIFT_CARD_STATUS_TRANSITION_NOT_ALLOWED",
+                      "from": "completed",
+                      "to": "new",
+                      "allowed": [
+                        "in_progress"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying (same as retryAfterSeconds)",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "AUTH_UNAVAILABLE": {
+                    "value": {
+                      "message": "Authentication is temporarily unavailable; retry later",
+                      "code": "AUTH_UNAVAILABLE",
+                      "retryAfterSeconds": 5
+                    }
+                  },
+                  "GIFT_CARD_REQUEST_BUSY": {
+                    "value": {
+                      "message": "Gift card requests are busy; retry shortly",
+                      "code": "GIFT_CARD_REQUEST_BUSY",
+                      "retryAfterSeconds": 2
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -5970,7 +7093,7 @@
             }
           },
           "blockers": {
-            "description": "BOOKING_NOT_READY: what still prevents booking",
+            "description": "BOOKING_NOT_READY, GIFT_CARD_REQUEST_NOT_READY: what still prevents booking or a gift card request (phone_invalid: gift card requests only)",
             "type": "array",
             "items": {
               "type": "string",
@@ -5979,7 +7102,8 @@
                 "email_not_verified",
                 "name_missing",
                 "phone_missing",
-                "not_a_client"
+                "not_a_client",
+                "phone_invalid"
               ]
             }
           },
@@ -5994,7 +7118,7 @@
             ]
           },
           "retryAfterSeconds": {
-            "description": "When to retry (also sent as the Retry-After header): AUTH_UNAVAILABLE, CALENDAR_BUSY, CONFIRMATION_EMAIL_NOT_SENT",
+            "description": "When to retry (also sent as the Retry-After header): AUTH_UNAVAILABLE, CALENDAR_BUSY, CONFIRMATION_EMAIL_NOT_SENT, GIFT_CARD_REQUEST_BUSY, GIFT_CARD_REQUEST_LIMIT_REACHED",
             "type": "integer"
           },
           "currentConsentTextVersion": {
@@ -6038,6 +7162,40 @@
                 "serviceName"
               ],
               "additionalProperties": false
+            }
+          },
+          "from": {
+            "description": "GIFT_CARD_STATUS_TRANSITION_NOT_ALLOWED: the current status",
+            "type": "string",
+            "enum": [
+              "new",
+              "in_progress",
+              "completed",
+              "cancelled"
+            ]
+          },
+          "to": {
+            "description": "GIFT_CARD_STATUS_TRANSITION_NOT_ALLOWED: the requested status",
+            "type": "string",
+            "enum": [
+              "new",
+              "in_progress",
+              "completed",
+              "cancelled"
+            ]
+          },
+          "allowed": {
+            "description": "GIFT_CARD_STATUS_TRANSITION_NOT_ALLOWED: statuses that may be set from the current one",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "new",
+                "in_progress",
+                "completed",
+                "cancelled"
+              ],
+              "description": "completed = manual handling finished (not a payment or an issued card); cancelled = closed (kept); both can be reopened to in_progress"
             }
           }
         },
@@ -7584,6 +8742,475 @@
           "createdAt",
           "client",
           "notifications"
+        ],
+        "additionalProperties": false
+      },
+      "GiftCardRequest": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Short request number for people (n° 42), shown in the studio email"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "new",
+              "in_progress",
+              "completed",
+              "cancelled"
+            ],
+            "description": "completed = manual handling finished (not a payment or an issued card); cancelled = closed (kept); both can be reopened to in_progress"
+          },
+          "amountCents": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Integer euro cents, chosen by the client (no fixed values)"
+          },
+          "currency": {
+            "type": "string",
+            "examples": [
+              "EUR"
+            ],
+            "description": "Always EUR, set by the server"
+          },
+          "description": {
+            "description": "The client's text (1–1000 characters) or null",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "preferredContactChannel": {
+            "type": "string",
+            "enum": [
+              "email",
+              "phone",
+              "whatsapp"
+            ],
+            "description": "How the client prefers to be contacted by hand; no messaging integration"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Moment in UTC, ISO 8601 with Z",
+            "examples": [
+              "2027-03-02T08:00:00.000Z"
+            ]
+          },
+          "notification": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "pending",
+                      "sending",
+                      "accepted",
+                      "failed",
+                      "skipped",
+                      "interrupted"
+                    ],
+                    "description": "accepted = accepted by the email provider for sending, NOT delivered to the mailbox"
+                  },
+                  "reason": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "enum": [
+                          "retry_scheduled",
+                          "superseded",
+                          "session_already_started",
+                          "test_environment",
+                          "no_valid_address",
+                          "not_sent"
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "status",
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "The studio's email about the request (the client gets none). Separate from status: a failed email never changes the request"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "null when emails are off on this server"
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "status",
+          "amountCents",
+          "currency",
+          "description",
+          "preferredContactChannel",
+          "createdAt",
+          "notification"
+        ],
+        "additionalProperties": false
+      },
+      "AdminGiftCardRequest": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Short request number for people (n° 42), shown in the studio email"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "new",
+              "in_progress",
+              "completed",
+              "cancelled"
+            ],
+            "description": "completed = manual handling finished (not a payment or an issued card); cancelled = closed (kept); both can be reopened to in_progress"
+          },
+          "amountCents": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Integer euro cents, chosen by the client (no fixed values)"
+          },
+          "currency": {
+            "type": "string",
+            "examples": [
+              "EUR"
+            ],
+            "description": "Always EUR, set by the server"
+          },
+          "description": {
+            "description": "The client's text (1–1000 characters) or null",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "preferredContactChannel": {
+            "type": "string",
+            "enum": [
+              "email",
+              "phone",
+              "whatsapp"
+            ],
+            "description": "How the client prefers to be contacted by hand; no messaging integration"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Moment in UTC, ISO 8601 with Z",
+            "examples": [
+              "2027-03-02T08:00:00.000Z"
+            ]
+          },
+          "client": {
+            "type": "object",
+            "properties": {
+              "profileId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "name": {
+                "type": "string"
+              },
+              "email": {
+                "type": "string"
+              },
+              "phone": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "profileId",
+              "name",
+              "email",
+              "phone"
+            ],
+            "additionalProperties": false,
+            "description": "Snapshot at submission (email from the verified identity; phone format-checked, NOT verified). Later profile changes do not touch it"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Moment in UTC, ISO 8601 with Z",
+            "examples": [
+              "2027-03-02T08:00:00.000Z"
+            ]
+          },
+          "allowedStatuses": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "new",
+                "in_progress",
+                "completed",
+                "cancelled"
+              ],
+              "description": "completed = manual handling finished (not a payment or an issued card); cancelled = closed (kept); both can be reopened to in_progress"
+            },
+            "description": "Statuses that may be set next (UI hint; the server re-checks)"
+          },
+          "history": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "fromStatus": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "new",
+                        "in_progress",
+                        "completed",
+                        "cancelled"
+                      ],
+                      "description": "completed = manual handling finished (not a payment or an issued card); cancelled = closed (kept); both can be reopened to in_progress"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "null: the submission"
+                },
+                "toStatus": {
+                  "type": "string",
+                  "enum": [
+                    "new",
+                    "in_progress",
+                    "completed",
+                    "cancelled"
+                  ],
+                  "description": "completed = manual handling finished (not a payment or an issued card); cancelled = closed (kept); both can be reopened to in_progress"
+                },
+                "at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "Moment in UTC, ISO 8601 with Z",
+                  "examples": [
+                    "2027-03-02T08:00:00.000Z"
+                  ]
+                },
+                "by": {
+                  "type": "object",
+                  "properties": {
+                    "profileId": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "role": {
+                      "type": "string",
+                      "enum": [
+                        "client",
+                        "admin"
+                      ]
+                    },
+                    "name": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "email": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "profileId",
+                    "role",
+                    "name",
+                    "email"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Who made the change (current name and email of that profile)"
+                }
+              },
+              "required": [
+                "fromStatus",
+                "toStatus",
+                "at",
+                "by"
+              ],
+              "additionalProperties": false
+            },
+            "description": "Oldest first: the submission, then every status change"
+          },
+          "notification": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "pending",
+                      "sending",
+                      "accepted",
+                      "failed",
+                      "skipped",
+                      "interrupted"
+                    ],
+                    "description": "accepted = accepted by the email provider for sending, NOT delivered to the mailbox"
+                  },
+                  "reason": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "enum": [
+                          "scheduled",
+                          "retry_scheduled",
+                          "superseded",
+                          "unchanged",
+                          "session_already_started",
+                          "test_environment",
+                          "no_valid_address",
+                          "temporary_errors",
+                          "provider_retry_after_too_long",
+                          "provider_rejected",
+                          "provider_configuration",
+                          "invalid_event",
+                          "processing_interrupted",
+                          "processing_delayed",
+                          "other"
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "attempts": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "At most 3 per recipient"
+                  },
+                  "lastAttemptAt": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "Moment in UTC, ISO 8601 with Z",
+                        "examples": [
+                          "2027-03-02T08:00:00.000Z"
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "acceptedAt": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "Moment in UTC, ISO 8601 with Z",
+                        "examples": [
+                          "2027-03-02T08:00:00.000Z"
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "status",
+                  "reason",
+                  "attempts",
+                  "lastAttemptAt",
+                  "acceptedAt"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The studio's email about the request; null when emails are off on this server"
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "status",
+          "amountCents",
+          "currency",
+          "description",
+          "preferredContactChannel",
+          "createdAt",
+          "client",
+          "updatedAt",
+          "allowedStatuses",
+          "history",
+          "notification"
+        ],
+        "additionalProperties": false
+      },
+      "AdminGiftCardRequestList": {
+        "type": "object",
+        "properties": {
+          "timeZone": {
+            "type": "string",
+            "examples": [
+              "Europe/Paris"
+            ],
+            "description": "Time zone of createdFrom / createdTo"
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "pageSize": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Requests matching the filters, all pages"
+          },
+          "giftCardRequests": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminGiftCardRequest"
+            },
+            "description": "Newest first"
+          }
+        },
+        "required": [
+          "timeZone",
+          "page",
+          "pageSize",
+          "total",
+          "giftCardRequests"
         ],
         "additionalProperties": false
       },

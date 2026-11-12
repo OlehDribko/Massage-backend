@@ -1470,6 +1470,72 @@
             },
             "description": "⚠️ POST /api/bookings/{bookingId}/cancel (cancelOwnBooking). Cancels the booking (before its start). A repeat answers `changed: false`."
           }
+        },
+        {
+          "name": "Gift cards: ⚠️ request a gift card (Idempotency-Key, studio email)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// One key per gift card request: generated only while the variable is empty, never on a repeat.",
+                  "if (!pm.environment.get(\"giftCardIdempotencyKey\")) {",
+                  "  pm.environment.set(\"giftCardIdempotencyKey\", pm.variables.replaceIn(\"{{$guid}}\"));",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 201 or 200\", () => pm.expect([201, 200]).to.include(pm.response.code));",
+                  "const replayed = pm.response.headers.get(\"Idempotent-Replayed\") === \"true\";",
+                  "pm.test(replayed ? \"repeat of the same request: original request returned\" : \"new request recorded\", () => pm.expect(pm.response.code).to.equal(replayed ? 200 : 201));",
+                  "const giftCard = [200, 201].includes(pm.response.code) ? pm.response.json().giftCardRequest : null;",
+                  "if (giftCard && typeof giftCard.id === \"string\" && pm.environment.name) {",
+                  "  pm.environment.set(\"giftCardRequestId\", giftCard.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{giftCardIdempotencyKey}}",
+                "description": "One key per gift card request. Same key + same body = safe repeat. Clear giftCardIdempotencyKey for a new request."
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amountCents\": 5000,\n  \"description\": \"Carte cadeau de test\",\n  \"preferredContactChannel\": \"email\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/gift-card-requests",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "gift-card-requests"
+              ]
+            },
+            "description": "⚠️ POST /api/gift-card-requests (createGiftCardRequest). **Records a real request and emails the studio** (on staging only allowlisted addresses receive it). Needs a client ready as for booking (verified email, name, phone). Contacts come from the token and the profile, never from the body.\n\n**Idempotency-Key** comes from `giftCardIdempotencyKey`: filled once with a new UUID while empty; a repeat with the same key and body returns the same request (`200`, `Idempotent-Replayed: true`) and sends no second email; another body with the same key → `422 IDEMPOTENCY_KEY_REUSED`. For a new request clear `giftCardIdempotencyKey`. At most 5 new requests per client in 24 h (`429`).\n\nSaves the request `id` into `giftCardRequestId`."
+          }
         }
       ]
     },
@@ -2288,6 +2354,151 @@
             },
             "description": "⚠️ POST /api/admin/bookings/{bookingId}/cancel (cancelAnyBooking). Cancels the booking for the client; the optional reason is shown to the client. A repeat answers `changed: false`."
           }
+        },
+        {
+          "name": "Gift cards: list (newest first)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/gift-card-requests?page=1&pageSize=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "gift-card-requests"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "pageSize",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": "GET /api/admin/gift-card-requests (listGiftCardRequests). Read-only. Optional filters: `status` (new, in_progress, completed, cancelled), `createdFrom` / `createdTo` (local dates, inclusive); `page`, `pageSize` (1–100)."
+          }
+        },
+        {
+          "name": "Gift cards: get any",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"giftCardRequestId\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Set giftCardRequestId.\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/gift-card-requests/{{giftCardRequestId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "gift-card-requests",
+                "{{giftCardRequestId}}"
+              ]
+            },
+            "description": "GET /api/admin/gift-card-requests/{requestId} (getGiftCardRequest). Read-only: contacts snapshot, history, studio email state."
+          }
+        },
+        {
+          "name": "Gift cards: ⚠️ set status",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"giftCardRequestId\", \"giftCardStatus\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Set giftCardRequestId and giftCardStatus (in_progress, completed or cancelled).\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"{{giftCardStatus}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/gift-card-requests/{{giftCardRequestId}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "gift-card-requests",
+                "{{giftCardRequestId}}",
+                "status"
+              ]
+            },
+            "description": "⚠️ PATCH /api/admin/gift-card-requests/{requestId}/status (setGiftCardRequestStatus). **Changes the request.** new → in_progress | completed | cancelled; in_progress → completed | cancelled; completed → in_progress and cancelled → in_progress (correcting a mistake); anything else `409`. Every change is a history entry; none creates a request or an email. The same status again → `changed: false`, no history entry. Sends no email."
+          }
         }
       ]
     },
@@ -2461,6 +2672,82 @@
               ]
             },
             "description": "POST /api/bookings (createBooking) with the guest token: refused with the blocker `anonymous_session`; no booking is created."
+          }
+        },
+        {
+          "name": "Guest tries to request a gift card → 403 GIFT_CARD_REQUEST_NOT_READY",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"guestIdToken\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Sign in as Guest.\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 403 GIFT_CARD_REQUEST_NOT_READY\", () => {",
+                  "  pm.expect(pm.response.code).to.equal(403);",
+                  "  pm.expect(pm.response.json().code).to.equal(\"GIFT_CARD_REQUEST_NOT_READY\");",
+                  "});",
+                  "pm.test(\"blocker anonymous_session\", () => pm.expect(pm.response.json().blockers).to.include(\"anonymous_session\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{guestIdToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "guest-gift-check-0001",
+                "description": "Fixed: the request is always refused, nothing is stored."
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amountCents\": 5000,\n  \"preferredContactChannel\": \"email\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/gift-card-requests",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "gift-card-requests"
+              ]
+            },
+            "description": "POST /api/gift-card-requests as a guest: always refused (`403 GIFT_CARD_REQUEST_NOT_READY` with `anonymous_session`); nothing is stored, no email."
           }
         }
       ]
