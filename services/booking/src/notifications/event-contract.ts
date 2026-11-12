@@ -12,6 +12,16 @@ export const SUPPORTED_SCHEMA_VERSION = 1;
 export const eventTypeSchema = z.enum(["booking.created", "booking.rescheduled", "booking.cancelled"]);
 export type BookingEventType = z.output<typeof eventTypeSchema>;
 
+/**
+ * Event types this release processes. A process plans, claims and fails only
+ * deliveries of these types; events of any other type (written by a newer
+ * release) are left untouched — never marked invalid or failed — for a
+ * process that knows them. This keeps a newer event type safe while an
+ * older process still runs (rolling deploy, rollback to this release).
+ * docs/notifications.md, "Сумісність версій обробника".
+ */
+export const HANDLED_EVENT_TYPES: readonly string[] = eventTypeSchema.options;
+
 const instant = z.iso.datetime({ offset: true });
 const timeRange = z.object({ startsAt: instant, endsAt: instant });
 
