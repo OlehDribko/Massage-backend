@@ -4,8 +4,7 @@ import { z } from "zod";
 import { localDateTimeToInstant } from "../../src/modules/schedule/zoned-time.js";
 import { DEFAULT_TUNING, type WorkerTuning } from "../../src/notifications/config.js";
 import { createDispatcher, type Dispatcher, type Timers } from "../../src/notifications/dispatcher.js";
-import { HANDLED_EVENT_TYPES } from "../../src/notifications/event-contract.js";
-import { claimDeliveries, completeDelivery, failExhausted, nextWorkAt, planNewEvents } from "../../src/notifications/store.js";
+import { claimDeliveries, completeDelivery, nextWorkAt } from "../../src/notifications/store.js";
 import { createWorker, type Worker } from "../../src/notifications/worker.js";
 import { createDatabase, type Database } from "../../src/shared/database/database.js";
 import { createFakeEmailProvider } from "../helpers/fake-email-provider.js";
@@ -61,14 +60,7 @@ type Fake = ReturnType<typeof createFakeEmailProvider>;
 
 const makeWorker = (
   fake: Fake,
-  options: {
-    database?: Database;
-    allowlist?: string[] | null;
-    studioEmail?: string;
-    tuning?: WorkerTuning;
-    id?: string;
-    handledEventTypes?: readonly string[];
-  } = {},
+  options: { database?: Database; allowlist?: string[] | null; studioEmail?: string; tuning?: WorkerTuning; id?: string } = {},
 ): { worker: Worker; logs: ReturnType<typeof createCapturingLogger> } => {
   const logs = createCapturingLogger();
   const database = options.database ?? workerDb();
@@ -82,7 +74,6 @@ const makeWorker = (
       senderName: "Стефанія Бень",
       recipientAllowlist: options.allowlist === undefined || options.allowlist === null ? null : new Set(options.allowlist),
       tuning: options.tuning ?? TUNING,
-      ...(options.handledEventTypes === undefined ? {} : { handledEventTypes: options.handledEventTypes }),
       now,
       random: () => 0.5,
     }),
@@ -838,62 +829,6 @@ describe("leases, crashes and concurrency", () => {
     expect(client).toMatchObject({ status: "failed", resultCode: "interrupted", attempts: 3 });
     expect(fake.sent.filter((email) => email.to === CLIENT)).toHaveLength(0);
     expect(fake.calls()).toBe(3); // client: 2 (the 3rd never reached the provider), studio: 1
-  });
-});
-
-describe("versions of the sender: event types a process does not handle (docs/notifications.md)", () => {
-  // A process of an older release knows fewer event types than a newer one
-  // running at the same time (rolling deploy, rollback). Here the older
-  // process handles only booking.created and the newer one all types; the
-  // cancellation stands for an event type the older release does not know.
-  const OLDER = ["booking.created"];
-
-  const eventsWithoutNotification = () =>
-    countRows(stack.db, `SELECT count(*)::int AS n FROM "OutboxEvent" o WHERE NOT EXISTS (SELECT 1 FROM "NotificationEvent" n WHERE n."eventId" = o.id)`);
-
-  it("this release handles the booking events and the gift card request", () => {
-    expect([...HANDLED_EVENT_TYPES].sort()).toEqual(["booking.cancelled", "booking.created", "booking.rescheduled", "gift_card_request.created"]);
-  });
-
-  it("the older process neither plans, claims, fails nor waits for unknown types; the newer one sends them", async () => {
-    const id = await book(users.clientA, paris("2027-03-02", "09:00"));
-    await request(stack.app).post(`/api/bookings/${id}/cancel`).set(bearer(users.clientA)).send({}).expect(200);
-    const fake = createFakeEmailProvider({ now });
-    const older = makeWorker(fake, { handledEventTypes: OLDER, id: "older" });
-
-    await older.worker.tick();
-    // The cancellation is not marked invalid: it stays unplanned, and the older process sets no timer for it.
-    expect(await eventsWithoutNotification()).toBe(1);
-    expect(await countRows(stack.db, `SELECT count(*)::int AS n FROM "NotificationEvent" WHERE status = 'invalid'`)).toBe(0);
-    expect((await nextWorkAt(workerDb().prisma, OLDER)).unplanned).toBe(false);
-    expect((await nextWorkAt(workerDb().prisma)).unplanned).toBe(true);
-
-    // A newer process planned the cancellation, took both emails and stopped (leases expired).
-    await planNewEvents(workerDb().prisma, { now: now(), studioEmail: STUDIO, limit: 10, studioDelayMs: TUNING.studioDelayMs });
-    await claimDeliveries(workerDb().prisma, { now: now(), owner: "newer-crashed", leaseMs: TUNING.leaseMs, limit: 10, maxAttempts: 3 });
-    workerNow += TUNING.leaseMs + 1;
-    const sentBefore = fake.sent.length;
-    await older.worker.tick();
-    expect(fake.sent).toHaveLength(sentBefore);
-    expect(await claimDeliveries(workerDb().prisma, { now: now(), owner: "older", leaseMs: TUNING.leaseMs, limit: 10, maxAttempts: 3, eventTypes: OLDER })).toEqual([]);
-    expect((await nextWorkAt(workerDb().prisma, OLDER)).at).toBeNull();
-    // Even with no attempts left the older process does not fail them.
-    await stack.db.query("admin", `UPDATE "NotificationDelivery" SET attempts = 3 WHERE "eventType" = 'booking.cancelled'`);
-    expect(await failExhausted(workerDb().prisma, { now: now(), maxAttempts: 3, eventTypes: OLDER })).toBe(0);
-    await stack.db.query("admin", `UPDATE "NotificationDelivery" SET attempts = 1 WHERE "eventType" = 'booking.cancelled'`);
-    const cancellation = (await deliveries()).filter((delivery) => delivery.eventType === "booking.cancelled");
-    expect(cancellation.map((delivery) => delivery.status)).toEqual(["in_progress", "in_progress"]);
-
-    // The newer process (restart) sends what the older one left alone.
-    await makeWorker(fake, { id: "newer" }).worker.tick();
-    expect(fake.sent.slice(sentBefore).map((email) => email.subject)).toEqual([
-      "Votre rendez-vous a été annulé",
-      "Rendez-vous annulé : Massage 60, mardi 2 mars 2027 à 09:00",
-    ]);
-    expect((await deliveries()).filter((delivery) => delivery.eventType === "booking.cancelled").map((delivery) => delivery.status)).toEqual([
-      "accepted",
-      "accepted",
-    ]);
   });
 });
 

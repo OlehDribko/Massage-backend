@@ -1,15 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import type { OutboxEvent, Prisma, PrismaClient } from "../generated/prisma/client.js";
-import { HANDLED_EVENT_TYPES, parseBookingEvent } from "./event-contract.js";
-import { GIFT_CARD_AGGREGATE, parseGiftCardEvent } from "./gift-card-contract.js";
+import type { Prisma, PrismaClient } from "../generated/prisma/client.js";
+import { parseBookingEvent } from "./event-contract.js";
 
 /**
- * Persistence of notifications (bookings and gift card requests). It reads
- * OutboxEvent (the agreed integration point) and writes only
- * NotificationEvent and NotificationDelivery; it never creates or changes
- * outbox events and never touches catalogue, profile, booking or gift card
- * tables.
+ * Persistence of booking notifications. It reads OutboxEvent (the agreed
+ * integration point) and writes only NotificationEvent and
+ * NotificationDelivery; it never creates or changes outbox events and never
+ * touches catalogue, profile or booking tables.
  */
 
 const recipientEmailSchema = z.email();
@@ -41,30 +39,16 @@ export type PlanResult = { planned: PlannedEvent[]; fetched: number };
  */
 export const planNewEvents = async (
   prisma: PrismaClient,
-  {
-    now,
-    studioEmail,
-    limit,
-    studioDelayMs,
-    eventTypes = HANDLED_EVENT_TYPES,
-  }: { now: Date; studioEmail: string; limit: number; studioDelayMs: number; eventTypes?: readonly string[] },
+  { now, studioEmail, limit, studioDelayMs }: { now: Date; studioEmail: string; limit: number; studioDelayMs: number },
 ): Promise<PlanResult> => {
-  // Only types this release handles; others stay unplanned for a release that knows them.
   const events = await prisma.outboxEvent.findMany({
-    where: { notification: { is: null }, type: { in: [...eventTypes] } },
+    where: { notification: { is: null } },
     orderBy: { position: "asc" },
     take: limit,
   });
 
   const planned: PlannedEvent[] = [];
   for (const row of events) {
-    if (row.aggregateType === GIFT_CARD_AGGREGATE) {
-      const result = await planGiftCardEvent(prisma, row, { now, studioEmail });
-      if (result !== null) {
-        planned.push(result);
-      }
-      continue;
-    }
     const parsed = parseBookingEvent(row);
     const result = await prisma.$transaction(async (tx): Promise<PlannedEvent | null> => {
       const inserted = await tx.notificationEvent.createMany({
@@ -125,54 +109,6 @@ export const planNewEvents = async (
   return { planned, fetched: events.length };
 };
 
-/**
- * A gift card request (gift-card-contract.ts): one email to the studio, due
- * at once; no client email, nothing to supersede. The delivery's bookingId
- * column holds the request id (the aggregate id).
- */
-const planGiftCardEvent = (
-  prisma: PrismaClient,
-  row: OutboxEvent,
-  { now, studioEmail }: { now: Date; studioEmail: string },
-): Promise<PlannedEvent | null> => {
-  const parsed = parseGiftCardEvent(row);
-  return prisma.$transaction(async (tx): Promise<PlannedEvent | null> => {
-    const inserted = await tx.notificationEvent.createMany({
-      data: [
-        {
-          eventId: row.id,
-          position: row.position,
-          status: parsed.ok ? "planned" : "invalid",
-          reasonCode: parsed.ok ? null : parsed.reason,
-          processedAt: now,
-        },
-      ],
-      skipDuplicates: true,
-    });
-    if (inserted.count === 0) {
-      return null; // planned concurrently by another worker
-    }
-    if (!parsed.ok) {
-      return { eventId: row.id, status: "invalid", reasonCode: parsed.reason };
-    }
-    await tx.notificationDelivery.createMany({
-      data: [
-        {
-          eventId: row.id,
-          eventPosition: row.position,
-          eventType: parsed.event.type,
-          bookingId: parsed.event.payload.requestId,
-          recipientRole: "studio",
-          recipientEmail: studioEmail,
-          nextAttemptAt: now,
-        },
-      ],
-      skipDuplicates: true,
-    });
-    return { eventId: row.id, status: "planned", reasonCode: null };
-  });
-};
-
 /** Emails about these events go stale once a newer event of the booking exists. */
 export const SUPERSEDABLE_EVENT_TYPES = ["booking.created", "booking.rescheduled"];
 
@@ -230,14 +166,7 @@ export type ClaimedDelivery = z.output<typeof claimedRowSchema>;
  */
 export const claimDeliveries = async (
   prisma: PrismaClient,
-  {
-    now,
-    owner,
-    leaseMs,
-    limit,
-    maxAttempts,
-    eventTypes = HANDLED_EVENT_TYPES,
-  }: { now: Date; owner: string; leaseMs: number; limit: number; maxAttempts: number; eventTypes?: readonly string[] },
+  { now, owner, leaseMs, limit, maxAttempts }: { now: Date; owner: string; leaseMs: number; limit: number; maxAttempts: number },
 ): Promise<ClaimedDelivery[]> => {
   const leaseExpiresAt = new Date(now.getTime() + leaseMs);
   const rows = await prisma.$queryRaw<unknown[]>`
@@ -247,7 +176,6 @@ export const claimDeliveries = async (
       WHERE ((d.status = 'pending' AND d."nextAttemptAt" <= ${now})
           OR (d.status = 'in_progress' AND d."leaseExpiresAt" <= ${now}))
         AND d.attempts < ${maxAttempts}
-        AND d."eventType" = ANY(${[...eventTypes]}::text[])
         AND NOT EXISTS (
           SELECT 1 FROM "NotificationDelivery" e
           WHERE e."bookingId" = d."bookingId"
@@ -281,7 +209,7 @@ export const claimDeliveries = async (
  */
 export const failExhausted = async (
   prisma: PrismaClient,
-  { now, maxAttempts, eventTypes = HANDLED_EVENT_TYPES }: { now: Date; maxAttempts: number; eventTypes?: readonly string[] },
+  { now, maxAttempts }: { now: Date; maxAttempts: number },
 ): Promise<number> => {
   const result = await prisma.$executeRaw`
     UPDATE "NotificationDelivery"
@@ -289,7 +217,6 @@ export const failExhausted = async (
         status = 'failed', "completedAt" = ${now},
         "leaseOwner" = NULL, "leaseToken" = NULL, "leaseExpiresAt" = NULL, "updatedAt" = ${now}
     WHERE attempts >= ${maxAttempts}
-      AND "eventType" = ANY(${[...eventTypes]}::text[])
       AND ((status = 'pending' AND "nextAttemptAt" <= ${now})
         OR (status = 'in_progress' AND "leaseExpiresAt" <= ${now}))`;
   return result;
@@ -358,8 +285,7 @@ export const newWorkerId = (): string => `worker-${randomUUID()}`;
 const nextWorkSchema = z.object({ at: z.date().nullable(), unplanned: z.boolean() });
 
 /**
- * When there will next be something to do, read from the database only
- * (only work of `eventTypes`: other types never set a timer here):
+ * When there will next be something to do, read from the database only:
  * - `unplanned`: an outbox event without notifications (plan now);
  * - `at`: the earliest moment a chain head becomes claimable: a pending
  *   delivery's nextAttemptAt or an in-progress one's lease expiry (also
@@ -367,16 +293,12 @@ const nextWorkSchema = z.object({ at: z.date().nullable(), unplanned: z.boolean(
  *   the same chain do not count: they follow their head.
  * null and false: no unfinished work, so nothing needs a timer.
  */
-export const nextWorkAt = async (
-  prisma: PrismaClient,
-  eventTypes: readonly string[] = HANDLED_EVENT_TYPES,
-): Promise<z.output<typeof nextWorkSchema>> => {
+export const nextWorkAt = async (prisma: PrismaClient): Promise<z.output<typeof nextWorkSchema>> => {
   const rows = await prisma.$queryRaw<unknown[]>`
     SELECT
       (SELECT min(CASE WHEN d.status = 'pending' THEN d."nextAttemptAt" ELSE d."leaseExpiresAt" END)
          FROM "NotificationDelivery" d
         WHERE d.status IN ('pending', 'in_progress')
-          AND d."eventType" = ANY(${[...eventTypes]}::text[])
           AND NOT EXISTS (
             SELECT 1 FROM "NotificationDelivery" e
             WHERE e."bookingId" = d."bookingId"
@@ -385,8 +307,7 @@ export const nextWorkAt = async (
               AND e.status IN ('pending', 'in_progress'))) AS at,
       EXISTS (
         SELECT 1 FROM "OutboxEvent" o
-        WHERE o.type = ANY(${[...eventTypes]}::text[])
-          AND NOT EXISTS (SELECT 1 FROM "NotificationEvent" n WHERE n."eventId" = o.id)) AS unplanned`;
+        WHERE NOT EXISTS (SELECT 1 FROM "NotificationEvent" n WHERE n."eventId" = o.id)) AS unplanned`;
   return nextWorkSchema.parse(rows[0]);
 };
 

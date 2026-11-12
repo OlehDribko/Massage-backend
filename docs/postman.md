@@ -92,9 +92,6 @@
 2. `Bookings: list own` / `get own`.
 3. Заповніть `rescheduleStartsAt` → `Bookings: ⚠️ reschedule`.
 4. `Bookings: ⚠️ cancel own`.
-5. `Gift cards: ⚠️ request a gift card (Idempotency-Key, studio email)` → зберігає `giftCardRequestId`. **Створює справжню заявку й лист адміністратору**: на staging лише за allowlist. Ключ — зі змінної `giftCardIdempotencyKey`, за тими самими правилами, що й `bookingIdempotencyKey` нижче; для нової заявки очистіть її. Щонайбільше 5 нових заявок клієнта за 24 год.
-
-**Адміністратор, заявки на сертифікати** (`5. Admin`): `Gift cards: list (newest first)`, `Gift cards: get any` (за `giftCardRequestId`), `Gift cards: ⚠️ set status`. Для останнього заповніть `giftCardStatus`: `in_progress`, `completed` або `cancelled`. Із `completed` і `cancelled` можна повернутися лише в `in_progress`.
 
 **Idempotency-Key** для створення бронювання береться зі змінної `bookingIdempotencyKey`:
 - Якщо змінна порожня, скрипт **один раз** записує в неї новий UUID. Поки в змінній є значення, новий ключ не генерується.
@@ -109,7 +106,6 @@
 | Без токена | `401 AUTH_REQUIRED` |
 | Клієнт на `/api/admin` | `403 FORBIDDEN` |
 | Гість намагається забронювати | `403 BOOKING_NOT_READY` з `anonymous_session` |
-| Гість намагається подати заявку на сертифікат | `403 GIFT_CARD_REQUEST_NOT_READY` з `anonymous_session` |
 
 **Маркетинг** (`7. Marketing — DISABLED on staging`): зараз кожен запит відповідає `404 NOT_FOUND`. Запити лишено на майбутнє.
 
@@ -127,8 +123,6 @@
 | `Bookings: ⚠️ create` / `⚠️ reschedule` / `⚠️ cancel own` | Створює, переносить або скасовує бронювання. Листи про бронювання на staging вимкнено; після їх увімкнення ці запити надсилатимуть листи |
 | `Schedule: ⚠️ replace weekly` / `⚠️ set exception` / `⚠️ remove exception` / `⚠️ set several dates` | Змінює графік студії |
 | `Bookings: ⚠️ cancel (studio)` | Скасовує бронювання клієнта (і лист клієнту, коли листи увімкнено) |
-| `Gift cards: ⚠️ request a gift card` | Створює заявку; лист адміністратору (коли листи увімкнено, на staging лише за allowlist) |
-| `Gift cards: ⚠️ set status` | Змінює статус заявки й додає запис історії (листів немає) |
 | Маркетинг ⚠️ | Зараз 404. Після увімкнення запити на підписку надсилатимуть лист-підтвердження |
 
 ## 6. Очищення секретів перед експортом або передаванням

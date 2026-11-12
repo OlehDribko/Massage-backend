@@ -1,9 +1,7 @@
 import { z } from "zod";
 
 /**
- * Configuration of transactional notifications: booking emails and the
- * studio email about a gift card request (one flag for both,
- * ENABLE_BOOKING_NOTIFICATIONS; not renamed). They run inside the API process
+ * Configuration of booking notifications. They run inside the API process
  * (dispatcher.ts), woken by booking writes; there is no polling loop. Email
  * settings are independent of the marketing flag. Messages name variables
  * and rules, never values.

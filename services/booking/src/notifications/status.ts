@@ -1,5 +1,4 @@
-import type { Prisma, PrismaClient } from "../generated/prisma/client.js";
-import { GIFT_CARD_AGGREGATE, GIFT_CARD_CREATED } from "./gift-card-contract.js";
+import type { PrismaClient } from "../generated/prisma/client.js";
 
 /**
  * Read model of notification results for the booking API. The booking status
@@ -83,8 +82,6 @@ export type NotificationStatusReader = {
   forClient: (bookingIds: string[]) => Promise<Map<string, ClientNotificationStatus>>;
   /** Booking id → both recipients' statuses for every event, oldest first. */
   forAdmin: (bookingIds: string[]) => Promise<Map<string, AdminNotificationStatus[]>>;
-  /** Gift card request id → the studio's email about it (requests without an event are absent). */
-  forGiftCardRequests: (requestIds: string[]) => Promise<Map<string, AdminRecipientStatus>>;
 };
 
 /** Pending work this late (or a never-planned event this old) is reported as interrupted. */
@@ -254,38 +251,7 @@ export const createNotificationStatusReader = ({
     return byBooking;
   };
 
-  const deliveryFields = {
-    recipientRole: true,
-    status: true,
-    attempts: true,
-    resultCode: true,
-    nextAttemptAt: true,
-    leaseExpiresAt: true,
-    updatedAt: true,
-    acceptedAt: true,
-  } satisfies Prisma.NotificationDeliverySelect;
-
   return {
-    forGiftCardRequests: async (requestIds) => {
-      const result = new Map<string, AdminRecipientStatus>();
-      if (requestIds.length === 0) {
-        return result;
-      }
-      const current = now();
-      const events = await prisma.outboxEvent.findMany({
-        where: { aggregateType: GIFT_CARD_AGGREGATE, type: GIFT_CARD_CREATED, aggregateId: { in: requestIds } },
-        select: {
-          aggregateId: true,
-          type: true,
-          occurredAt: true,
-          notification: { select: { status: true, deliveries: { select: deliveryFields } } },
-        },
-      });
-      for (const event of events) {
-        result.set(event.aggregateId, recipientStatus(event, deliveryOf(event, "studio"), current));
-      }
-      return result;
-    },
     forClient: async (bookingIds) => {
       const current = now();
       const result = new Map<string, ClientNotificationStatus>();

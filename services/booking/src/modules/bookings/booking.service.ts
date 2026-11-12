@@ -1,6 +1,5 @@
 import type { Booking, BookingTimeChange, Prisma, PrismaClient, UserProfile } from "../../generated/prisma/client.js";
 import { AppError } from "../../shared/errors/app-error.js";
-import { idempotencyKeyReused } from "../../shared/http/idempotency-key.js";
 import { canCancelAppointment, canRescheduleAppointment } from "../access/policies.js";
 import { serviceNotFound } from "../catalog/catalog.service.js";
 import { pricingAt } from "../catalog/pricing.js";
@@ -92,7 +91,9 @@ export const createBookingService = ({
       });
       if (previous !== null) {
         if (previous.requestFingerprint !== fingerprint) {
-          throw idempotencyKeyReused();
+          throw new AppError(422, "This Idempotency-Key was already used for a different request", {
+            code: "IDEMPOTENCY_KEY_REUSED",
+          });
         }
         return { booking: previous, changed: false };
       }
