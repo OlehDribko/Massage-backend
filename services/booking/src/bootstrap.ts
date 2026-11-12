@@ -10,6 +10,8 @@ import { createAccessGuards } from "./modules/access/require-access.js";
 import type { IdentityProvider } from "./modules/auth/identity.js";
 import { createAdminBookingRouter, createClientBookingRouter } from "./modules/bookings/booking.routes.js";
 import { createBookingService } from "./modules/bookings/booking.service.js";
+import { createAdminGiftCardRouter, createClientGiftCardRouter } from "./modules/gift-cards/gift-card.routes.js";
+import { createGiftCardService } from "./modules/gift-cards/gift-card.service.js";
 import { createPublicCatalogRouter } from "./modules/catalog/catalog.routes.js";
 import { createCatalogService } from "./modules/catalog/catalog.service.js";
 import { createBrevoMarketingMailer, type MarketingMailer } from "./modules/email/service/email.service.js";
@@ -33,7 +35,7 @@ import { createScheduleService } from "./modules/schedule/schedule.service.js";
  * notification status.
  */
 export type NotificationsRuntime = {
-  /** Called after every booking write, committed or not; must not throw or block. */
+  /** Called after every booking write and gift card request, committed or not; must not throw or block. */
   wake: () => void;
 };
 
@@ -64,7 +66,7 @@ export type ApplicationOverrides = {
  * Composes the application from validated config:
  * - public catalogue and availability (/api/services) always: read-only,
  *   no token;
- * - /api/me (profiles), /api/bookings and /api/admin only when Firebase is
+ * - /api/me (profiles), /api/bookings, /api/gift-card-requests and /api/admin only when Firebase is
  *   configured; without it those routes do not exist (fail closed);
  * - /api/marketing only when ENABLE_MARKETING_SUBSCRIPTION=true.
  * External clients (Firebase Admin SDK, Brevo) are created here, not on import.
@@ -153,6 +155,24 @@ export const createApplication = ({
       notifications === undefined ? undefined : createNotificationStatusReader({ prisma: database.prisma, now });
     api.use("/bookings", authenticate, createClientBookingRouter({ bookings, guards, rules, now, notificationStatus }));
 
+    // Gift card requests: no calendar lock; a new request wakes the email
+    // sender right after its transaction, like a booking write.
+    const giftCards = createGiftCardService({
+      prisma: database.prisma,
+      timeZone: rules.timeZone,
+      now,
+      ...(notifications === undefined ? {} : { afterWrite: notifications.wake }),
+    });
+    api.use(
+      "/gift-card-requests",
+      authenticate,
+      createClientGiftCardRouter({
+        giftCards,
+        requireGiftCardClient: guards.requireGiftCardClient,
+        notificationStatus,
+      }),
+    );
+
     // Administration lives in the owning modules; every route needs a
     // verified admin, checked on the server for each request.
     const admin = Router();
@@ -165,6 +185,7 @@ export const createApplication = ({
       }),
     );
     admin.use("/bookings", createAdminBookingRouter({ bookings, rules, now, notificationStatus }));
+    admin.use("/gift-card-requests", createAdminGiftCardRouter({ giftCards, notificationStatus }));
     api.use("/admin", authenticate, guards.requireAdmin, admin);
   }
 

@@ -1,13 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import type { Prisma, PrismaClient } from "../generated/prisma/client.js";
+import type { OutboxEvent, Prisma, PrismaClient } from "../generated/prisma/client.js";
 import { parseBookingEvent } from "./event-contract.js";
+import { GIFT_CARD_AGGREGATE, parseGiftCardEvent } from "./gift-card-contract.js";
 
 /**
- * Persistence of booking notifications. It reads OutboxEvent (the agreed
- * integration point) and writes only NotificationEvent and
- * NotificationDelivery; it never creates or changes outbox events and never
- * touches catalogue, profile or booking tables.
+ * Persistence of notifications (bookings and gift card requests). It reads
+ * OutboxEvent (the agreed integration point) and writes only
+ * NotificationEvent and NotificationDelivery; it never creates or changes
+ * outbox events and never touches catalogue, profile, booking or gift card
+ * tables.
  */
 
 const recipientEmailSchema = z.email();
@@ -49,6 +51,13 @@ export const planNewEvents = async (
 
   const planned: PlannedEvent[] = [];
   for (const row of events) {
+    if (row.aggregateType === GIFT_CARD_AGGREGATE) {
+      const result = await planGiftCardEvent(prisma, row, { now, studioEmail });
+      if (result !== null) {
+        planned.push(result);
+      }
+      continue;
+    }
     const parsed = parseBookingEvent(row);
     const result = await prisma.$transaction(async (tx): Promise<PlannedEvent | null> => {
       const inserted = await tx.notificationEvent.createMany({
@@ -107,6 +116,54 @@ export const planNewEvents = async (
     }
   }
   return { planned, fetched: events.length };
+};
+
+/**
+ * A gift card request (gift-card-contract.ts): one email to the studio, due
+ * at once; no client email, nothing to supersede. The delivery's bookingId
+ * column holds the request id (the aggregate id).
+ */
+const planGiftCardEvent = (
+  prisma: PrismaClient,
+  row: OutboxEvent,
+  { now, studioEmail }: { now: Date; studioEmail: string },
+): Promise<PlannedEvent | null> => {
+  const parsed = parseGiftCardEvent(row);
+  return prisma.$transaction(async (tx): Promise<PlannedEvent | null> => {
+    const inserted = await tx.notificationEvent.createMany({
+      data: [
+        {
+          eventId: row.id,
+          position: row.position,
+          status: parsed.ok ? "planned" : "invalid",
+          reasonCode: parsed.ok ? null : parsed.reason,
+          processedAt: now,
+        },
+      ],
+      skipDuplicates: true,
+    });
+    if (inserted.count === 0) {
+      return null; // planned concurrently by another worker
+    }
+    if (!parsed.ok) {
+      return { eventId: row.id, status: "invalid", reasonCode: parsed.reason };
+    }
+    await tx.notificationDelivery.createMany({
+      data: [
+        {
+          eventId: row.id,
+          eventPosition: row.position,
+          eventType: parsed.event.type,
+          bookingId: parsed.event.payload.requestId,
+          recipientRole: "studio",
+          recipientEmail: studioEmail,
+          nextAttemptAt: now,
+        },
+      ],
+      skipDuplicates: true,
+    });
+    return { eventId: row.id, status: "planned", reasonCode: null };
+  });
 };
 
 /** Emails about these events go stale once a newer event of the booking exists. */

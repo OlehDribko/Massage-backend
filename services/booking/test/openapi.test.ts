@@ -134,6 +134,8 @@ const MOUNTS: Record<string, { prefix: string; mountedIn: string; mount: string 
   createClientBookingRouter: { prefix: "/api/bookings", mountedIn: "bootstrap.ts", mount: `api.use("/bookings", authenticate, createClientBookingRouter(` },
   createAdminScheduleRouter: { prefix: "/api/admin/schedule", mountedIn: "bootstrap.ts", mount: `"/schedule",\n      createAdminScheduleRouter(` },
   createAdminBookingRouter: { prefix: "/api/admin/bookings", mountedIn: "bootstrap.ts", mount: `admin.use("/bookings", createAdminBookingRouter(` },
+  createClientGiftCardRouter: { prefix: "/api/gift-card-requests", mountedIn: "bootstrap.ts", mount: `"/gift-card-requests",\n      authenticate,\n      createClientGiftCardRouter(` },
+  createAdminGiftCardRouter: { prefix: "/api/admin/gift-card-requests", mountedIn: "bootstrap.ts", mount: `admin.use("/gift-card-requests", createAdminGiftCardRouter(` },
   createDocsRouter: "not-business-api",
 };
 
@@ -211,7 +213,7 @@ describe("OpenAPI document", () => {
       .map((operation) => `${operation.method.toUpperCase()} ${operation.path}`)
       .sort();
     expect(documented).toEqual(routes);
-    expect(documented).toHaveLength(31);
+    expect(documented).toHaveLength(35);
     const text = JSON.stringify(buildOpenApiDocument());
     expect(text).not.toContain("/api/admin/services");
     expect(Object.keys(buildOpenApiDocument().paths).some((path) => /login|signin|sign-in|signup|password|register/i.test(path))).toBe(false);

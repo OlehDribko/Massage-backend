@@ -3,6 +3,8 @@ import { MARKETING_CONSENT_TEXT_VERSION } from "../modules/marketing/consent.js"
 import { subscribeSchema } from "../modules/marketing/marketing.routes.js";
 import { actionTokenSchema } from "../modules/email/schema/email.schema.js";
 import { adminCancelSchema, createBookingSchema, rescheduleBookingSchema } from "../modules/bookings/booking.schema.js";
+import { createGiftCardRequestSchema, MAX_DESCRIPTION_LENGTH, updateGiftCardStatusSchema } from "../modules/gift-cards/gift-card.schema.js";
+import { DEFAULT_GIFT_CARD_LIMITS } from "../modules/gift-cards/gift-card.service.js";
 import { ownSubscriptionSchema, syncSchema } from "../modules/profiles/profile.routes.js";
 import { updateOwnProfileSchema } from "../modules/profiles/profile.schema.js";
 import {
@@ -15,9 +17,12 @@ import {
 import { DEFAULT_BOOKING_RULES } from "../modules/schedule/booking-rules.js";
 import {
   adminBookingSchema,
+  adminGiftCardRequestListSchema,
+  adminGiftCardRequestSchema,
   adminNotificationSchema,
   availabilitySchema,
   clientBookingSchema,
+  clientGiftCardRequestSchema,
   clientNotificationSchema,
   errorSchema,
   liveSchema,
@@ -124,6 +129,9 @@ const COMPONENT_SCHEMAS = {
   AdminNotification: adminNotificationSchema,
   Booking: clientBookingSchema,
   AdminBooking: adminBookingSchema,
+  GiftCardRequest: clientGiftCardRequestSchema,
+  AdminGiftCardRequest: adminGiftCardRequestSchema,
+  AdminGiftCardRequestList: adminGiftCardRequestListSchema,
   Schedule: scheduleViewSchema,
   ScheduleException: scheduleExceptionViewSchema,
   ScheduleDay: scheduleDayViewSchema,
@@ -285,6 +293,42 @@ const ADMIN_BOOKING_EXAMPLE = {
     },
   ],
 };
+const GIFT_CARD_ID = "5b6c7d8e-9f01-4a2b-8c3d-4e5f6a7b8c9d";
+const ADMIN_PROFILE_ID = "2e3f4051-6b7c-4d8e-9fa0-1b2c3d4e5f60";
+const giftCardRequestIdParam = pathParam("requestId", "Gift card request id", { type: "string", format: "uuid" }, GIFT_CARD_ID);
+const GIFT_CARD_EXAMPLE = {
+  id: GIFT_CARD_ID,
+  number: 42,
+  status: "new",
+  amountCents: 15000,
+  currency: "EUR",
+  description: "Pour l’anniversaire de ma sœur",
+  preferredContactChannel: "whatsapp",
+  createdAt: "2027-03-01T07:00:00.000Z",
+  notification: { status: "pending", reason: null },
+};
+const ADMIN_GIFT_CARD_EXAMPLE = {
+  ...Object.fromEntries(Object.entries(GIFT_CARD_EXAMPLE).filter(([key]) => key !== "notification")),
+  status: "in_progress",
+  client: { profileId: PROFILE_ID, name: "Anna Example", email: "anna@example.invalid", phone: "+33612345678" },
+  updatedAt: "2027-03-01T09:30:00.000Z",
+  allowedStatuses: ["completed", "cancelled"],
+  history: [
+    { fromStatus: null, toStatus: "new", at: "2027-03-01T07:00:00.000Z", by: { profileId: PROFILE_ID, role: "client", name: "Anna Example", email: "anna@example.invalid" } },
+    { fromStatus: "new", toStatus: "in_progress", at: "2027-03-01T09:30:00.000Z", by: { profileId: ADMIN_PROFILE_ID, role: "admin", name: "Studio Example", email: "studio@example.invalid" } },
+  ],
+  notification: { status: "accepted", reason: null, attempts: 1, lastAttemptAt: "2027-03-01T07:00:01.000Z", acceptedAt: "2027-03-01T07:00:01.000Z" },
+};
+const GIFT_CARD_LIMIT_PER_DAY = String(DEFAULT_GIFT_CARD_LIMITS.perWindow);
+const pageParam = (name: string, description: string, example: string): Json => ({
+  name,
+  in: "query",
+  required: false,
+  description,
+  schema: { type: "string", pattern: "^[1-9][0-9]*$" },
+  example,
+});
+
 const PROFILE_EXAMPLE = {
   profile: {
     id: PROFILE_ID,
@@ -364,9 +408,10 @@ To try protected operations: obtain an ID token from your own Firebase session i
 - **Public** (no token): catalogue, availability, health, the marketing subscription form and its email links. A token sent to a public route is ignored.
 - **Guest**: Firebase anonymous session. Has a profile (\`POST /api/me/sync\`), sees and cancels own bookings, but **cannot book** (\`BOOKING_NOT_READY\` with \`anonymous_session\`).
 - **Registered client**: role \`client\`, not anonymous. To book or reschedule, the email must be verified and the profile needs a name and a phone (\`bookingReadiness.blockers\` lists what is missing).
+- **Gift card requests** (\`POST /api/gift-card-requests\`): the same profile requirements as booking (\`GIFT_CARD_REQUEST_NOT_READY\` with the same \`blockers\`); guests cannot submit.
 - **Administrator**: role \`admin\` (assigned by the owner with a command, never through the API), not anonymous, **verified email**. Only administrators use \`/api/admin\`; they do not book for themselves.
 
-Routes under \`/api/me\`, \`/api/bookings\` and \`/api/admin\` exist only when Firebase is configured on the server; \`/api/marketing\` and \`POST /api/me/marketing/subscription\` only when marketing is enabled (otherwise \`404 NOT_FOUND\`).
+Routes under \`/api/me\`, \`/api/bookings\`, \`/api/gift-card-requests\` and \`/api/admin\` exist only when Firebase is configured on the server; \`/api/marketing\` and \`POST /api/me/marketing/subscription\` only when marketing is enabled (otherwise \`404 NOT_FOUND\`).
 
 ## Money
 Integer **euro cents**, currency \`EUR\` (8500 = 85,00 €).
@@ -385,13 +430,13 @@ Integer **euro cents**, currency \`EUR\` (8500 = 85,00 €).
 - **Cancelling** (client or admin) only **before the start**.
 
 ## Idempotency-Key
-Required on \`POST /api/bookings\` only: 8–128 characters \`[A-Za-z0-9_-]\` (a UUID fits), one per booking attempt of the client. A repeat with the same key and the same request returns the original booking (\`200\`, header \`Idempotent-Replayed: true\`) with its original price, even after a sale has ended; no second booking or event. The same key with a different request is \`422 IDEMPOTENCY_KEY_REUSED\`. Rescheduling and cancelling are idempotent without a key: a repeat answers \`changed: false\`.
+Required on \`POST /api/bookings\` and \`POST /api/gift-card-requests\` (the same rules for both; below for bookings): 8–128 characters \`[A-Za-z0-9_-]\` (a UUID fits), one per booking attempt of the client. A repeat with the same key and the same request returns the original booking (\`200\`, header \`Idempotent-Replayed: true\`) with its original price, even after a sale has ended; no second booking or event. The same key with a different request is \`422 IDEMPOTENCY_KEY_REUSED\`. Rescheduling and cancelling are idempotent without a key: a repeat answers \`changed: false\`.
 
 ## Email status
 Booking emails are separate from the booking status. \`accepted\` means **accepted by the email provider for sending, not delivered to the mailbox**. A failed email never cancels or changes the booking.
 
 ## retryAfterSeconds
-- In errors (also the \`Retry-After\` header, and in the message): \`AUTH_UNAVAILABLE\` (5 s), \`CALENDAR_BUSY\` (2 s), \`CONFIRMATION_EMAIL_NOT_SENT\`: the remaining resend block of the address after a provider rate limit (until the provider's Retry-After, or 10 minutes), otherwise 60 s. A retry before that sends nothing and answers \`no_action\`.
+- In errors (also the \`Retry-After\` header, and in the message): \`AUTH_UNAVAILABLE\` (5 s), \`CALENDAR_BUSY\` (2 s), \`GIFT_CARD_REQUEST_BUSY\` (2 s), \`GIFT_CARD_REQUEST_LIMIT_REACHED\` (until the oldest of the client's requests of the last 24 h is 24 h old), \`CONFIRMATION_EMAIL_NOT_SENT\`: the remaining resend block of the address after a provider rate limit (until the provider's Retry-After, or 10 minutes), otherwise 60 s. A retry before that sends nothing and answers \`no_action\`.
 - In \`POST /api/me/marketing/subscription\` with \`outcome: "no_action"\`: seconds until "send again" may send a new confirmation email (10-minute interval after a sent email; after a provider rate limit, until the provider's Retry-After).
 
 ## Errors
@@ -784,6 +829,54 @@ const paths = (): OpenApiDocument["paths"] => ({
     }),
   },
 
+  "/api/gift-card-requests": {
+    post: op({
+      operationId: "createGiftCardRequest",
+      tags: ["Gift card requests"],
+      summary: "Ask the studio for a gift card",
+      description: `A request handled by hand by the studio: no online payment, no card code, no tracking of its use. Only a client ready as for booking (registered, verified email, name, phone; not an admin). Name and phone come from the profile, the email from the verified identity: the body never carries contacts (unknown fields are \`400\`). They are copied into the request: later profile changes do not touch it. The phone is format-checked, not verified. Currency EUR, set by the server; any whole number of cents > 0 within the stored range (no fixed values, no minimum or maximum). \`description\`: optional, at most ${String(MAX_DESCRIPTION_LENGTH)} characters after trimming; empty or only spaces is stored as null; no control characters except line breaks and tabs. \`preferredContactChannel\`: how the client wants to be contacted by hand (\`whatsapp\` is only a preference, there is no WhatsApp integration). Requires \`Idempotency-Key\` (see Idempotency-Key; one key per request the client decides to send). At most ${GIFT_CARD_LIMIT_PER_DAY} new requests per client in 24 hours (replays do not count). The studio gets one email at once (no delay); \`notification\` shows its state, separate from \`status\`: a failed email never cancels the request. The client gets no email. Does not take the masseuse's time (no calendar lock).`,
+      security: PROTECTED,
+      parameters: [
+        {
+          name: "Idempotency-Key",
+          in: "header",
+          required: true,
+          description: "8–128 characters [A-Za-z0-9_-]; one per request the client decides to send. Repeat it with the same body to retry safely.",
+          schema: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          example: "6a1f0c9e-3b2d-4e5f-8a7b-9c0d1e2f3a4b",
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: json(input(createGiftCardRequestSchema), { amountCents: 15000, description: "Pour l’anniversaire de ma sœur", preferredContactChannel: "whatsapp" }),
+      },
+      responses: withAuth(
+        {
+          "201": ok("Request recorded (status new)", object({ giftCardRequest: ref("GiftCardRequest") }), { giftCardRequest: GIFT_CARD_EXAMPLE }),
+          "200": ok("Repeat of an earlier request with the same key: the original request", object({ giftCardRequest: ref("GiftCardRequest") }), { giftCardRequest: { ...GIFT_CARD_EXAMPLE, notification: { status: "accepted", reason: null } } }, {
+            "Idempotent-Replayed": { description: "true", schema: { type: "string", const: "true" } },
+          }),
+          "400": errors("Invalid body or key", [
+            validation("amountCents"),
+            { message: "Idempotency-Key header is required", code: "IDEMPOTENCY_KEY_REQUIRED" },
+            { message: "Idempotency-Key must be 8–128 characters of A–Z, a–z, 0–9, _ or -", code: "IDEMPOTENCY_KEY_INVALID" },
+            INVALID_JSON,
+          ]),
+          "422": errors("Key reused for another request", [{ message: "This Idempotency-Key was already used for a different request", code: "IDEMPOTENCY_KEY_REUSED" }]),
+          "429": errors(
+            "Too many requests of this client in 24 hours",
+            [{ message: "Too many gift card requests; retry later", code: "GIFT_CARD_REQUEST_LIMIT_REACHED", retryAfterSeconds: 3600 }],
+            true,
+          ),
+        },
+        {
+          "403": [{ message: "Profile is not ready for a gift card request", code: "GIFT_CARD_REQUEST_NOT_READY", blockers: ["email_not_verified", "phone_missing"] }],
+          "503": [{ message: "Gift card requests are busy; retry shortly", code: "GIFT_CARD_REQUEST_BUSY", retryAfterSeconds: 2 }],
+        },
+      ),
+    }),
+  },
+
   "/api/admin/schedule": {
     get: op({
       operationId: "getSchedule",
@@ -1030,6 +1123,92 @@ const paths = (): OpenApiDocument["paths"] => ({
       ),
     }),
   },
+  "/api/admin/gift-card-requests": {
+    get: op({
+      operationId: "listGiftCardRequests",
+      tags: ["Admin: gift card requests"],
+      summary: "Gift card requests, newest first",
+      description:
+        "Paginated (`page` from 1, `pageSize` 1–100, default 20; `total` counts all pages). Filters: `status`, and the creation date range `createdFrom`–`createdTo` (local dates of the studio time zone, inclusive, either one alone). Full data with the client's contact snapshot, history and the studio email state. Verified administrator only.",
+      security: PROTECTED,
+      parameters: [
+        {
+          name: "status",
+          in: "query",
+          required: false,
+          description: "Only requests with this status",
+          schema: { type: "string", enum: ["new", "in_progress", "completed", "cancelled"] },
+          example: "new",
+        },
+        queryParam("createdFrom", "Created on or after this local date", false, "2027-03-01"),
+        queryParam("createdTo", "Created on or before this local date (inclusive)", false, "2027-03-31"),
+        pageParam("page", "Page number, from 1 (default 1)", "1"),
+        pageParam("pageSize", "Requests per page, 1–100 (default 20)", "20"),
+      ],
+      responses: withAuth(
+        {
+          "200": ok("One page of requests", ref("AdminGiftCardRequestList"), {
+            timeZone: "Europe/Paris",
+            page: 1,
+            pageSize: 20,
+            total: 1,
+            giftCardRequests: [ADMIN_GIFT_CARD_EXAMPLE],
+          }),
+          "400": errors("Invalid filters or page", [validation("createdFrom"), validation("pageSize")]),
+        },
+        adminOnly(),
+      ),
+    }),
+  },
+  "/api/admin/gift-card-requests/{requestId}": {
+    get: op({
+      operationId: "getGiftCardRequest",
+      tags: ["Admin: gift card requests"],
+      summary: "One gift card request",
+      description: "Full data, the status history and the studio email state. Verified administrator only.",
+      security: PROTECTED,
+      parameters: [giftCardRequestIdParam],
+      responses: withAuth(
+        {
+          "200": ok("The request", object({ giftCardRequest: ref("AdminGiftCardRequest") }), { giftCardRequest: ADMIN_GIFT_CARD_EXAMPLE }),
+          "404": errors("Not found", [{ message: "Gift card request not found", code: "GIFT_CARD_REQUEST_NOT_FOUND" }]),
+        },
+        adminOnly(),
+      ),
+    }),
+  },
+  "/api/admin/gift-card-requests/{requestId}/status": {
+    patch: op({
+      operationId: "setGiftCardRequestStatus",
+      tags: ["Admin: gift card requests"],
+      summary: "Set the status of a gift card request",
+      description:
+        "Allowed: `new` → `in_progress`, `completed` or `cancelled`; `in_progress` → `completed` or `cancelled`. `completed` (manual handling finished — not a payment confirmation or an issued card) and `cancelled` (mistaken, duplicate or withdrawn; kept in the history) are final. Setting the current status again answers `changed: false` and adds no history entry. Every change is recorded with its time and administrator. No deleting or editing of requests. Sends no email. Verified administrator only.",
+      security: PROTECTED,
+      parameters: [giftCardRequestIdParam],
+      requestBody: { required: true, content: json(input(updateGiftCardStatusSchema), { status: "in_progress" }) },
+      responses: withAuth(
+        {
+          "200": ok("Status set (or already that status)", object({ giftCardRequest: ref("AdminGiftCardRequest"), changed: { type: "boolean" } }), {
+            giftCardRequest: ADMIN_GIFT_CARD_EXAMPLE,
+            changed: true,
+          }),
+          "400": errors("Invalid body", [validation("status"), INVALID_JSON]),
+          "404": errors("Not found", [{ message: "Gift card request not found", code: "GIFT_CARD_REQUEST_NOT_FOUND" }]),
+          "409": errors("Not allowed from the current status", [
+            {
+              message: "This status change is not allowed",
+              code: "GIFT_CARD_STATUS_TRANSITION_NOT_ALLOWED",
+              from: "completed",
+              to: "in_progress",
+              allowed: [],
+            },
+          ]),
+        },
+        { ...adminOnly(), "503": [{ message: "Gift card requests are busy; retry shortly", code: "GIFT_CARD_REQUEST_BUSY", retryAfterSeconds: 2 }] },
+      ),
+    }),
+  },
 });
 
 function adminOnly(): Record<string, ErrorExample[]> {
@@ -1058,6 +1237,8 @@ export const buildOpenApiDocument = (): OpenApiDocument => ({
     { name: "Bookings", description: "The caller's own bookings (Firebase ID token)" },
     { name: "Admin: schedule", description: "Working hours (verified administrator)" },
     { name: "Admin: bookings", description: "All bookings (verified administrator)" },
+    { name: "Gift card requests", description: "A client asks the studio for a gift card, handled by hand (Firebase ID token)" },
+    { name: "Admin: gift card requests", description: "Gift card requests and their status (verified administrator)" },
   ],
   paths: paths(),
   components: {

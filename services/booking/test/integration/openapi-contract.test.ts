@@ -4,8 +4,11 @@ import { z } from "zod";
 import { localDateTimeToInstant } from "../../src/modules/schedule/zoned-time.js";
 import {
   adminBookingSchema,
+  adminGiftCardRequestListSchema,
+  adminGiftCardRequestSchema,
   availabilitySchema,
   clientBookingSchema,
+  clientGiftCardRequestSchema,
   errorSchema,
   liveSchema,
   publicServiceSchema,
@@ -145,6 +148,38 @@ describe("documented responses (catalogue, availability, bookings, administratio
       ).body,
     );
     write(clientBookingSchema).parse((await request(stack.app).post(`/api/bookings/${second.booking.id}/cancel`).set(anna).send({}).expect(200)).body);
+  });
+
+  it("gift card requests: real responses and errors match the documentation", async () => {
+    const anna = bearer(users.clientA);
+    const admin = bearer(users.admin);
+    const created = z.strictObject({ giftCardRequest: clientGiftCardRequestSchema }).parse(
+      (
+        await request(stack.app)
+          .post("/api/gift-card-requests")
+          .set(anna)
+          .set("Idempotency-Key", "contract-gift-0001")
+          .send({ amountCents: 5000, description: "Pour un ami", preferredContactChannel: "email" })
+          .expect(201)
+      ).body,
+    );
+    const id = created.giftCardRequest.id;
+    const adminResponse = z.strictObject({ giftCardRequest: adminGiftCardRequestSchema });
+    adminGiftCardRequestListSchema.parse((await request(stack.app).get("/api/admin/gift-card-requests").set(admin).expect(200)).body);
+    adminResponse.parse((await request(stack.app).get(`/api/admin/gift-card-requests/${id}`).set(admin).expect(200)).body);
+    z.strictObject({ giftCardRequest: adminGiftCardRequestSchema, changed: z.boolean() }).parse(
+      (await request(stack.app).patch(`/api/admin/gift-card-requests/${id}/status`).set(admin).send({ status: "completed" }).expect(200)).body,
+    );
+    const errors = [
+      (await request(stack.app).post("/api/gift-card-requests").set(bearer(users.unverified)).set("Idempotency-Key", "contract-gift-0002").send({ amountCents: 5000, preferredContactChannel: "email" }).expect(403)).body,
+      (await request(stack.app).post("/api/gift-card-requests").set(anna).set("Idempotency-Key", "contract-gift-0003").send({ amountCents: 0, preferredContactChannel: "email" }).expect(400)).body,
+      (await request(stack.app).patch(`/api/admin/gift-card-requests/${id}/status`).set(admin).send({ status: "new" }).expect(409)).body,
+      (await request(stack.app).get("/api/admin/gift-card-requests/5b6c7d8e-9f01-4a2b-8c3d-4e5f6a7b8c9d").set(admin).expect(404)).body,
+    ];
+    for (const body of errors) {
+      errorSchema.parse(body);
+    }
+    expect(errorSchema.parse(errors[2])).toMatchObject({ from: "completed", to: "new", allowed: [] });
   });
 
   it("error bodies keep the documented shape", async () => {
