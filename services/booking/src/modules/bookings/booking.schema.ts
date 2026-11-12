@@ -23,7 +23,7 @@ export const adminCancelSchema = z
   .strict()
   .optional();
 
-/** Idempotency-Key header of POST /api/bookings (shared with other creating routes). */
-export { idempotencyKeySchema } from "../../shared/http/idempotency-key.js";
+/** Idempotency-Key header of POST /api/bookings: 8–128 of [A-Za-z0-9_-] (a UUID fits). */
+export const idempotencyKeySchema = z.string().regex(/^[A-Za-z0-9_-]{8,128}$/);
 
 export const bookingIdSchema = z.uuid();

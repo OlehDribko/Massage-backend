@@ -1,7 +1,6 @@
 import { Router, type Request, type RequestHandler } from "express";
 import type { NotificationStatusReader } from "../../notifications/status.js";
 import { AppError } from "../../shared/errors/app-error.js";
-import { idempotencyKeyFrom } from "../../shared/http/idempotency-key.js";
 import { withValidatedBody } from "../../shared/http/validated-body.js";
 import { requireActor } from "../access/require-access.js";
 import type { BookingRules } from "../schedule/booking-rules.js";
@@ -12,6 +11,7 @@ import {
   bookingIdSchema,
   clientCancelSchema,
   createBookingSchema,
+  idempotencyKeySchema,
   rescheduleBookingSchema,
 } from "./booking.schema.js";
 import type { BookingService } from "./booking.service.js";
@@ -22,6 +22,20 @@ const bookingIdFrom = (req: Request): string => {
   const parsed = bookingIdSchema.safeParse(req.params.bookingId);
   if (!parsed.success) {
     throw new AppError(404, "Booking not found", { code: "BOOKING_NOT_FOUND" });
+  }
+  return parsed.data;
+};
+
+const idempotencyKeyFrom = (req: Request): string => {
+  const header = req.get("idempotency-key");
+  if (header === undefined || header === "") {
+    throw new AppError(400, "Idempotency-Key header is required", { code: "IDEMPOTENCY_KEY_REQUIRED" });
+  }
+  const parsed = idempotencyKeySchema.safeParse(header);
+  if (!parsed.success) {
+    throw new AppError(400, "Idempotency-Key must be 8–128 characters of A–Z, a–z, 0–9, _ or -", {
+      code: "IDEMPOTENCY_KEY_INVALID",
+    });
   }
   return parsed.data;
 };
