@@ -2497,7 +2497,7 @@
                 "status"
               ]
             },
-            "description": "⚠️ PATCH /api/admin/gift-card-requests/{requestId}/status (setGiftCardRequestStatus). **Changes the request.** new → in_progress | completed | cancelled; in_progress → completed | cancelled; completed and cancelled are final (`409`). The same status again → `changed: false`, no history entry. Sends no email."
+            "description": "⚠️ PATCH /api/admin/gift-card-requests/{requestId}/status (setGiftCardRequestStatus). **Changes the request.** new → in_progress | completed | cancelled; in_progress → completed | cancelled; completed → in_progress and cancelled → in_progress (correcting a mistake); anything else `409`. Every change is a history entry; none creates a request or an email. The same status again → `changed: false`, no history entry. Sends no email."
           }
         }
       ]

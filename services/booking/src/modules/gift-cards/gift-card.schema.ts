@@ -52,12 +52,14 @@ export const giftCardRequestIdSchema = z.uuid();
 
 /**
  * Allowed admin changes. completed (manual handling finished) and cancelled
- * (closed: mistaken, duplicate, withdrawn) are final; setting the current
+ * (closed: mistaken, duplicate, withdrawn) can be reopened to in_progress to
+ * correct a mistake (agreed 2026-11-12); never back to new. Every change is
+ * a history entry; none creates a request or an email. Setting the current
  * status again is a no-op, never an error.
  */
 export const ALLOWED_TRANSITIONS: Readonly<Record<GiftCardStatus, readonly GiftCardStatus[]>> = {
   new: ["in_progress", "completed", "cancelled"],
   in_progress: ["completed", "cancelled"],
-  completed: [],
-  cancelled: [],
+  completed: ["in_progress"],
+  cancelled: ["in_progress"],
 };

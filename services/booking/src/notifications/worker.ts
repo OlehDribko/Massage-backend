@@ -1,7 +1,7 @@
 import type { PrismaClient } from "../generated/prisma/client.js";
 import type { Logger } from "../logging/logger.js";
 import type { WorkerTuning } from "./config.js";
-import { bookingPayloadSchema, parseBookingEvent, type BookingEvent } from "./event-contract.js";
+import { bookingPayloadSchema, HANDLED_EVENT_TYPES, parseBookingEvent, type BookingEvent } from "./event-contract.js";
 import { GIFT_CARD_AGGREGATE, parseGiftCardEvent } from "./gift-card-contract.js";
 import { renderGiftCardRequestEmail } from "./gift-card-template.js";
 import type { EmailProvider, SendOutcome } from "./provider.js";
@@ -29,6 +29,8 @@ export type WorkerDeps = {
   /** null = no filter (production only). */
   recipientAllowlist: ReadonlySet<string> | null;
   tuning: WorkerTuning;
+  /** Event types this process takes; default: all this release handles (event-contract.ts). */
+  handledEventTypes?: readonly string[];
   now?: () => Date;
   random?: () => number;
 };
@@ -55,6 +57,7 @@ export type Worker = {
 export const createWorker = (deps: WorkerDeps): Worker => {
   const now = deps.now ?? (() => new Date());
   const { tuning, logger } = deps;
+  const eventTypes = deps.handledEventTypes ?? HANDLED_EVENT_TYPES;
   let stopping = false;
 
   const safe = (delivery: ClaimedDelivery) => ({
@@ -263,6 +266,7 @@ export const createWorker = (deps: WorkerDeps): Worker => {
         studioEmail: deps.studioEmail,
         limit: tuning.planBatchSize,
         studioDelayMs: tuning.studioDelayMs,
+        eventTypes,
       });
       plannedTotal += batch.planned.length;
       for (const event of batch.planned.filter((item) => item.status === "invalid")) {
@@ -273,7 +277,7 @@ export const createWorker = (deps: WorkerDeps): Worker => {
       }
     }
 
-    const exhausted = await failExhausted(deps.prisma, { now: now(), maxAttempts: tuning.maxAttempts });
+    const exhausted = await failExhausted(deps.prisma, { now: now(), maxAttempts: tuning.maxAttempts, eventTypes });
     if (exhausted > 0) {
       logger.error({ count: exhausted }, "notifications failed after the last attempt");
     }
@@ -286,6 +290,7 @@ export const createWorker = (deps: WorkerDeps): Worker => {
         leaseMs: tuning.leaseMs,
         limit: tuning.batchSize,
         maxAttempts: tuning.maxAttempts,
+        eventTypes,
       });
       if (batch.length === 0) {
         break;

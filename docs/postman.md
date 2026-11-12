@@ -94,7 +94,7 @@
 4. `Bookings: ⚠️ cancel own`.
 5. `Gift cards: ⚠️ request a gift card (Idempotency-Key, studio email)` → зберігає `giftCardRequestId`. **Створює справжню заявку й лист адміністратору**: на staging лише за allowlist. Ключ — зі змінної `giftCardIdempotencyKey`, за тими самими правилами, що й `bookingIdempotencyKey` нижче; для нової заявки очистіть її. Щонайбільше 5 нових заявок клієнта за 24 год.
 
-**Адміністратор, заявки на сертифікати** (`5. Admin`): `Gift cards: list (newest first)`, `Gift cards: get any` (за `giftCardRequestId`), `Gift cards: ⚠️ set status`. Для останнього заповніть `giftCardStatus`: `in_progress`, `completed` або `cancelled`; `completed` і `cancelled` кінцеві.
+**Адміністратор, заявки на сертифікати** (`5. Admin`): `Gift cards: list (newest first)`, `Gift cards: get any` (за `giftCardRequestId`), `Gift cards: ⚠️ set status`. Для останнього заповніть `giftCardStatus`: `in_progress`, `completed` або `cancelled`. Із `completed` і `cancelled` можна повернутися лише в `in_progress`.
 
 **Idempotency-Key** для створення бронювання береться зі змінної `bookingIdempotencyKey`:
 - Якщо змінна порожня, скрипт **один раз** записує в неї новий UUID. Поки в змінній є значення, новий ключ не генерується.

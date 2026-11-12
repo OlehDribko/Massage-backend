@@ -6748,7 +6748,7 @@
           "Admin: gift card requests"
         ],
         "summary": "Set the status of a gift card request",
-        "description": "Allowed: `new` → `in_progress`, `completed` or `cancelled`; `in_progress` → `completed` or `cancelled`. `completed` (manual handling finished — not a payment confirmation or an issued card) and `cancelled` (mistaken, duplicate or withdrawn; kept in the history) are final. Setting the current status again answers `changed: false` and adds no history entry. Every change is recorded with its time and administrator. No deleting or editing of requests. Sends no email. Verified administrator only.",
+        "description": "Allowed: `new` → `in_progress`, `completed` or `cancelled`; `in_progress` → `completed` or `cancelled`; `completed` → `in_progress` and `cancelled` → `in_progress` (to correct a mistake; never back to `new`). `completed` = manual handling finished — not a payment confirmation or an issued card; `cancelled` = mistaken, duplicate or withdrawn, kept in the list. Setting the current status again answers `changed: false` and adds no history entry. Every change, a reopening too, is recorded with its time and administrator; none creates a request or sends an email. No deleting or editing of requests. Verified administrator only.",
         "security": [
           {
             "firebaseIdToken": []
@@ -6997,8 +6997,10 @@
                       "message": "This status change is not allowed",
                       "code": "GIFT_CARD_STATUS_TRANSITION_NOT_ALLOWED",
                       "from": "completed",
-                      "to": "in_progress",
-                      "allowed": []
+                      "to": "new",
+                      "allowed": [
+                        "in_progress"
+                      ]
                     }
                   }
                 }
@@ -7193,7 +7195,7 @@
                 "completed",
                 "cancelled"
               ],
-              "description": "completed = manual handling finished (not a payment or an issued card); completed and cancelled are final"
+              "description": "completed = manual handling finished (not a payment or an issued card); cancelled = closed (kept); both can be reopened to in_progress"
             }
           }
         },
@@ -8763,7 +8765,7 @@
               "completed",
               "cancelled"
             ],
-            "description": "completed = manual handling finished (not a payment or an issued card); completed and cancelled are final"
+            "description": "completed = manual handling finished (not a payment or an issued card); cancelled = closed (kept); both can be reopened to in_progress"
           },
           "amountCents": {
             "type": "integer",
@@ -8884,7 +8886,7 @@
               "completed",
               "cancelled"
             ],
-            "description": "completed = manual handling finished (not a payment or an issued card); completed and cancelled are final"
+            "description": "completed = manual handling finished (not a payment or an issued card); cancelled = closed (kept); both can be reopened to in_progress"
           },
           "amountCents": {
             "type": "integer",
@@ -8966,7 +8968,7 @@
                 "completed",
                 "cancelled"
               ],
-              "description": "completed = manual handling finished (not a payment or an issued card); completed and cancelled are final"
+              "description": "completed = manual handling finished (not a payment or an issued card); cancelled = closed (kept); both can be reopened to in_progress"
             },
             "description": "Statuses that may be set next (UI hint; the server re-checks)"
           },
@@ -8985,7 +8987,7 @@
                         "completed",
                         "cancelled"
                       ],
-                      "description": "completed = manual handling finished (not a payment or an issued card); completed and cancelled are final"
+                      "description": "completed = manual handling finished (not a payment or an issued card); cancelled = closed (kept); both can be reopened to in_progress"
                     },
                     {
                       "type": "null"
@@ -9001,7 +9003,7 @@
                     "completed",
                     "cancelled"
                   ],
-                  "description": "completed = manual handling finished (not a payment or an issued card); completed and cancelled are final"
+                  "description": "completed = manual handling finished (not a payment or an issued card); cancelled = closed (kept); both can be reopened to in_progress"
                 },
                 "at": {
                   "type": "string",

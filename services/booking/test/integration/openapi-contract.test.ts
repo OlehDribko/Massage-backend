@@ -179,7 +179,7 @@ describe("documented responses (catalogue, availability, bookings, administratio
     for (const body of errors) {
       errorSchema.parse(body);
     }
-    expect(errorSchema.parse(errors[2])).toMatchObject({ from: "completed", to: "new", allowed: [] });
+    expect(errorSchema.parse(errors[2])).toMatchObject({ from: "completed", to: "new", allowed: ["in_progress"] });
   });
 
   it("error bodies keep the documented shape", async () => {

@@ -17,7 +17,10 @@ const cents = z.int().min(0).meta({ description: "Integer euro cents" });
 
 const giftCardStatus = z
   .enum(["new", "in_progress", "completed", "cancelled"])
-  .meta({ description: "completed = manual handling finished (not a payment or an issued card); completed and cancelled are final" });
+  .meta({
+    description:
+      "completed = manual handling finished (not a payment or an issued card); cancelled = closed (kept); both can be reopened to in_progress",
+  });
 
 // --- Errors -----------------------------------------------------------------
 

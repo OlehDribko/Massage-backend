@@ -3,6 +3,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { localDateTimeToInstant } from "../../src/modules/schedule/zoned-time.js";
 import { DEFAULT_TUNING } from "../../src/notifications/config.js";
+import { BOOKING_EVENT_TYPES } from "../../src/notifications/event-contract.js";
+import { claimDeliveries, failExhausted, nextWorkAt, planNewEvents } from "../../src/notifications/store.js";
 import { formatPrice } from "../../src/notifications/templates.js";
 import { createWorker, type Worker } from "../../src/notifications/worker.js";
 import { createDatabase, type Database } from "../../src/shared/database/database.js";
@@ -102,7 +104,8 @@ const makeWorker = (
   fake: ReturnType<typeof createFakeEmailProvider>,
   now: () => Date,
   allowlist: string[] | null = null,
-): { worker: Worker; logs: ReturnType<typeof createCapturingLogger> } => {
+  handledEventTypes?: readonly string[],
+): { worker: Worker; logs: ReturnType<typeof createCapturingLogger>; prisma: Database["prisma"] } => {
   const database = createDatabase(
     { url: stack.db.url("app"), sslMode: "disable", poolMax: 4, connectTimeoutMs: 5_000, queryTimeoutMs: 10_000 },
     createCapturingLogger().logger,
@@ -119,10 +122,12 @@ const makeWorker = (
       senderName: "Stefania Example",
       recipientAllowlist: allowlist === null ? null : new Set(allowlist),
       tuning: DEFAULT_TUNING,
+      ...(handledEventTypes === undefined ? {} : { handledEventTypes }),
       now,
       random: () => 0.5,
     }),
     logs,
+    prisma: database.prisma,
   };
 };
 
@@ -305,6 +310,69 @@ describe("repeats", () => {
   });
 });
 
+describe("rate limit: 5 new requests per client in a rolling 24 hours", () => {
+  it("a repeat with the same key returns the request even after the limit, and does not use it up", async () => {
+    const keys = Array.from({ length: 5 }, () => newKey());
+    const first = giftCardOf(await submit(users.clientA, VALID, keys[0]).expect(201));
+    // Repeats before the limit cost nothing: four more new requests still fit.
+    for (let i = 0; i < 3; i += 1) {
+      expect(giftCardOf(await submit(users.clientA, VALID, keys[0]).expect(200)).id).toBe(first.id);
+    }
+    for (const key of keys.slice(1)) {
+      await submit(users.clientA, VALID, key).expect(201);
+    }
+    // Limit reached: a new key is refused, every earlier key still replays its own request.
+    expect((await submit(users.clientA, VALID)).status).toBe(429);
+    for (const key of keys) {
+      const replay = await submit(users.clientA, VALID, key).expect(200);
+      expect(replay.headers["idempotent-replayed"]).toBe("true");
+    }
+    expect(giftCardOf(await submit(users.clientA, VALID, keys[0]).expect(200)).id).toBe(first.id);
+    // A different body under an old key is still a reuse error, not a limit error.
+    expect(errorOf(await submit(users.clientA, { ...VALID, amountCents: 1 }, keys[0]).expect(422)).code).toBe("IDEMPOTENCY_KEY_REUSED");
+    expect(await countRows(stack.db, `SELECT count(*)::int AS n FROM "GiftCardRequest"`)).toBe(5);
+    expect(await countRows(stack.db, `SELECT count(*)::int AS n FROM "OutboxEvent"`)).toBe(5);
+  });
+
+  it("429 has a fixed code and the exact time until the oldest request leaves the window; the window rolls", async () => {
+    const hour = 60 * 60_000;
+    for (let i = 0; i < 5; i += 1) {
+      stack.setNow(new Date(Date.parse("2027-03-01T07:00:00Z") + i * hour).toISOString());
+      await submit(users.clientA, VALID).expect(201);
+    }
+    stack.setNow("2027-03-01T12:00:00Z");
+    const refused = await submit(users.clientA, VALID).expect(429);
+    // Oldest at 07:00 → allowed again from 2027-03-02T07:00: 19 h from 12:00.
+    expect(errorOf(refused)).toMatchObject({ code: "GIFT_CARD_REQUEST_LIMIT_REACHED", retryAfterSeconds: 19 * 3600 });
+    expect(refused.headers["retry-after"]).toBe(String(19 * 3600));
+    expect(await countRows(stack.db, `SELECT count(*)::int AS n FROM "GiftCardRequest"`)).toBe(5);
+
+    stack.setNow("2027-03-02T06:59:59.999Z"); // 1 ms before: still inside, rounded up to 1 s
+    expect(errorOf(await submit(users.clientA, VALID).expect(429)).retryAfterSeconds).toBe(1);
+    stack.setNow("2027-03-02T07:00:00Z"); // exactly 24 h after the oldest: it has left the window
+    await submit(users.clientA, VALID).expect(201);
+    // Now 08:00, 09:00, 10:00, 11:00 and the new one: full again until 08:00 leaves.
+    expect(errorOf(await submit(users.clientA, VALID).expect(429)).retryAfterSeconds).toBe(3600);
+  });
+
+  it("parallel requests on two instances never pass the limit, also when the client already has requests", async () => {
+    await submit(users.clientA, VALID).expect(201);
+    await submit(users.clientA, VALID).expect(201);
+    const results = await Promise.all(
+      Array.from({ length: 10 }, (_, i) =>
+        request(stack.apps[i % 2] ?? stack.app)
+          .post("/api/gift-card-requests")
+          .set(bearer(users.clientA))
+          .set("Idempotency-Key", newKey())
+          .send(VALID),
+      ),
+    );
+    expect(results.filter((response) => response.status === 201)).toHaveLength(3);
+    expect(results.filter((response) => response.status === 429)).toHaveLength(7);
+    expect(await countRows(stack.db, `SELECT count(*)::int AS n FROM "GiftCardRequest"`)).toBe(5);
+  });
+});
+
 describe("administration", () => {
   const create = async (token: string, body: Record<string, unknown> = VALID) => giftCardOf(await submit(token, body).expect(201)).id;
   const setStatus = (id: string, status: string, token = users.admin) =>
@@ -340,7 +408,7 @@ describe("administration", () => {
     }
   });
 
-  it("status changes: allowed transitions, a repeat adds no history, final statuses stay, every change has its admin and time", async () => {
+  it("status changes: allowed transitions, a repeat adds no history, every change has its admin and time", async () => {
     const id = await create(users.clientA);
     stack.setNow("2027-03-01T09:30:00Z");
     const moved = adminViewOf(await setStatus(id, "in_progress").expect(200));
@@ -355,23 +423,58 @@ describe("administration", () => {
     expect(errorOf(back)).toMatchObject({ code: "GIFT_CARD_STATUS_TRANSITION_NOT_ALLOWED", allowed: ["completed", "cancelled"] });
     stack.setNow("2027-03-02T10:00:00Z");
     const done = adminViewOf(await setStatus(id, "completed").expect(200)).giftCardRequest;
-    expect(done.allowedStatuses).toEqual([]);
-    expect(done.history.map((entry) => [entry.fromStatus, entry.toStatus, entry.at, entry.by.role, entry.by.email])).toEqual([
-      [null, "new", "2027-03-01T07:00:00.000Z", "client", CLIENT_EMAIL],
-      ["new", "in_progress", "2027-03-01T09:30:00.000Z", "admin", "admin@example.invalid"],
-      ["in_progress", "completed", "2027-03-02T10:00:00.000Z", "admin", "admin@example.invalid"],
-    ]);
-    for (const status of ["new", "in_progress", "cancelled"]) {
-      expect((await setStatus(id, status)).status).toBe(409);
+    expect(done.allowedStatuses).toEqual(["in_progress"]);
+    for (const status of ["new", "cancelled"]) {
+      expect(errorOf(await setStatus(id, status).expect(409))).toMatchObject({ allowed: ["in_progress"] });
     }
     expect(adminViewOf(await setStatus(id, "completed").expect(200)).changed).toBe(false);
 
     const cancelled = await create(users.clientB);
-    expect(adminViewOf(await setStatus(cancelled, "cancelled").expect(200)).giftCardRequest.status).toBe("cancelled");
+    expect(adminViewOf(await setStatus(cancelled, "cancelled").expect(200)).giftCardRequest.allowedStatuses).toEqual(["in_progress"]);
     expect((await setStatus(cancelled, "completed")).status).toBe(409);
+    expect((await setStatus(cancelled, "new")).status).toBe(409);
     expect((await setStatus(cancelled, "paid")).status).toBe(400);
     expect((await request(stack.app).patch(`/api/admin/gift-card-requests/${cancelled}/status`).set(bearer(users.admin)).send({ status: "new", note: "x" })).status).toBe(400);
-    expect(await countRows(stack.db, `SELECT count(*)::int AS n FROM "GiftCardRequestStatusChange"`)).toBe(5);
+  });
+
+  it("a mistaken completed or cancelled is reopened to in_progress: recorded in the history, no new request, no new email", async () => {
+    const fake = createFakeEmailProvider({ now: () => new Date("2027-03-01T07:00:00Z") });
+    const { worker } = makeWorker(fake, () => new Date("2027-03-01T07:00:00Z"));
+    const completed = await create(users.clientA);
+    const cancelled = await create(users.clientB);
+    await worker.tick();
+    expect(fake.sent).toHaveLength(2);
+    const counts = async () => ({
+      requests: await countRows(stack.db, `SELECT count(*)::int AS n FROM "GiftCardRequest"`),
+      events: await countRows(stack.db, `SELECT count(*)::int AS n FROM "OutboxEvent"`),
+      deliveries: await countRows(stack.db, `SELECT count(*)::int AS n FROM "NotificationDelivery"`),
+    });
+    const before = await counts();
+
+    stack.setNow("2027-03-01T10:00:00Z");
+    await setStatus(completed, "completed").expect(200);
+    await setStatus(cancelled, "cancelled").expect(200);
+    stack.setNow("2027-03-01T11:00:00Z");
+    const reopened = adminViewOf(await setStatus(completed, "in_progress").expect(200));
+    expect(reopened.changed).toBe(true);
+    expect(reopened.giftCardRequest.status).toBe("in_progress");
+    expect(reopened.giftCardRequest.history.map((entry) => [entry.fromStatus, entry.toStatus, entry.at, entry.by.role])).toEqual([
+      [null, "new", "2027-03-01T07:00:00.000Z", "client"],
+      ["new", "completed", "2027-03-01T10:00:00.000Z", "admin"],
+      ["completed", "in_progress", "2027-03-01T11:00:00.000Z", "admin"],
+    ]);
+    const restored = adminViewOf(await setStatus(cancelled, "in_progress").expect(200)).giftCardRequest;
+    expect(restored.history.map((entry) => [entry.fromStatus, entry.toStatus])).toEqual([
+      [null, "new"],
+      ["new", "cancelled"],
+      ["cancelled", "in_progress"],
+    ]);
+    // Done again after the correction.
+    expect(adminViewOf(await setStatus(completed, "completed").expect(200)).giftCardRequest.history).toHaveLength(4);
+
+    await worker.tick();
+    expect(fake.sent).toHaveLength(2);
+    expect(await counts()).toEqual(before);
   });
 
   it("parallel status changes apply one after another: one history entry per real change", async () => {
@@ -474,6 +577,42 @@ describe("the studio email", () => {
     for (const secret of [CLIENT_EMAIL, STUDIO, "+33612345678", "Anna Client", "Surprise"]) {
       expect(logs.raw()).not.toContain(secret);
     }
+  });
+
+  it("versions of the sender: an older process (booking events only, PR #55) leaves the request's event alone; this release sends it", async () => {
+    // The older release handles exactly the booking events (BOOKING_EVENT_TYPES
+    // is its HANDLED_EVENT_TYPES). Before PR #55, a process marked such an
+    // event invalid for good and the studio email was lost.
+    expect([...BOOKING_EVENT_TYPES].sort()).toEqual(["booking.cancelled", "booking.created", "booking.rescheduled"]);
+    const id = giftCardOf(await submit(users.clientA, VALID).expect(201)).id;
+    const fake = createFakeEmailProvider({ now });
+    const older = makeWorker(fake, now, null, BOOKING_EVENT_TYPES);
+
+    // Rolling deploy: the older task runs a pass first (woken by a booking, or at its start).
+    expect(await older.worker.tick()).toEqual({ planned: 0, handled: 0 });
+    expect(await countRows(stack.db, `SELECT count(*)::int AS n FROM "NotificationEvent"`)).toBe(0);
+    expect(await nextWorkAt(older.prisma, BOOKING_EVENT_TYPES)).toEqual({ at: null, unplanned: false });
+    const pending = adminViewOf(await request(stack.app).get(`/api/admin/gift-card-requests/${id}`).set(bearer(users.admin)).expect(200)).giftCardRequest;
+    expect(pending.notification).toMatchObject({ status: "pending", reason: null });
+
+    // This release plans and takes the email, then stops before a result (its lease expires).
+    await planNewEvents(older.prisma, { now: now(), studioEmail: STUDIO, limit: 10, studioDelayMs: DEFAULT_TUNING.studioDelayMs });
+    expect(await claimDeliveries(older.prisma, { now: now(), owner: "crashed", leaseMs: DEFAULT_TUNING.leaseMs, limit: 10, maxAttempts: 3 })).toHaveLength(1);
+    workerNow += DEFAULT_TUNING.leaseMs + 1;
+    // The older process still does not touch it: no claim, no failure (even with no attempts left), no timer.
+    expect(await older.worker.tick()).toEqual({ planned: 0, handled: 0 });
+    await stack.db.query("admin", `UPDATE "NotificationDelivery" SET attempts = 3`);
+    expect(await failExhausted(older.prisma, { now: now(), maxAttempts: 3, eventTypes: BOOKING_EVENT_TYPES })).toBe(0);
+    await stack.db.query("admin", `UPDATE "NotificationDelivery" SET attempts = 1`);
+    expect((await nextWorkAt(older.prisma, BOOKING_EVENT_TYPES)).at).toBeNull();
+    expect(await deliveries()).toMatchObject([{ eventType: "gift_card_request.created", status: "in_progress" }]);
+    expect(fake.sent).toHaveLength(0);
+
+    // This release (restart or the next wake) sends it.
+    await makeWorker(fake, now).worker.tick();
+    expect(fake.sent.map((email) => email.subject)).toEqual([expect.stringMatching(/^Demande de carte cadeau n°/)]);
+    expect(await deliveries()).toMatchObject([{ eventType: "gift_card_request.created", status: "accepted" }]);
+    expect(await countRows(stack.db, `SELECT count(*)::int AS n FROM "NotificationEvent" WHERE status = 'invalid'`)).toBe(0);
   });
 
   it("a repeated submission sends no second email", async () => {
