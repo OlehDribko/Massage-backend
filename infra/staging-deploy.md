@@ -10,6 +10,7 @@
 | Terraform: ECS, API Gateway, Cloud Map, ролі, лог-групи, SG (`infra/environments/staging`) | **створено** 2026-10-26 (`apply`: 38 added); виправлення Cloud Map застосовано 2026-10-27, контрольний `plan` — `No changes` (див. «Cloud Map: health check») |
 | Workflow `.github/workflows/staging-deploy.yml` | **перший запуск успішний** 2026-10-26 (run 40400135052): 4 міграції, ревізія API `massage-staging-booking-api:2`, readiness через HTTPS з версією `0e93e68` |
 | Деплой етапу A | **успішний** 2026-11-01 (run 41332228844, образи — run 41330856420): коміт `develop` `5221d98011af0d31caa6c668b9f325c7c97dda84`, 4 нові міграції (каталог, графік і бронювання; Notifications; початковий каталог; акційна ціна), ревізія `booking-api:5`. Точка відновлення Neon перед міграціями — `2026-11-01T17:35:12Z` |
+| Сумісний обробник повідомлень (#55, через #56) | **розгорнуто** 2026-11-13 (deploy run 43331174454, образи — run 43330828597, без міграцій): коміт `develop` `7c703a729ef93923e78d0b5b82d9db5abcffcacd`, ревізія `massage-staging-booking-api:16`. Це безпечна точка відкату для подарункових заявок (розділ «Відкат після появи подарункових подій») |
 | SSM-параметри з рядками підключення | **створено власником** 2026-10-24: обидва `SecureString`, `alias/aws/ssm`, Standard, версія 1 (перевірено лише метадані) |
 | Staging-БД у Neon | **підготовлено власником**: проєкт `massage-staging`, БД `neondb`, ролі `booking_migrator`/`booking_app`, таблиць і `_prisma_migrations` немає; міграції ще не запускались |
 | GitHub environment `staging` | **створено**: лише гілка `develop`, без тегів і reviewer |
@@ -314,6 +315,25 @@ aws ssm describe-parameters --region eu-west-3 \
 - **Автоматичний:** circuit breaker повертає попередню ревізію, якщо нові task не стають healthy. Workflow тоді завершується помилкою.
 - **Ручний:** запустити workflow з попереднім SHA і його digest (artifact його `ECR publish` run, у summary видно попередній образ) і `run_migrations = false`.
 - **БД ніколи не відкочується автоматично.** Старий образ має працювати з новішою схемою, тож міграції пишуться в стилі expand/contract.
+
+### Відкат після появи подарункових подій
+
+Release до `7c703a7` (зокрема `734c672`, ревізія `massage-staging-booking-api:15`) остаточно позначає `invalid` подію невідомого типу. Після першої події `gift_card_request.created` у `OutboxEvent` такий release зіпсує лист студії, тож **відкат на `:15` / `734c672` заборонений**.
+
+Безпечна точка відкату — сумісний обробник: він пропускає невідомі типи, не чіпаючи їх ([docs/notifications.md](../docs/notifications.md), розділ 13).
+
+| Що | Значення |
+|---|---|
+| Коміт | `7c703a729ef93923e78d0b5b82d9db5abcffcacd` |
+| Ревізія | `massage-staging-booking-api:16` |
+| API | `849110175854.dkr.ecr.eu-west-3.amazonaws.com/massage/booking-api@sha256:d775e91c756cd93aefb92f1d09c8746f0bd0adcbe985a8745c74b29795cf93a0` |
+| Міграції | `849110175854.dkr.ecr.eu-west-3.amazonaws.com/massage/booking-migrate@sha256:f2b93141828164da51134e7d6d37fc40eed75eab1f1d1fe855160333c8d410ef` |
+
+Відкат: workflow з цим SHA і digest, `run_migrations = false`. Схема з подарунковими таблицями лишається, бо старий код їх не використовує. Розширені CHECK-обмеження приймають і старі типи подій.
+
+Новіша ревізія придатна для відкату, **лише якщо її коміт теж містить фільтр обробника**: `HANDLED_EVENT_TYPES` у `planNewEvents`, `claimDeliveries`, `failExhausted` і `nextWorkAt`. Номера ревізії недостатньо: ревізію можна зареєструвати зі старим образом. Перевіряється коміт з `APP_VERSION` ревізії.
+
+Circuit breaker повертає на попередню ревізію сервісу. Під час деплою подарункових заявок це `:16`, тобто безпечна ревізія.
 
 **Тести критичної логіки:** `.github/scripts/staging-deploy/test.sh`, 36 сценаріїв без AWS. Серед них:
 - підміна образу лише за digest;
