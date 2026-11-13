@@ -2,12 +2,15 @@ import { describe, expect, it } from "vitest";
 import type { z } from "zod";
 import type { PublicServiceView } from "../src/modules/catalog/catalog.service.js";
 import type { AdminBookingView, ClientBookingView } from "../src/modules/bookings/booking.view.js";
+import type { AdminGiftCardRequestView, ClientGiftCardRequestView } from "../src/modules/gift-cards/gift-card.view.js";
 import type { MarketingStatus } from "../src/modules/marketing/consent.js";
 import type { ProfileView } from "../src/modules/profiles/profile.service.js";
 import type { AdminNotificationStatus, ClientNotificationStatus } from "../src/notifications/status.js";
 import type {
   adminBookingSchema,
+  adminGiftCardRequestSchema,
   adminNotificationSchema,
+  clientGiftCardRequestSchema,
   clientBookingSchema,
   clientNotificationSchema,
   marketingStatusSchema,
@@ -29,6 +32,8 @@ const checks: true[] = [
   true satisfies Same<z.output<typeof marketingStatusSchema>, MarketingStatus>,
   true satisfies Same<z.output<typeof clientNotificationSchema>, ClientNotificationStatus>,
   true satisfies Same<z.output<typeof adminNotificationSchema>, AdminNotificationStatus>,
+  true satisfies Same<z.output<typeof clientGiftCardRequestSchema>, ClientGiftCardRequestView>,
+  true satisfies Same<z.output<typeof adminGiftCardRequestSchema>, AdminGiftCardRequestView>,
 ];
 
 describe("documented response schemas", () => {

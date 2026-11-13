@@ -57,7 +57,9 @@ model UserProfile {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  bookings Booking[]
+  bookings                     Booking[]
+  giftCardRequests             GiftCardRequest[]
+  giftCardRequestStatusChanges GiftCardRequestStatusChange[]
 }
 
 enum MarketingConsentSource {
@@ -319,6 +321,9 @@ model NotificationDelivery {
   event             NotificationEvent          @relation(fields: [eventId], references: [eventId], onDelete: Restrict)
   eventPosition     BigInt
   eventType         String
+  // Id of the event's aggregate: the booking, or the gift card request for
+  // gift_card_request.* events (same column, kept for older API versions;
+  // ids are UUIDs, so chains of different aggregates never mix).
   bookingId         String                     @db.Uuid
   recipientRole     NotificationRecipientRole
   // null when the event carries no address for this recipient (then failed, recipient_missing).
@@ -340,4 +345,76 @@ model NotificationDelivery {
   @@unique([eventId, recipientRole])
   @@index([status, nextAttemptAt])
   @@index([bookingId, recipientRole, eventPosition])
+}
+
+// ---------------------------------------------------------------------------
+// Gift card requests (cartes cadeaux): a registered client asks the studio
+// for a gift card; the studio handles it by hand (contact, payment, the card
+// itself are outside the system). No calendar lock: a request never takes
+// the masseuse's time. See docs/gift-card-requests.md.
+// ---------------------------------------------------------------------------
+
+enum GiftCardRequestStatus {
+  new
+  in_progress
+  // Manual handling finished; not a payment or an issued card.
+  completed
+  // Closed without handling (mistaken, duplicate, withdrawn); kept in the history.
+  cancelled
+}
+
+/// Only how the client prefers to be contacted by hand; no messaging integration.
+enum GiftCardContactChannel {
+  email
+  phone
+  whatsapp
+}
+
+// A request with a snapshot of the client's contacts at submission: later
+// profile changes never rewrite it. Money in integer euro cents (EUR only).
+model GiftCardRequest {
+  id                      String                 @id @default(uuid()) @db.Uuid
+  // Short number for people ("n° 42"), shown in the studio email and the admin API.
+  number                  Int                    @unique @default(autoincrement())
+  clientProfileId         String                 @db.Uuid
+  client                  UserProfile            @relation(fields: [clientProfileId], references: [id], onDelete: Restrict)
+  clientName              String
+  // From the verified identity (Firebase ID token), never from the request body.
+  clientEmail             String
+  // E.164 from the profile, format-checked, not verified (no SMS).
+  clientPhone             String
+  amountCents             Int
+  currency                String                 @default("EUR")
+  description             String?
+  preferredContactChannel GiftCardContactChannel
+  status                  GiftCardRequestStatus  @default(new)
+  // Client-chosen Idempotency-Key of the creating request and what it asked for.
+  idempotencyKey          String
+  requestFingerprint      String
+  createdAt               DateTime               @db.Timestamptz(3)
+  updatedAt               DateTime               @updatedAt @db.Timestamptz(3)
+
+  statusChanges GiftCardRequestStatusChange[]
+
+  @@unique([clientProfileId, idempotencyKey])
+  @@index([createdAt])
+  @@index([status, createdAt])
+  @@index([clientProfileId, createdAt])
+}
+
+// History of statuses: the submission (fromStatus null, by the client) and
+// every admin change. A repeat of the current status adds nothing.
+model GiftCardRequestStatusChange {
+  id                 String                 @id @default(uuid()) @db.Uuid
+  requestId          String                 @db.Uuid
+  request            GiftCardRequest        @relation(fields: [requestId], references: [id], onDelete: Restrict)
+  fromStatus         GiftCardRequestStatus?
+  toStatus           GiftCardRequestStatus
+  changedByProfileId String                 @db.Uuid
+  changedBy          UserProfile            @relation(fields: [changedByProfileId], references: [id], onDelete: Restrict)
+  // Role at the moment of the change.
+  changedByRole      UserRole
+  changedAt          DateTime               @db.Timestamptz(3)
+
+  @@index([requestId, changedAt])
 }

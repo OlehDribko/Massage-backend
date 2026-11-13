@@ -34,20 +34,29 @@ export const createAccessGuards = (profiles: ProfileService) => {
     next();
   };
 
-  /** Booking for oneself: registered, verified, named client with a phone. */
-  const requireBookingClient: RequestHandler = async (req, _res, next) => {
-    const readiness = bookingReadiness(await loadActor(req));
-    if (!readiness.ready) {
-      next(
-        new AppError(403, "Profile is not ready for booking", {
-          code: "BOOKING_NOT_READY",
-          details: { blockers: readiness.blockers },
-        }),
-      );
-      return;
-    }
-    next();
-  };
+  /**
+   * A registered, verified, named client with a phone (bookingReadiness);
+   * otherwise 403 with `code` and every blocker.
+   */
+  const readyClient =
+    (code: string, message: string): RequestHandler =>
+    async (req, _res, next) => {
+      const readiness = bookingReadiness(await loadActor(req));
+      if (!readiness.ready) {
+        next(new AppError(403, message, { code, details: { blockers: readiness.blockers } }));
+        return;
+      }
+      next();
+    };
+
+  /** Booking for oneself. */
+  const requireBookingClient = readyClient("BOOKING_NOT_READY", "Profile is not ready for booking");
+
+  /** Gift card requests: the same profile requirements as booking, no calendar rules. */
+  const requireGiftCardClient = readyClient(
+    "GIFT_CARD_REQUEST_NOT_READY",
+    "Profile is not ready for a gift card request",
+  );
 
   /** Catalogue, schedule and other administration. */
   const requireAdmin: RequestHandler = async (req, _res, next) => {
@@ -58,5 +67,5 @@ export const createAccessGuards = (profiles: ProfileService) => {
     next();
   };
 
-  return { requireProfile, requireBookingClient, requireAdmin };
+  return { requireProfile, requireBookingClient, requireGiftCardClient, requireAdmin };
 };

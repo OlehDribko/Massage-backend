@@ -2,7 +2,9 @@ import type { PrismaClient } from "../generated/prisma/client.js";
 import type { Logger } from "../logging/logger.js";
 import type { WorkerTuning } from "./config.js";
 import { bookingPayloadSchema, HANDLED_EVENT_TYPES, parseBookingEvent, type BookingEvent } from "./event-contract.js";
-import type { EmailProvider } from "./provider.js";
+import { GIFT_CARD_AGGREGATE, parseGiftCardEvent } from "./gift-card-contract.js";
+import { renderGiftCardRequestEmail } from "./gift-card-template.js";
+import type { EmailProvider, SendOutcome } from "./provider.js";
 import { retryAfterTooLong, retryDelayMs } from "./retry.js";
 import {
   claimDeliveries,
@@ -107,7 +109,96 @@ export const createWorker = (deps: WorkerDeps): Worker => {
     return { kind: "moved", previousStartsAt: told.data.startsAt };
   };
 
+  /**
+   * Records what the provider said. `isStale`: for emails a newer event can
+   * replace (booking creation or move); such an email is not retried once
+   * it is stale.
+   */
+  const recordOutcome = async (
+    delivery: ClaimedDelivery,
+    outcome: SendOutcome,
+    isStale: (() => Promise<boolean>) | undefined,
+  ): Promise<void> => {
+    switch (outcome.kind) {
+      case "accepted":
+        await record(delivery, { status: "accepted", resultCode: "accepted", providerMessageId: outcome.providerMessageId });
+        return;
+      case "duplicate":
+        await record(delivery, { status: "accepted", resultCode: "accepted_duplicate", providerMessageId: null });
+        return;
+      case "rejected":
+        await record(delivery, { status: "failed", resultCode: outcome.code, lastErrorCode: outcome.code });
+        return;
+      case "configuration":
+        // A wrong key or account problem is not fixed by retrying in
+        // minutes: no automatic retries, visible failed state, logged.
+        await record(delivery, { status: "failed", resultCode: outcome.code, lastErrorCode: outcome.code });
+        return;
+      case "retryable":
+        // Never earlier than the provider asks; a wait beyond our limit ends
+        // automatic processing (agreed 2026-10-31), attempts left or not.
+        if (retryAfterTooLong(outcome.retryAfterMs, tuning)) {
+          await record(delivery, { status: "failed", resultCode: "retry_after_too_long", lastErrorCode: outcome.code });
+          return;
+        }
+        if (delivery.attempts >= tuning.maxAttempts) {
+          await record(delivery, { status: "failed", resultCode: "attempts_exhausted", lastErrorCode: outcome.code });
+          return;
+        }
+        // A newer event arrived while this attempt ran: the old email is not
+        // retried, so it neither goes out late nor holds back the newer one.
+        if (isStale !== undefined && (await isStale())) {
+          await record(delivery, { status: "skipped", resultCode: "superseded" });
+          return;
+        }
+        await record(delivery, {
+          status: "pending",
+          nextAttemptAt: new Date(
+            now().getTime() + retryDelayMs(delivery.attempts, outcome.retryAfterMs, tuning, deps.random),
+          ),
+          lastErrorCode: outcome.code,
+          refundAttempt: false,
+        });
+        return;
+    }
+  };
+
+  /**
+   * The studio's email about a new gift card request: due at once, never
+   * superseded; the same allowlist and provider handling as bookings.
+   */
+  const processGiftCard = async (delivery: ClaimedDelivery): Promise<void> => {
+    const parsed = parseGiftCardEvent(delivery);
+    if (!parsed.ok) {
+      await record(delivery, { status: "failed", resultCode: parsed.reason, lastErrorCode: null });
+      return;
+    }
+    const recipient = delivery.recipientEmail;
+    if (recipient === null) {
+      await record(delivery, { status: "failed", resultCode: "recipient_missing", lastErrorCode: null });
+      return;
+    }
+    if (deps.recipientAllowlist !== null && !deps.recipientAllowlist.has(recipient)) {
+      await record(delivery, { status: "skipped", resultCode: "recipient_not_allowed" });
+      return;
+    }
+    const email = renderGiftCardRequestEmail(parsed.event);
+    const outcome = await deps.provider.send({
+      to: recipient,
+      subject: email.subject,
+      html: email.html,
+      text: email.text,
+      idempotencyKey: delivery.id,
+      tags: [delivery.eventType, delivery.recipientRole],
+    });
+    await recordOutcome(delivery, outcome, undefined);
+  };
+
   const process = async (delivery: ClaimedDelivery): Promise<void> => {
+    if (delivery.aggregateType === GIFT_CARD_AGGREGATE) {
+      await processGiftCard(delivery);
+      return;
+    }
     const parsed = parseBookingEvent(delivery);
     if (!parsed.ok) {
       await record(delivery, { status: "failed", resultCode: parsed.reason, lastErrorCode: null });
@@ -163,48 +254,7 @@ export const createWorker = (deps: WorkerDeps): Worker => {
       tags: [delivery.eventType, delivery.recipientRole],
     });
 
-    switch (outcome.kind) {
-      case "accepted":
-        await record(delivery, { status: "accepted", resultCode: "accepted", providerMessageId: outcome.providerMessageId });
-        return;
-      case "duplicate":
-        await record(delivery, { status: "accepted", resultCode: "accepted_duplicate", providerMessageId: null });
-        return;
-      case "rejected":
-        await record(delivery, { status: "failed", resultCode: outcome.code, lastErrorCode: outcome.code });
-        return;
-      case "configuration":
-        // A wrong key or account problem is not fixed by retrying in
-        // minutes: no automatic retries, visible failed state, logged.
-        await record(delivery, { status: "failed", resultCode: outcome.code, lastErrorCode: outcome.code });
-        return;
-      case "retryable":
-        // Never earlier than the provider asks; a wait beyond our limit ends
-        // automatic processing (agreed 2026-10-31), attempts left or not.
-        if (retryAfterTooLong(outcome.retryAfterMs, tuning)) {
-          await record(delivery, { status: "failed", resultCode: "retry_after_too_long", lastErrorCode: outcome.code });
-          return;
-        }
-        if (delivery.attempts >= tuning.maxAttempts) {
-          await record(delivery, { status: "failed", resultCode: "attempts_exhausted", lastErrorCode: outcome.code });
-          return;
-        }
-        // A newer event arrived while this attempt ran: the old email is not
-        // retried, so it neither goes out late nor holds back the newer one.
-        if (supersedable && (await isStale())) {
-          await record(delivery, { status: "skipped", resultCode: "superseded" });
-          return;
-        }
-        await record(delivery, {
-          status: "pending",
-          nextAttemptAt: new Date(
-            now().getTime() + retryDelayMs(delivery.attempts, outcome.retryAfterMs, tuning, deps.random),
-          ),
-          lastErrorCode: outcome.code,
-          refundAttempt: false,
-        });
-        return;
-    }
+    await recordOutcome(delivery, outcome, supersedable ? isStale : undefined);
   };
 
   const tick = async (): Promise<PassResult> => {

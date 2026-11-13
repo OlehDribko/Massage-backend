@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { adminCancelSchema, clientCancelSchema, createBookingSchema, idempotencyKeySchema, rescheduleBookingSchema } from "../src/modules/bookings/booking.schema.js";
 import { actionTokenSchema } from "../src/modules/email/schema/email.schema.js";
+import { createGiftCardRequestSchema, updateGiftCardStatusSchema } from "../src/modules/gift-cards/gift-card.schema.js";
 import { MARKETING_CONSENT_TEXT_VERSION } from "../src/modules/marketing/consent.js";
 import { subscribeSchema } from "../src/modules/marketing/marketing.routes.js";
 import { ownSubscriptionSchema, syncSchema } from "../src/modules/profiles/profile.routes.js";
@@ -140,6 +141,7 @@ const SAMPLES: Record<string, string> = {
   rescheduleStartsAt: "2027-03-03T10:00:00+01:00",
   marketingFormEmail: "anna@example.invalid",
   marketingActionToken: "token-from-the-emailed-link",
+  giftCardStatus: "in_progress",
 };
 const substitute = (text: string) => text.replace(/\{\{(\w+)\}\}/g, (_, name: string) => SAMPLES[name] ?? `missing sample ${name}`);
 
@@ -159,6 +161,8 @@ const BODY_SCHEMAS: Record<string, z.ZodType> = {
   closeScheduleDates: scheduleClosuresSchema,
   reopenScheduleDates: scheduleClosuresSchema,
   cancelAnyBooking: adminCancelSchema,
+  createGiftCardRequest: createGiftCardRequestSchema,
+  setGiftCardRequestStatus: updateGiftCardStatusSchema,
 };
 
 describe("Postman collection", () => {
@@ -235,8 +239,20 @@ describe("Postman collection", () => {
       expect(key === "{{bookingIdempotencyKey}}" || idempotencyKeySchema.safeParse(key).success, r.name).toBe(true);
     }
     const generators = allScripts.filter((s) => s.includes("{{$guid}}"));
-    expect(generators).toHaveLength(1);
+    expect(generators).toHaveLength(2);
     expect(generators[0]).toContain('if (missing.length === 0 && !pm.environment.get("bookingIdempotencyKey"))');
+    expect(generators[1]).toContain('if (!pm.environment.get("giftCardIdempotencyKey"))');
+  });
+
+  it("createGiftCardRequest sends a key from its own variable (or a fixed one for the expected refusal) and no contacts", () => {
+    const creates = apiRequests.filter((r) => operationOf(r)?.operationId === "createGiftCardRequest");
+    expect(creates).toHaveLength(2);
+    for (const r of creates) {
+      const key = r.request.header.find((h) => h.key === "Idempotency-Key")?.value ?? "";
+      expect(key === "{{giftCardIdempotencyKey}}" || (r.folder === PERMISSION_FOLDER && idempotencyKeySchema.safeParse(key).success), r.name).toBe(true);
+      const raw = r.request.body?.mode === "raw" ? r.request.body.raw : "";
+      expect(raw, r.name).not.toMatch(/"(email|name|phone|clientEmail)"\s*:/);
+    }
   });
 
   it("every API request that changes data is marked ⚠️ (except profile sync and expected refusals)", () => {
@@ -273,7 +289,7 @@ describe("Postman collection", () => {
 
   it("scripts keep tokens in the environment only and print no values", () => {
     const saved = new Set(allScripts.flatMap((s) => [...s.matchAll(/pm\.environment\.set\((\w+|"\w+")/g)].map((m) => m[1] ?? "")));
-    expect([...saved].sort()).toEqual(['"adminProfileId"', '"bookingId"', '"bookingIdempotencyKey"', '"clientProfileId"', "ID_VAR", "REFRESH_VAR"]);
+    expect([...saved].sort()).toEqual(['"adminProfileId"', '"bookingId"', '"bookingIdempotencyKey"', '"clientProfileId"', '"giftCardIdempotencyKey"', '"giftCardRequestId"', "ID_VAR", "REFRESH_VAR"]);
     for (const s of allScripts) {
       expect(s).not.toMatch(/pm\.(globals|collectionVariables)\.set|pm\.variables\.set|pm\.sendRequest|setNextRequest|postman\.set/);
       for (const call of s.match(/console\.\w+\([^\n]*/g) ?? []) {

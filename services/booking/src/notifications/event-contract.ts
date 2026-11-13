@@ -20,7 +20,8 @@ export type BookingEventType = z.output<typeof eventTypeSchema>;
  * older process still runs (rolling deploy, rollback to this release).
  * docs/notifications.md, "Сумісність версій обробника".
  */
-export const HANDLED_EVENT_TYPES: readonly string[] = eventTypeSchema.options;
+export const BOOKING_EVENT_TYPES: readonly string[] = eventTypeSchema.options;
+export const HANDLED_EVENT_TYPES: readonly string[] = [...BOOKING_EVENT_TYPES, "gift_card_request.created"];
 
 const instant = z.iso.datetime({ offset: true });
 const timeRange = z.object({ startsAt: instant, endsAt: instant });
