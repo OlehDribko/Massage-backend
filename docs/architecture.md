@@ -26,23 +26,24 @@
 |---|---|---|---|
 | `modules/auth`, `integrations/firebase` | Перевірка Firebase ID token (з перевіркою відкликання), тип ідентичності | — | — |
 | `modules/profiles`, `admin/` | Профілі, ролі, синхронізація з токеном; призначення ролі — консольна команда | `UserProfile` | `/api/me` |
-| `modules/access` | Політики й guards (`requireProfile`, `requireBookingClient`, `requireAdmin`) | — | — |
+| `modules/access` | Політики й guards (`requireProfile`, `requireBookingClient`, `requireGiftCardClient`, `requireAdmin`) | — | — |
 | `modules/marketing`, `modules/email` | Маркетингова підписка з подвійним підтвердженням; маркетингові листи Brevo і токени дій | `MarketingSubscription` | `/api/marketing`, частина `/api/me/sync` |
 | `modules/catalog` | Фіксований каталог послуг, лише читання; змінюється міграціями даних | `Service` | `/api/services` |
 | `modules/schedule` | Тижневий графік, винятки, доступність, **транзакція календаря** (advisory lock) | `WeeklyScheduleInterval`, `ScheduleException*` | `/api/services/:id/availability`, `/api/admin/schedule` |
 | `modules/bookings` | Бронювання, перенесення, скасування, **outbox-подія в тій самій транзакції** | `Booking`, `BookingTimeChange`, `OutboxEvent` | `/api/bookings`, `/api/admin/bookings` |
-| `notifications` | Листи про бронювання клієнту й студії в процесі API, облік доставок, статуси для API | `NotificationEvent`, `NotificationDelivery`; лише читає `OutboxEvent` | — (статуси віддають маршрути бронювань) |
+| `modules/gift-cards` | Заявки на подарункові сертифікати (ручне опрацювання), статуси з історією; outbox-подія в тій самій транзакції, **без** блокування календаря ([gift-card-requests.md](gift-card-requests.md)) | `GiftCardRequest`, `GiftCardRequestStatusChange`; пише `OutboxEvent` | `/api/gift-card-requests`, `/api/admin/gift-card-requests` |
+| `notifications` | Листи про бронювання клієнту й студії та лист студії про заявку на сертифікат, у процесі API; облік доставок, статуси для API | `NotificationEvent`, `NotificationDelivery`; лише читає `OutboxEvent` | — (статуси віддають маршрути бронювань і заявок) |
 
 Таблиця `User` — legacy: старі маршрути видалено, код її не використовує.
 
-**Адміністрування** належить модулям: `/api/admin/*` монтуються з `schedule` і `bookings` за `authenticate` + `requireAdmin`. Окремого Admin-сервісу немає. Каталог послуг адмін-маршрутів не має (з 2026-11-01): він змінюється міграціями даних ([docs/booking.md](booking.md), «Каталог послуг»).
+**Адміністрування** належить модулям: `/api/admin/*` монтуються з `schedule`, `bookings` і `gift-cards` за `authenticate` + `requireAdmin`. Окремого Admin-сервісу немає. Каталог послуг адмін-маршрутів не має (з 2026-11-01): він змінюється міграціями даних ([docs/booking.md](booking.md), «Каталог послуг»).
 
 ## Правила залежностей
 
 - **Звичайні виклики.** Модулі викликають функції один одного. Внутрішніх HTTP-запитів, брокера чи шини подій немає; власного фреймворку модулів теж.
 - **Таблиці змінює модуль-власник.** Інші модулі звертаються через його функції. Виняток — транзакція календаря: бронювання читають каталог і графік у ній, бо перевірка доступності й запис мають бути атомарними.
 - **Спільна транзакція — за потребою функції.** Графік і бронювання виконуються під одним advisory lock (`schedule/calendar-transaction.ts`); міграції даних каталогу беруть той самий lock у явній транзакції. Подія outbox пишеться в транзакції бронювання.
-- **Notifications отримує дані лише з події** і не читає таблиць бронювань, каталогу й профілів. API передає йому сигнал `wake()` через `bootstrap.ts`. Межу перевіряє тест «component boundaries».
+- **Notifications отримує дані лише з події** і не читає таблиць бронювань, заявок, каталогу й профілів. API передає йому сигнал `wake()` через `bootstrap.ts`. Межу перевіряє тест «component boundaries».
 - **Склад застосунку — у `bootstrap.ts`.** Зовнішні клієнти (Firebase, Brevo) створюються там, а не під час імпорту.
 
 ### Залежність schedule → catalog (перевірено 2026-11-01)

@@ -1,4 +1,4 @@
-# Передача frontend: календар адміністратора, бронювання, підписка
+# Передача frontend: календар адміністратора, бронювання, підписка, заявки на сертифікати
 
 Інструкція для frontend (`my-app`) за контрактами `develop` після PR #45–#51 (2026-11-11).
 
@@ -14,6 +14,7 @@
 
 - З 2026-11-11 на staging розгорнуто `841f4ee`: листи про бронювання й маркетинг **увімкнені**, але лише для погоджених тестових адрес (інші → `skipped` / `403 TEST_RECIPIENT_NOT_ALLOWED`).
 - Пряма підписка підтвердженого користувача (`outcome: "subscribed"` / `"already_subscribed"`) — у `develop` після PR про пряму підписку; до її деплою staging відповідає за старим правилом (`202 confirmation_sent` і для підтвердженого email).
+- Заявки на сертифікати (`/api/gift-card-requests`, `/api/admin/gift-card-requests`) — у `develop` після PR #55 і #54; до деплою й міграції staging відповідає `404 NOT_FOUND`.
 - Інтерфейс має коректно працювати і з вимкненими функціями: `booking.notification` = `null`, `notifications` = `[]`, `marketingAvailable` = `false`, маршрути маркетингу → `404`.
 
 ## Інструкція для frontend-агента
@@ -125,6 +126,47 @@ POST /api/me/marketing/subscription { "consentTextVersion": "2026-10-28.fr.1" }:
 Публічна форма: POST /api/marketing/subscriptions { email, consentTextVersion } → 202 { code: "SUBSCRIPTION_REQUESTED" } (однакова відповідь для будь-якої адреси,
 підписка — лише після посилання з листа); 403 TEST_RECIPIENT_NOT_ALLOWED; 409 CONSENT_TEXT_OUTDATED; 503 CONFIRMATION_EMAIL_NOT_SENT { retryAfterSeconds }; 404 — маркетинг вимкнено.
 Сторінки посилань /marketing/confirm?token= і /unsubscribe?token= уже є — не змінюй їх шляхів.
+
+5. Заявка на подарунковий сертифікат (carte cadeau) — ручне опрацювання студією, без онлайн-оплати
+Показуй форму лише клієнту з profile ready і bookingReadiness.ready === true (ті самі вимоги, що й для бронювання: зареєстрований,
+підтверджений email, ім'я, телефон). Гостю / непідтвердженому — пояснення й посилання на кабінет. Сервер перевіряє те саме.
+POST /api/gift-card-requests (Bearer; заголовок Idempotency-Key: 8–128 символів [A-Za-z0-9_-], один ключ = одна заявка, яку клієнт вирішив надіслати;
+повтор після тайм-ауту / мережевої помилки / 503 — з ТИМ САМИМ ключем і тілом; новий ключ — лише для нової заявки)
+{ "amountCents": 15000, "description": "…" (необов'язково, ≤ 1000 символів), "preferredContactChannel": "email"|"phone"|"whatsapp" }
+- Сума — ціле число євроцентів > 0 (поле вводу в євро → центи без float-похибок); фіксованих номіналів і меж немає. Валюту не надсилай (EUR — сервер).
+- Email, ім'я й телефон НЕ надсилай (будь-яке зайве поле → 400): сервер бере email з токена, ім'я й телефон — з профілю.
+  Покажи їх у формі з профілю лише для інформації («Nous vous contacterons à …»), з посиланням на редагування профілю.
+- whatsapp — лише бажаний спосіб зв'язку; ніяких WhatsApp-посилань чи інтеграцій.
+→ 201 { giftCardRequest: { id, number, status: "new", amountCents, currency, description, preferredContactChannel, createdAt, notification } };
+  повтор з тим самим ключем → 200 + Idempotent-Replayed: true (та сама заявка, без нового листа).
+Успіх показуй за 201/200 і status, НЕ за notification: «Demande n° {number} envoyée. Nous vous contacterons pour la suite.»
+notification = стан листа АДМІНІСТРАТОРУ { status, reason } | null — клієнту зазвичай не показуй (null — листи вимкнені на сервері);
+failed не означає, що заявка не прийнята. Клієнт листа не отримує.
+Помилки: 403 GIFT_CARD_REQUEST_NOT_READY { blockers } (ті самі коди, що BOOKING_NOT_READY, плюс phone_invalid:
+  збережений у профілі телефон не проходить чинну перевірку формату → покажи «Le numéro de téléphone de votre profil n’est pas valide»
+  і посилання на редагування профілю (PATCH /api/me { phone } у міжнародному форматі +33…); після виправлення — повтор заявки з тим самим ключем.
+  Телефон перевіряється лише за форматом, SMS-підтвердження немає: ніде не називай його «підтвердженим» / «vérifié»);
+400 VALIDATION_FAILED { errors } (amountCents / description / preferredContactChannel); 422 IDEMPOTENCY_KEY_REUSED;
+429 GIFT_CARD_REQUEST_LIMIT_REACHED { retryAfterSeconds } + Retry-After (щонайбільше 5 заявок за 24 год) → «Réessayez plus tard»;
+503 GIFT_CARD_REQUEST_BUSY { retryAfterSeconds } → повтор з тим самим ключем.
+Клієнтського списку чи редагування заявок немає й не додавай.
+
+Адміністратор (верифікований admin):
+GET /api/admin/gift-card-requests?page=1&pageSize=20&status=new&createdFrom=2027-03-01&createdTo=2027-03-31
+→ { timeZone, page, pageSize, total, giftCardRequests: [AdminGiftCardRequest] } — від нових до старих; фільтри необов'язкові;
+дати — локальні Europe/Paris, включно; pageSize 1–100; сторінок = ceil(total / pageSize).
+GET /api/admin/gift-card-requests/{id} → { giftCardRequest } (404 GIFT_CARD_REQUEST_NOT_FOUND).
+AdminGiftCardRequest = поля вище + client { profileId, name, email, phone } (знімок на момент подання; телефон НЕ підтверджений — так і підписуй),
+updatedAt, allowedStatuses, history [{ fromStatus (null = подання), toStatus, at, by { profileId, role, name, email } }],
+notification { status, reason, attempts, lastAttemptAt, acceptedAt } | null — стан листа адміністратору (accepted = прийнято Brevo, не «доставлено»).
+PATCH /api/admin/gift-card-requests/{id}/status { "status": "in_progress"|"completed"|"cancelled"|"new" } → { giftCardRequest, changed }.
+Кнопки — лише з allowedStatuses: new → in_progress / completed / cancelled; in_progress → completed / cancelled;
+completed → in_progress і cancelled → in_progress («Rouvrir» — виправити помилкове завершення чи закриття; у new повернути не можна).
+completed = «опрацювання завершено вручну», НЕ «оплачено» чи «сертифікат видано системою».
+cancelled = закрита (помилкова / дубль / відкликана), лишається в списку. Кожна зміна, зокрема повернення, — запис в history;
+нової заявки й листа вона не створює. Той самий статус → changed: false.
+409 GIFT_CARD_STATUS_TRANSITION_NOT_ALLOWED { from, to, allowed } → онови заявку (GET) і покажи актуальний стан.
+Видалення й редагування заявок немає.
 
 Перевірка: unit-тести відображення станів; не покладайся на фіктивні дані замість контрактів; не вмикай маркетинг/листи на staging.
 ```

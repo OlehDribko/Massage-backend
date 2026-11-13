@@ -851,8 +851,8 @@ describe("versions of the sender: event types a process does not handle (docs/no
   const eventsWithoutNotification = () =>
     countRows(stack.db, `SELECT count(*)::int AS n FROM "OutboxEvent" o WHERE NOT EXISTS (SELECT 1 FROM "NotificationEvent" n WHERE n."eventId" = o.id)`);
 
-  it("this release handles exactly the booking events", () => {
-    expect([...HANDLED_EVENT_TYPES].sort()).toEqual(["booking.cancelled", "booking.created", "booking.rescheduled"]);
+  it("this release handles the booking events and the gift card request", () => {
+    expect([...HANDLED_EVENT_TYPES].sort()).toEqual(["booking.cancelled", "booking.created", "booking.rescheduled", "gift_card_request.created"]);
   });
 
   it("the older process neither plans, claims, fails nor waits for unknown types; the newer one sends them", async () => {
