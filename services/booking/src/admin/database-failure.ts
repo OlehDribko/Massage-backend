@@ -1,4 +1,5 @@
-import { postgresErrorCode, prismaErrorCode } from "../modules/schedule/calendar-transaction.js";
+import { postgresErrorCode, prismaErrorCode } from "../shared/database/errors.js";
+import { classifyTransactionFailure } from "../shared/database/transaction-failure.js";
 
 /**
  * Safe cause of a database failure for the owner's commands. Driver and Prisma
@@ -60,10 +61,13 @@ const messageOf = (error: unknown): string => (error instanceof Error ? error.me
 const causeOf = (error: unknown, prismaCode: string | undefined, sqlState: string | undefined): DatabaseFailureCause => {
   const message = messageOf(error);
   if (prismaCode === "P2028") {
-    if (message.startsWith("Unable to start a transaction in the given time")) {
+    // The real message is prefixed ("Transaction API error: …"), so the kind
+    // comes from the shared classifier, not from the start of the message.
+    const failure = classifyTransactionFailure(error);
+    if (failure === "transaction_start_timeout") {
       return "transaction_start_timeout";
     }
-    return /timeout|expired/i.test(message) ? "transaction_timeout" : "transaction_api_error";
+    return failure === "transaction_expired" ? "transaction_timeout" : "transaction_api_error";
   }
   if (sqlState !== undefined && sqlState in SQLSTATE_CAUSES) {
     return SQLSTATE_CAUSES[sqlState] ?? "unexpected";

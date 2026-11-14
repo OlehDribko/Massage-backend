@@ -1,5 +1,5 @@
 import type { Prisma, PrismaClient } from "../../generated/prisma/client.js";
-import { postgresErrorCode, prismaErrorCode } from "../../shared/database/errors.js";
+import { classifyTransactionFailure, isRetryableTransactionFailure } from "../../shared/database/transaction-failure.js";
 import { AppError } from "../../shared/errors/app-error.js";
 
 export { postgresErrorCode, prismaErrorCode } from "../../shared/database/errors.js";
@@ -25,27 +25,34 @@ export const LOCK_TIMEOUT_MS = 5_000;
 
 export type CalendarTransaction = <T>(work: (tx: Tx) => Promise<T>) => Promise<T>;
 
-const calendarBusy = () =>
+const calendarBusy = (cause: unknown) =>
   new AppError(503, "The calendar is busy; retry shortly", {
     code: "CALENDAR_BUSY",
     details: { retryAfterSeconds: 2 },
+    cause,
   });
 
-export const createCalendarTransaction = (prisma: PrismaClient): CalendarTransaction => {
+export const createCalendarTransaction = (
+  prisma: PrismaClient,
+  /** Shorter waits only for tests; production uses LOCK_TIMEOUT_MS. */
+  { lockTimeoutMs = LOCK_TIMEOUT_MS }: { lockTimeoutMs?: number } = {},
+): CalendarTransaction => {
   return async <T>(work: (tx: Tx) => Promise<T>): Promise<T> => {
     try {
       return await prisma.$transaction(
         async (tx) => {
-          await tx.$executeRaw`SELECT set_config('lock_timeout', ${`${LOCK_TIMEOUT_MS}ms`}, true)`;
+          await tx.$executeRaw`SELECT set_config('lock_timeout', ${`${String(lockTimeoutMs)}ms`}, true)`;
           await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(${CALENDAR_LOCK_KEY}::bigint)`;
           return work(tx);
         },
-        { maxWait: LOCK_TIMEOUT_MS, timeout: 3 * LOCK_TIMEOUT_MS },
+        { maxWait: lockTimeoutMs, timeout: 3 * lockTimeoutMs },
       );
     } catch (error) {
-      // 55P03 lock_not_available; P2028: Prisma transaction API timeout.
-      if (postgresErrorCode(error) === "55P03" || prismaErrorCode(error) === "P2028") {
-        throw calendarBusy();
+      // Waiting for the lock or a connection: nothing was committed, a retry is
+      // safe. Anything else (an expired or misused transaction, other database
+      // errors) goes to the error handler as it is: 500, logged with its kind.
+      if (isRetryableTransactionFailure(classifyTransactionFailure(error))) {
+        throw calendarBusy(error);
       }
       throw error;
     }
