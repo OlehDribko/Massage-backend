@@ -2,6 +2,7 @@ import { Router, type RequestHandler } from "express";
 import { z } from "zod";
 import type { UserProfile } from "../../generated/prisma/client.js";
 import { requireIdentity } from "../../http/auth/authenticate.js";
+import { getRequestId } from "../../http/request-logging.js";
 import { describeError, type Logger } from "../../logging/logger.js";
 import type { IdentityProvider, VerifiedIdentity } from "../auth/identity.js";
 import { AppError } from "../../shared/errors/app-error.js";
@@ -87,6 +88,7 @@ export const createProfileRouter = ({
   const optIn = async (
     identity: VerifiedIdentity,
     textVersion: string,
+    requestId: string | undefined,
   ): Promise<{ outcome: OptInOutcome; welcomeEmail?: WelcomeEmail }> => {
     if (marketing.service === undefined || identity.isAnonymous || identity.email === undefined) {
       return { outcome: "unavailable" };
@@ -102,7 +104,7 @@ export const createProfileRouter = ({
       }
       return { outcome: await marketing.service.requestSubscription(identity.email, consent, "signup") };
     } catch (error) {
-      logger.error({ error: describeError(error) }, "marketing opt-in during profile sync failed");
+      logger.error({ requestId, error: describeError(error) }, "marketing opt-in during profile sync failed");
       return { outcome: "failed" };
     }
   };
@@ -117,7 +119,7 @@ export const createProfileRouter = ({
 
       const result =
         body?.marketingOptIn === true && body.marketingConsentTextVersion !== undefined
-          ? await optIn(identity, body.marketingConsentTextVersion)
+          ? await optIn(identity, body.marketingConsentTextVersion, getRequestId(req))
           : undefined;
 
       res.status(200).json({

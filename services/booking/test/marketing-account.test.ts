@@ -528,3 +528,18 @@ describe("direct subscription of a verified, registered user's own address (POST
     expect((await sync(off.app, "google", OPT_IN)).body).toMatchObject({ marketingOptIn: { outcome: "unavailable" }, marketing: { subscribed: false } });
   });
 });
+
+describe("diagnostics of a failed opt-in at sign-up", () => {
+  it("the profile is still synced; the error record carries the request id of the response", async () => {
+    const { app, marketing, logs } = setup();
+    marketing.repository.ensureExists = () => Promise.reject(new Error("SENTINEL_STORE g@example.invalid"));
+
+    const synced = await sync(app, "google", OPT_IN);
+
+    expect(synced.status).toBe(200);
+    expect(synced.body).toMatchObject({ marketingOptIn: { outcome: "failed" } });
+    const entry = logs.entries().find((logged) => logged.msg === "marketing opt-in during profile sync failed");
+    expect(entry).toMatchObject({ level: "error", requestId: synced.get("X-Request-Id") });
+    expect(logs.raw()).not.toMatch(/SENTINEL_STORE|g@example\.invalid/);
+  });
+});
