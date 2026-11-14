@@ -79,6 +79,26 @@ describe("Brevo adapter", () => {
     expect(await providerWith(respond).send(EMAIL)).toEqual(expected);
   });
 
+  it("reads Retry-After on 5xx too, and as an HTTP date", async () => {
+    expect(await providerWith(() => json(503, {}, { "retry-after": "30" })).send(EMAIL)).toEqual({
+      kind: "retryable",
+      code: "provider_unavailable",
+      retryAfterMs: 30_000,
+    });
+    const at = new Date(Date.now() + 120_000).toUTCString();
+    const outcome = await providerWith(() => json(429, {}, { "retry-after": at })).send(EMAIL);
+    expect(outcome).toMatchObject({ kind: "retryable", code: "rate_limited" });
+    const waitMs = outcome.kind === "retryable" ? outcome.retryAfterMs : null;
+    // An HTTP date has whole seconds: between 119 and 120 seconds from now.
+    expect(waitMs).toBeGreaterThan(118_000);
+    expect(waitMs).toBeLessThanOrEqual(120_000);
+    expect(await providerWith(() => json(429, {}, { "retry-after": "soon" })).send(EMAIL)).toEqual({
+      kind: "retryable",
+      code: "rate_limited",
+      retryAfterMs: null,
+    });
+  });
+
   it("classifies timeouts and network failures as retryable, without provider text", () => {
     expect(classifyBrevoError(new BrevoTimeoutError("Timeout exceeded"))).toEqual({ kind: "retryable", code: "timeout", retryAfterMs: null });
     expect(classifyBrevoError(new TypeError("fetch failed"))).toEqual({ kind: "retryable", code: "network", retryAfterMs: null });

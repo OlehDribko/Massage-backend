@@ -59,7 +59,9 @@ COPY services/booking/package.json services/booking/prisma.config.ts services/bo
 COPY services/booking/prisma services/booking/prisma
 COPY --from=build /app/services/booking/dist/migrate services/booking/dist/migrate
 COPY --from=build /app/services/booking/dist/logging services/booking/dist/logging
-COPY --from=build /app/services/booking/dist/shared/database/database-url.js /app/services/booking/dist/shared/database/pool-config.js services/booking/dist/shared/database/
+# The logger (used by the runner) classifies database errors: errors.js and
+# transaction-failure.js (zod only) come with it.
+COPY --from=build /app/services/booking/dist/shared/database/database-url.js /app/services/booking/dist/shared/database/pool-config.js /app/services/booking/dist/shared/database/errors.js /app/services/booking/dist/shared/database/transaction-failure.js services/booking/dist/shared/database/
 WORKDIR /app/services/booking
 USER node
 # Requires MIGRATION_DATABASE_URL, MIGRATION_DATABASE_SSL_MODE (default

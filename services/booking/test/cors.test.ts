@@ -13,6 +13,7 @@ import { createCapturingLogger } from "./helpers/logs.js";
 const PRODUCTION = "https://massage-e9zb.vercel.app";
 const PREVIEW = "https://massage-e9zb-3ne7cu4qh-olehdrs-projects.vercel.app";
 const LOCAL = "http://localhost:3000";
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const PREVIEW_PATTERN = String.raw`^https://massage-e9zb-[a-z0-9]+-olehdrs-projects\.vercel\.app$`;
 
 const STAGING = { allowedOrigins: `${PRODUCTION},${LOCAL}`, allowedOriginPatterns: PREVIEW_PATTERN, frontendUrl: LOCAL };
@@ -43,6 +44,9 @@ const appWith = (cors: CorsPolicy | undefined) => {
   });
   router.get("/private", () => {
     throw new AppError(401, "Authentication required", { code: "AUTH_REQUIRED" });
+  });
+  router.get("/explode", () => {
+    throw new Error("unexpected");
   });
   return createApp({
     logger: createCapturingLogger().logger,
@@ -171,18 +175,31 @@ describe("CORS over HTTP", () => {
     }
   });
 
-  it("responses, errors included, carry the origin and expose Retry-After and Idempotent-Replayed", async () => {
+  it("responses, errors included, carry the origin and expose Retry-After, Idempotent-Replayed and X-Request-Id", async () => {
+    const EXPOSED = "Retry-After,Idempotent-Replayed,X-Request-Id";
     const ok = await request(app).post("/api/me/sync").set("Origin", PREVIEW).expect(200);
     expect(ok.headers["access-control-allow-origin"]).toBe(PREVIEW);
-    expect(ok.headers["access-control-expose-headers"]).toBe("Retry-After,Idempotent-Replayed");
+    expect(ok.headers["access-control-expose-headers"]).toBe(EXPOSED);
+    expect(ok.headers["x-request-id"]).toMatch(UUID);
 
     const busy = await request(app).get("/api/busy").set("Origin", PRODUCTION).expect(503);
     expect(busy.headers["access-control-allow-origin"]).toBe(PRODUCTION);
-    expect(busy.headers["access-control-expose-headers"]).toBe("Retry-After,Idempotent-Replayed");
+    expect(busy.headers["access-control-expose-headers"]).toBe(EXPOSED);
     expect(busy.headers["retry-after"]).toBe("2");
+    expect(busy.headers["idempotent-replayed"]).toBe("true");
+    expect(busy.headers["x-request-id"]).toMatch(UUID);
 
     const unauthorized = await request(app).get("/api/private").set("Origin", LOCAL).expect(401);
     expect(unauthorized.headers["access-control-allow-origin"]).toBe(LOCAL);
+    expect(unauthorized.headers["access-control-expose-headers"]).toBe(EXPOSED);
+    expect(unauthorized.headers["x-request-id"]).toMatch(UUID);
+
+    const failed = await request(app).get("/api/explode").set("Origin", PRODUCTION).expect(500);
+    expect(failed.headers["access-control-allow-origin"]).toBe(PRODUCTION);
+    expect(failed.headers["access-control-expose-headers"]).toBe(EXPOSED);
+    expect(failed.headers["x-request-id"]).toMatch(UUID);
+
+    expect(new Set([ok, busy, unauthorized, failed].map((response) => response.headers["x-request-id"])).size).toBe(4);
   });
 
   it("another origin (any other *.vercel.app too) gets no CORS headers and no 500", async () => {
@@ -194,6 +211,9 @@ describe("CORS over HTTP", () => {
 
       const post = await request(app).post("/api/me/sync").set("Origin", origin).expect(200);
       expect(post.headers["access-control-allow-origin"], origin).toBeUndefined();
+      // The id is still sent, but without the expose permission a script on that origin cannot read it.
+      expect(post.headers["access-control-expose-headers"], origin).toBeUndefined();
+      expect(post.headers["x-request-id"], origin).toMatch(UUID);
     }
   });
 

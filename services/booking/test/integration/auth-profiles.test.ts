@@ -7,6 +7,7 @@ import { loadConfig } from "../../src/config/config.js";
 import { createFirebaseIdentityProvider } from "../../src/integrations/firebase/firebase-identity-provider.js";
 import type { MarketingMailer } from "../../src/modules/email/service/email.service.js";
 import { MARKETING_CONSENT_TEXT_VERSION } from "../../src/modules/marketing/consent.js";
+import { localDateTimeToInstant } from "../../src/modules/schedule/zoned-time.js";
 import { createDatabase, type Database } from "../../src/shared/database/database.js";
 import { killRunningChildren, startTsProcess } from "../helpers/child-process.js";
 import { createCapturingLogger, type CapturedLogs, type LogEntry } from "../helpers/logs.js";
@@ -19,6 +20,7 @@ import {
   nextSecond,
   withClaims,
 } from "./helpers/firebase-emulator.js";
+import { insertService } from "./helpers/booking-app.js";
 import { runMigrations } from "./helpers/migrations.js";
 import {
   CURRENT_INIT_DIR,
@@ -32,7 +34,8 @@ import {
 // runner, queries as the runtime role booking_app), Firebase Admin SDK in
 // emulator mode, Firebase Auth Emulator acting as the client SDK.
 // Verified here: anonymous sessions, linking, credential conflicts, disabled
-// users, revoked sessions, expiry, foreign projects, concurrency, role assignment.
+// users, revoked sessions, expiry, foreign projects, concurrency, role assignment,
+// and POST /api/bookings with emulator tokens (ready, incomplete, expired, revoked).
 // NOT verified here (needs a real Firebase project): Google's token signatures,
 // real Google sign-in, real email delivery by Firebase.
 
@@ -42,6 +45,7 @@ const TOKEN_FRAGMENT_LENGTH = 40;
 let db: PostgresContainer;
 let database: Database;
 let app: Express;
+let appConfig: Parameters<typeof createApplication>[0]["config"];
 let logs: CapturedLogs;
 const admin = createEmulatorAdmin();
 const mails: { email: string; url: string }[] = [];
@@ -101,6 +105,7 @@ beforeAll(async () => {
   if (!config.ok) {
     throw new Error(config.errors.join("; "));
   }
+  appConfig = config.config;
   logs = createCapturingLogger();
   database = createDatabase(
     { url: db.url("app"), sslMode: "disable", poolMax: 10, connectTimeoutMs: 5_000, queryTimeoutMs: 10_000 },
@@ -276,6 +281,133 @@ describe("sign-up with the marketing checkbox (emulator + PostgreSQL)", () => {
       .send({ consentTextVersion: MARKETING_CONSENT_TEXT_VERSION });
     expect(unverified.status).toBe(202);
     expect(unverified.body).toEqual({ outcome: "confirmation_sent" });
+  });
+});
+
+describe("POST /api/bookings with emulator tokens (the real Firebase adapter)", () => {
+  // Controlled data, as in booking-lifecycle.test.ts: the booking app runs on
+  // a fixed clock (Monday 2027-03-01 07:00 Paris) with its own service and a
+  // Tuesday 09:00–21:00 schedule, so the slot never depends on today's date or
+  // on the default schedule. Token checks are still the Admin SDK's against
+  // the emulator, on real time (the injected clock is the booking calendar's).
+  const CLOCK = new Date("2027-03-01T06:00:00Z");
+  const STARTS_AT = localDateTimeToInstant("2027-03-02", 10 * 60, "Europe/Paris").toISOString();
+  let bookingApp: Express;
+  let serviceId: string;
+
+  beforeAll(async () => {
+    await db.query("admin", `TRUNCATE "WeeklyScheduleInterval", "ScheduleExceptionInterval", "ScheduleException", "ScheduleClosure"`);
+    await db.query(
+      "admin",
+      `INSERT INTO "WeeklyScheduleInterval" (id, weekday, "startMinute", "endMinute") VALUES (gen_random_uuid(), 2, 540, 1260)`,
+    );
+    serviceId = await insertService(db, { name: "Emulator booking 60", durationMinutes: 60, priceCents: 6500 });
+    bookingApp = createApplication({
+      config: appConfig,
+      logger: logs.logger,
+      database,
+      isShuttingDown: () => false,
+      overrides: { marketingMailer: mailer, now: () => CLOCK },
+    });
+  });
+
+  const countOf = async (sql: string): Promise<number> => {
+    const result = await db.query("admin", sql);
+    const row: unknown = result.rows[0];
+    return z.object({ n: z.number() }).parse(row).n;
+  };
+  const counts = async () => ({
+    bookings: await countOf(`SELECT count(*)::int AS n FROM "Booking"`),
+    events: await countOf(`SELECT count(*)::int AS n FROM "OutboxEvent"`),
+  });
+
+  let keyCounter = 0;
+  const book = (token: string) =>
+    request(bookingApp)
+      .post("/api/bookings")
+      .set(bearer(token))
+      .set("Idempotency-Key", `emulator-booking-${String((keyCounter += 1))}`)
+      .send({ serviceId, startsAt: STARTS_AT });
+
+  /** Signed up, email verified by the Admin SDK, signed in again for a token that says so. */
+  const verifiedUser = async (email: string) => {
+    const user = await client.signUp(email, PASSWORD);
+    await admin.auth.updateUser(user.localId, { emailVerified: true });
+    await nextSecond();
+    const fresh = await client.signIn(email, PASSWORD);
+    expect((await sync(fresh.idToken)).status).toBe(200);
+    return fresh;
+  };
+
+  it("a booking-ready client: 201, one booking row of that profile, one booking.created event", async () => {
+    const user = await verifiedUser("booker@example.invalid");
+    const completed = await request(app)
+      .patch("/api/me")
+      .set(bearer(user.idToken))
+      .send({ name: "Inès Booker", phone: "+33 6 55 44 33 22" });
+    expect(completed.status).toBe(200);
+    const before = await counts();
+
+    const created = await book(user.idToken);
+
+    expect(created.status).toBe(201);
+    const body: unknown = created.body;
+    const bookingId = z.object({ booking: z.object({ id: z.uuid() }) }).parse(body).booking.id;
+    const rows = await db.query(
+      "admin",
+      `SELECT p."firebaseUid" FROM "Booking" b JOIN "UserProfile" p ON p.id = b."clientProfileId" WHERE b.id = '${bookingId}'`,
+    );
+    expect(rows.rows).toEqual([{ firebaseUid: user.localId }]);
+    const events = await db.query("admin", `SELECT type FROM "OutboxEvent" WHERE "aggregateId" = '${bookingId}'`);
+    expect(events.rows).toEqual([{ type: "booking.created" }]);
+    expect(await counts()).toEqual({ bookings: before.bookings + 1, events: before.events + 1 });
+  });
+
+  it("a valid token but an incomplete profile: 403 BOOKING_NOT_READY with the blockers; no booking, no event", async () => {
+    const user = await verifiedUser("incomplete.booker@example.invalid");
+    const before = await counts();
+
+    const refused = await book(user.idToken);
+
+    expect(refused.status).toBe(403);
+    expect(refused.body).toMatchObject({ code: "BOOKING_NOT_READY", blockers: ["name_missing", "phone_missing"] });
+    expect(await counts()).toEqual(before);
+  });
+
+  /** A booking-ready emulator user (verified email, name and phone). */
+  const readyUser = async (email: string, name: string, phone: string) => {
+    const user = await verifiedUser(email);
+    await request(app).patch("/api/me").set(bearer(user.idToken)).send({ name, phone }).expect(200);
+    return user;
+  };
+
+  const answer = (response: request.Response): { status: number; body: unknown } => {
+    const body: unknown = response.body;
+    return { status: response.status, body };
+  };
+
+  it("an expired token of a ready client: 401 TOKEN_EXPIRED; no booking, no event", async () => {
+    const user = await readyUser("expired.booker@example.invalid", "Eva Expired", "+33 6 77 66 55 44");
+    const past = Math.floor(Date.now() / 1000) - 7200;
+    const expired = withClaims(user.idToken, { iat: past, auth_time: past, exp: past + 3600 });
+    const before = await counts();
+
+    const refused = await book(expired);
+
+    expect(answer(refused)).toMatchObject({ status: 401, body: { code: "TOKEN_EXPIRED" } });
+    expect(await counts()).toEqual(before);
+  });
+
+  it("a ready client after sign-out everywhere: 401 SESSION_REVOKED; no booking, no event", async () => {
+    const user = await readyUser("revoked.booker@example.invalid", "Rémi Revoked", "+33 6 88 77 66 55");
+    await nextSecond();
+    expect((await request(app).post("/api/me/sessions/revoke").set(bearer(user.idToken))).status).toBe(204);
+    const before = await counts();
+
+    const refused = await book(user.idToken);
+
+    expect(answer(refused)).toMatchObject({ status: 401, body: { code: "SESSION_REVOKED" } });
+    expect(await counts()).toEqual(before);
   });
 });
 

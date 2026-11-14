@@ -1,6 +1,8 @@
 type AppErrorOptions = {
   code?: string;
   details?: Record<string, unknown>;
+  /** The original failure, kept for logs only (never sent to the client). */
+  cause?: unknown;
 };
 
 export class AppError extends Error {
@@ -13,7 +15,7 @@ export class AppError extends Error {
     message: string,
     options: AppErrorOptions = {},
   ) {
-    super(message);
+    super(message, options.cause !== undefined ? { cause: options.cause } : undefined);
 
     this.statusCode = statusCode;
     if (options.code !== undefined) {

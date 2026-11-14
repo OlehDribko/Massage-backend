@@ -49,7 +49,7 @@ export const createErrorHandler = (logger: Logger): ErrorRequestHandler => {
       // handler prints err.stack (including the message) to stderr, so a neutral
       // error is passed on and the original is logged in safe form here.
       logger.error(
-        { requestId: getRequestId(req), error: describeError(error) },
+        { requestId: getRequestId(req), status: res.statusCode, error: describeError(error) },
         "error after response headers were sent",
       );
       next(new Error("Error after response headers were sent"));
@@ -78,7 +78,7 @@ export const createErrorHandler = (logger: Logger): ErrorRequestHandler => {
         logger.error(
           {
             requestId: getRequestId(req),
-            statusCode: error.statusCode,
+            status: error.statusCode,
             error: describeError(error),
           },
           "request failed with server error",
@@ -97,7 +97,7 @@ export const createErrorHandler = (logger: Logger): ErrorRequestHandler => {
     }
 
     logger.error(
-      { requestId: getRequestId(req), error: describeError(error) },
+      { requestId: getRequestId(req), status: 500, error: describeError(error) },
       "unhandled error",
     );
     res.status(500).json({ message: "internal server error" });

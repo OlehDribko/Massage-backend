@@ -1,6 +1,7 @@
 import cors from "cors";
 import type { RequestHandler } from "express";
 import { z } from "zod";
+import { REQUEST_ID_HEADER } from "./request-logging.js";
 
 /**
  * Browser origins allowed to call the API: exact origins and anchored
@@ -12,8 +13,12 @@ export type CorsPolicy = { origins: string[]; patterns: RegExp[] };
 
 export const CORS_METHODS = ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE"];
 export const CORS_ALLOWED_HEADERS = ["Authorization", "Content-Type", "Idempotency-Key"];
-/** Response headers the frontend reads (503 CALENDAR_BUSY / AUTH_UNAVAILABLE, idempotent replays). */
-export const CORS_EXPOSED_HEADERS = ["Retry-After", "Idempotent-Replayed"];
+/**
+ * Response headers the frontend reads: when to retry (503 CALENDAR_BUSY /
+ * AUTH_UNAVAILABLE), idempotent replays, and the server's request id for
+ * failure reports (matches `requestId` in the API logs).
+ */
+export const CORS_EXPOSED_HEADERS = ["Retry-After", "Idempotent-Replayed", REQUEST_ID_HEADER];
 /** Browsers may reuse a preflight answer for this long, seconds. */
 export const CORS_MAX_AGE_SECONDS = 600;
 

@@ -6,6 +6,7 @@ import type {
   UserProfile,
 } from "../../generated/prisma/client.js";
 import { postgresErrorCode, prismaErrorCode } from "../../shared/database/errors.js";
+import { classifyTransactionFailure, isRetryableTransactionFailure } from "../../shared/database/transaction-failure.js";
 import { AppError } from "../../shared/errors/app-error.js";
 import { idempotencyKeyReused } from "../../shared/http/idempotency-key.js";
 import { bookingReadiness } from "../access/policies.js";
@@ -45,10 +46,11 @@ export type GiftCardService = ReturnType<typeof createGiftCardService>;
 const requestNotFound = () =>
   new AppError(404, "Gift card request not found", { code: "GIFT_CARD_REQUEST_NOT_FOUND" });
 
-const busy = () =>
+const busy = (cause: unknown) =>
   new AppError(503, "Gift card requests are busy; retry shortly", {
     code: "GIFT_CARD_REQUEST_BUSY",
     details: { retryAfterSeconds: 2 },
+    cause,
   });
 
 /** P2002 (Prisma) or 23505 (PostgreSQL): a unique constraint fired. */
@@ -94,9 +96,10 @@ export const createGiftCardService = ({
         { maxWait: LOCK_TIMEOUT_MS, timeout: 3 * LOCK_TIMEOUT_MS },
       );
     } catch (error) {
-      // 55P03 lock_not_available; P2028: Prisma transaction API timeout.
-      if (postgresErrorCode(error) === "55P03" || prismaErrorCode(error) === "P2028") {
-        throw busy();
+      // Same rule as the calendar transaction: only waits for a lock or a
+      // connection (nothing committed) answer "busy, retry".
+      if (isRetryableTransactionFailure(classifyTransactionFailure(error))) {
+        throw busy(error);
       }
       throw error;
     }

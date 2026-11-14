@@ -27,6 +27,8 @@
 Усі адмін-маршрути: Authorization: Bearer <Firebase ID token> верифікованого адміністратора; 401 AUTH_REQUIRED/…, 403 FORBIDDEN.
 Дати — YYYY-MM-DD за Europe/Paris; час — "HH:MM"; моменти — ISO UTC. Помилки: { message, code, …деталі на верхньому рівні }.
 503 CALENDAR_BUSY { retryAfterSeconds } + заголовок Retry-After → повтор пізніше. 400 VALIDATION_FAILED { errors: [{ field, message }] }.
+Кожна відповідь API має заголовок X-Request-Id (доступний скрипту з дозволеного origin): показуй/додавай його до звіту про збій
+(розділ «Звіт про збій і X-Request-Id» нижче). Сам його не генеруй і не надсилай: сервер ігнорує ID з запиту.
 
 1. Календар адміністратора: тиждень / місяць (до 62 дат за запит)
 GET /api/admin/schedule/days?from=2027-03-01&to=2027-03-31 → 200
@@ -170,3 +172,37 @@ cancelled = закрита (помилкова / дубль / відкликан
 
 Перевірка: unit-тести відображення станів; не покладайся на фіктивні дані замість контрактів; не вмикай маркетинг/листи на staging.
 ```
+
+## Звіт про збій і X-Request-Id
+
+**Де взяти ID.** Кожна відповідь, яку сформував Express, має заголовок `X-Request-Id` (UUID від сервера). Це стосується і успіху, і помилок `4xx`/`5xx`, і preflight-запитів. Для дозволених origin його відкрито через `Access-Control-Expose-Headers` (разом із `Retry-After` та `Idempotent-Replayed`), тож у браузері: `response.headers.get("X-Request-Id")`. Для інших origin заголовок теж приходить, але скрипт його не прочитає. ID з запиту сервер не бере: його не треба генерувати чи надсилати.
+
+**Що додати до звіту про збій:**
+- `X-Request-Id`;
+- час (UTC), метод і шлях **без query**;
+- HTTP-статус і `code` з тіла відповіді, `retryAfterSeconds`, якщо є.
+
+Не додавайте ID token, cookies, тіло запиту, query-параметри, email, телефон та інші персональні дані.
+
+**Пошук у CloudWatch** (staging, `eu-west-3`). Логи API — група `/ecs/massage-staging/booking-api`, JSON-рядки. Logs Insights:
+
+```
+fields @timestamp, level, msg, method, path, status, durationMs, error.code, error.sqlState
+| filter requestId = "<X-Request-Id>"
+| sort @timestamp asc
+```
+
+Те саме з CLI (лише читання; часове вікно в мілісекундах):
+
+```
+aws logs filter-log-events --profile massage --region eu-west-3 \
+  --log-group-name /ecs/massage-staging/booking-api \
+  --start-time <ms> --filter-pattern '{ $.requestId = "<X-Request-Id>" }' \
+  --query 'events[].message' --output text
+```
+
+Для одного запиту знайдеться запис `request completed` (метод, шлях, статус, тривалість). Для `5xx` до нього додається діагностичний запис з тим самим `requestId` і `status`: `request failed with server error` або `unhandled error`. У ньому є тип помилки, безпечний код і стек, без повідомлень.
+
+**Якщо `X-Request-Id` немає:**
+- **Відповідь не дійшла до Express.** Її сформував API Gateway (наприклад, `503`/`500` без JSON від API, throttling `429`, задача не запущена), або запит обірвався в мережі. Тоді шукайте за часом, методом і шляхом в access-логах API Gateway: група `/apigateway/massage-staging/booking-api`, поля `requestId`, `httpMethod`, `path`, `status`, `integrationError`. В інструментах розробника браузера (вкладка Network) у такій відповіді видно заголовок `apigw-requestid`, який збігається з `requestId` в access-лозі.
+- **Браузер не дав доступу до заголовків.** Сторінка відкрита з origin поза списком CORS, або відповідь без CORS-заголовків (відповідь API Gateway). Тоді `fetch` падає з `TypeError`, і статус та заголовки скрипту недоступні. До звіту додайте origin сторінки, час, метод і шлях. ID, якщо він є, видно у вкладці Network.

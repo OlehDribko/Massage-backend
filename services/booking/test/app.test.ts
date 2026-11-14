@@ -244,6 +244,34 @@ describe("HTTP errors", () => {
 });
 
 describe("request logging", () => {
+  it("one server id in the response, the completion log and the diagnostic record of a server error", async () => {
+    const router = Router();
+    router.post("/explode", () => {
+      throw new Error("SENTINEL_INTERNAL");
+    });
+    router.post("/busy", () => {
+      throw new AppError(503, "The calendar is busy; retry shortly", { code: "CALENDAR_BUSY", details: { retryAfterSeconds: 2 } });
+    });
+    const { app, logs } = buildApp({ apiRouter: router });
+
+    const cases: { path: string; status: number; diagnostic: string }[] = [
+      { path: "/api/explode", status: 500, diagnostic: "unhandled error" },
+      { path: "/api/busy", status: 503, diagnostic: "request failed with server error" },
+    ];
+    for (const { path, status, diagnostic } of cases) {
+      const response = await request(app).post(`${path}?token=SENTINEL_QUERY_TOKEN`).send({});
+      const requestId = response.get("X-Request-Id");
+      expect(response.status).toBe(status);
+      expect(requestId).toMatch(/^[0-9a-f-]{36}$/);
+
+      const ofRequest = logs.entries().filter((entry) => entry.requestId === requestId);
+      expect(ofRequest.map((entry) => entry.msg).sort()).toEqual([diagnostic, "request completed"].sort());
+      expect(ofRequest.find((entry) => entry.msg === "request completed")).toMatchObject({ level: "error", path, status });
+      expect(ofRequest.find((entry) => entry.msg === diagnostic)).toMatchObject({ level: "error", status });
+    }
+    expectNoSensitive(logs.raw());
+  });
+
   it("logs method, path, status, duration and request id without sensitive data", async () => {
     const { app, logs } = buildApp();
 
