@@ -47,7 +47,7 @@ npm run prisma -- generate    # Prisma Client у services/booking/src/generated 
 |---|---|
 | `npm run dev` | Розробка: `tsx watch`, підхоплює кореневий `.env`, якщо він є |
 | `npm run build` | Очищення `services/booking/dist` і компіляція `src` |
-| `npm start` | Запуск зібраного коду: `node dist/server.js` (лише змінні середовища, `.env` не читається) |
+| `npm start` | Запуск зібраного коду: `node dist/server.js` у `services/booking` (лише змінні середовища, `.env` не читається) |
 | `npm test` | Vitest, один прогін (unit- і процесні тести; Docker не потрібен; TLS-тести потребують `openssl`) |
 | `npm run test:integration` | Інтеграційні тести міграцій і прав у PostgreSQL-контейнерах; **потрібен запущений Docker**, без нього тести падають, а не пропускаються |
 | `npm run test:smoke` | Smoke-тест зібраних Docker-образів (migrate + runtime + PostgreSQL); потрібні Docker і змінні `BOOKING_RUNTIME_IMAGE`, `BOOKING_MIGRATE_IMAGE` (див. «CI») |
