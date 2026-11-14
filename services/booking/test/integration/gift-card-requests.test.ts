@@ -648,6 +648,71 @@ describe("the studio email", () => {
     expect(failed.notification).toMatchObject({ status: "failed", reason: "temporary_errors", attempts: 3 });
   });
 
+  it("atomic with the request: if the event cannot be written, nothing is stored; a refused submission writes no event", async () => {
+    const count = (table: string) => countRows(stack.db, `SELECT count(*)::int AS n FROM "${table}"`);
+    await stack.db.query("admin", `ALTER TABLE "OutboxEvent" ADD CONSTRAINT "test_reject_all" CHECK (false) NOT VALID`);
+    try {
+      expect((await submit(users.clientA, VALID)).status).toBe(500);
+    } finally {
+      await stack.db.query("admin", `ALTER TABLE "OutboxEvent" DROP CONSTRAINT "test_reject_all"`);
+    }
+    expect([await count("GiftCardRequest"), await count("GiftCardRequestStatusChange"), await count("OutboxEvent")]).toEqual([0, 0, 0]);
+
+    await submit(users.clientA, { ...VALID, amountCents: 0 }).expect(400);
+    await submit(users.guest, VALID).expect(403);
+    expect(await count("OutboxEvent")).toBe(0);
+
+    await submit(users.clientA, VALID).expect(201);
+    expect([await count("GiftCardRequest"), await count("OutboxEvent")]).toEqual([1, 1]);
+  });
+
+  it("a rate limit is retried no earlier than the provider's Retry-After; a configuration error then ends it without retries", async () => {
+    await submit(users.clientA, VALID).expect(201);
+    const fake = createFakeEmailProvider({ now });
+    const { worker } = makeWorker(fake, now);
+    const submittedAt = workerNow;
+
+    // 429 asking for 4 minutes: longer than the scheduled 1 minute (+ jitter), so it wins.
+    fake.setBehavior(() => ({ kind: "retryable", code: "rate_limited", retryAfterMs: 4 * 60_000 }));
+    await worker.tick();
+    const [waiting] = await deliveries();
+    expect(waiting).toMatchObject({ status: "pending", attempts: 1 });
+    expect(waiting?.nextAttemptAt.getTime()).toBe(submittedAt + 4 * 60_000);
+
+    workerNow = submittedAt + 4 * 60_000 - 1;
+    await worker.tick();
+    expect(fake.calls()).toBe(1);
+
+    workerNow = submittedAt + 4 * 60_000;
+    fake.setBehavior(() => ({ kind: "configuration", code: "provider_auth" }));
+    await worker.tick();
+    expect(await deliveries()).toMatchObject([{ status: "failed", resultCode: "provider_auth", attempts: 2 }]);
+    workerNow += 60 * 60_000;
+    await worker.tick();
+    expect(fake.calls()).toBe(2);
+    expect(fake.sent).toHaveLength(0);
+  });
+
+  it("the provider accepted, then the process stopped before recording: the next attempt reuses the key and gets a duplicate, not a second email", async () => {
+    await submit(users.clientA, VALID).expect(201);
+    const fake = createFakeEmailProvider({ now });
+    const { worker, prisma } = makeWorker(fake, now);
+    await planNewEvents(prisma, { now: now(), studioEmail: STUDIO, limit: 10, studioDelayMs: DEFAULT_TUNING.studioDelayMs });
+    const [claimed] = await claimDeliveries(prisma, { now: now(), owner: "crashed", leaseMs: DEFAULT_TUNING.leaseMs, limit: 10, maxAttempts: 3 });
+    // The stopped process got as far as the provider, then died before recording the result.
+    await fake.provider.send({ to: claimed?.recipientEmail ?? "", subject: "s", html: "h", text: "t", idempotencyKey: claimed?.id ?? "", tags: [] });
+
+    // Before its lease expires nobody touches it; afterwards the next pass repeats with the same key.
+    await worker.tick();
+    expect(fake.calls()).toBe(1);
+    workerNow += DEFAULT_TUNING.leaseMs + 1;
+    await worker.tick();
+
+    expect(fake.calls()).toBe(2);
+    expect(fake.sent).toHaveLength(1);
+    expect(await deliveries()).toMatchObject([{ status: "accepted", resultCode: "accepted_duplicate", attempts: 2 }]);
+  });
+
   it("outside production only allowlisted recipients get it; otherwise skipped visibly", async () => {
     const id = giftCardOf(await submit(users.clientA, VALID).expect(201)).id;
     const fake = createFakeEmailProvider({ now });
