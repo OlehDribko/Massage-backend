@@ -173,7 +173,8 @@ const concrete = (path: string) =>
   path
     .replace("{serviceId}", "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f")
     .replace("{bookingId}", "8f0c2b1e-4a5d-4c6e-9f7a-1b2c3d4e5f60")
-    .replace("{date}", "2027-03-08");
+    .replace("{date}", "2027-03-08")
+    .replace("{blockId}", "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d");
 
 beforeEach(() => {
   resetCalls();
@@ -213,7 +214,7 @@ describe("OpenAPI document", () => {
       .map((operation) => `${operation.method.toUpperCase()} ${operation.path}`)
       .sort();
     expect(documented).toEqual(routes);
-    expect(documented).toHaveLength(35);
+    expect(documented).toHaveLength(40);
     const text = JSON.stringify(buildOpenApiDocument());
     expect(text).not.toContain("/api/admin/services");
     expect(Object.keys(buildOpenApiDocument().paths).some((path) => /login|signin|sign-in|signup|password|register/i.test(path))).toBe(false);

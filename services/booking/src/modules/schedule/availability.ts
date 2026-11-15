@@ -2,6 +2,7 @@ import type { BookingRules } from "./booking-rules.js";
 import type { Tx } from "./calendar-transaction.js";
 import {
   activeBookingTimes,
+  blockTimes,
   dayScheduleOf,
   loadClosures,
   loadDaySchedule,
@@ -26,7 +27,7 @@ export type UnavailableReason =
   | "beyond_horizon"
   /** Not an offered start: outside working intervals, a closed date, not on the grid of its free stretch, after the latest start, or the session would not fit. */
   | "outside_schedule"
-  /** Overlaps another booking or its break. */
+  /** Overlaps another booking or a block of the calendar, or their breaks. */
   | "taken";
 
 export type StartCheck = { ok: true } | { ok: false; reason: UnavailableReason };
@@ -58,12 +59,17 @@ export const checkStart = async (
   // A closed date offers no starts, whatever its schedule says.
   const closed = (await loadClosures(tx, { from: date, to: date })).has(date);
   const intervals = closed ? [] : (await loadDaySchedule(tx, date)).intervals;
-  // Bookings of that day decide where free stretches (and their grids) begin.
-  const occupied = await activeBookingTimes(tx, {
-    from: localDateTimeToInstant(date, 0, rules.timeZone),
-    to: localDateTimeToInstant(addDays(date, 1), 0, rules.timeZone),
-    ...(excludeBookingId === undefined ? {} : { excludeBookingId }),
-  });
+  // Bookings and blocks of that day decide where free stretches (and their grids) begin.
+  const dayStart = localDateTimeToInstant(date, 0, rules.timeZone);
+  const dayEnd = localDateTimeToInstant(addDays(date, 1), 0, rules.timeZone);
+  const occupied = [
+    ...(await activeBookingTimes(tx, {
+      from: dayStart,
+      to: dayEnd,
+      ...(excludeBookingId === undefined ? {} : { excludeBookingId }),
+    })),
+    ...(await blockTimes(tx, { from: dayStart, to: dayEnd, breakMinutes: rules.breakMinutes })),
+  ];
   const offered = daySlots({ date, intervals, durationMinutes, occupied, window, rules });
   if (offered.some((slot) => slot.startsAt.getTime() === startsAt.getTime())) {
     return { ok: true };
@@ -82,7 +88,8 @@ export type Availability = { from: LocalDate; to: LocalDate; days: AvailabilityD
 
 /**
  * Free starts per local date for a duration, clamped to [today, today +
- * horizonDays]. Uses only times of other bookings, never who booked them.
+ * horizonDays]. Uses only times of other bookings and of blocks, never who
+ * booked them or what a block is.
  */
 export const availableDays = async (
   db: Tx,
@@ -104,10 +111,12 @@ export const availableDays = async (
   const weekly = await loadWeekly(db);
   const exceptions = await loadExceptions(db, { from: first, to: last });
   const closures = await loadClosures(db, { from: first, to: last });
-  const occupied = await activeBookingTimes(db, {
-    from: localDateTimeToInstant(first, 0, rules.timeZone),
-    to: localDateTimeToInstant(addDays(last, 1), 0, rules.timeZone),
-  });
+  const rangeStart = localDateTimeToInstant(first, 0, rules.timeZone);
+  const rangeEnd = localDateTimeToInstant(addDays(last, 1), 0, rules.timeZone);
+  const occupied = [
+    ...(await activeBookingTimes(db, { from: rangeStart, to: rangeEnd })),
+    ...(await blockTimes(db, { from: rangeStart, to: rangeEnd, breakMinutes: rules.breakMinutes })),
+  ];
 
   const days: AvailabilityDay[] = [];
   for (let date = first; daysBetween(date, last) >= 0; date = addDays(date, 1)) {

@@ -60,6 +60,8 @@ model UserProfile {
   bookings                     Booking[]
   giftCardRequests             GiftCardRequest[]
   giftCardRequestStatusChanges GiftCardRequestStatusChange[]
+  scheduleBlocks               ScheduleBlock[]
+  scheduleBlockRequests        ScheduleBlockRequest[]
 }
 
 enum MarketingConsentSource {
@@ -165,6 +167,44 @@ model ScheduleException {
 model ScheduleClosure {
   date      DateTime @id @db.Date
   createdAt DateTime @default(now()) @db.Timestamptz(3)
+}
+
+/// Time an admin keeps out of booking (a personal appointment, a training),
+/// on top of the schedule: [startsAt, endsAt) plus one break on each side
+/// (docs/booking.md, "Блоки зайнятості"). Blocks may overlap each other;
+/// written only under the calendar lock and never against a confirmed
+/// booking. Hard-deleted; no events or emails.
+model ScheduleBlock {
+  id                 String      @id @default(uuid()) @db.Uuid
+  title              String
+  note               String?
+  startsAt           DateTime    @db.Timestamptz(3)
+  endsAt             DateTime    @db.Timestamptz(3)
+  createdByProfileId String      @db.Uuid
+  createdBy          UserProfile @relation(fields: [createdByProfileId], references: [id], onDelete: Restrict)
+  createdAt          DateTime    @db.Timestamptz(3)
+  updatedAt          DateTime    @db.Timestamptz(3)
+
+  requests ScheduleBlockRequest[]
+
+  @@index([startsAt])
+  @@index([endsAt])
+}
+
+/// Idempotency-Key of a block-creating request, kept apart from the block so
+/// that deleting the block does not let a repeat of the old request create
+/// it again: the record stays with blockId = NULL.
+model ScheduleBlockRequest {
+  adminProfileId     String         @db.Uuid
+  admin              UserProfile    @relation(fields: [adminProfileId], references: [id], onDelete: Restrict)
+  idempotencyKey     String
+  requestFingerprint String
+  blockId            String?        @db.Uuid
+  block              ScheduleBlock? @relation(fields: [blockId], references: [id], onDelete: SetNull)
+  createdAt          DateTime       @db.Timestamptz(3)
+
+  @@id([adminProfileId, idempotencyKey])
+  @@index([blockId])
 }
 
 model ScheduleExceptionInterval {

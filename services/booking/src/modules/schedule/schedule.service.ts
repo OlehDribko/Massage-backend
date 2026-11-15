@@ -1,4 +1,4 @@
-import type { PrismaClient } from "../../generated/prisma/client.js";
+import type { PrismaClient, ScheduleBlock } from "../../generated/prisma/client.js";
 import { AppError } from "../../shared/errors/app-error.js";
 import type { BookingRules } from "./booking-rules.js";
 import type { CalendarTransaction, Tx } from "./calendar-transaction.js";
@@ -9,6 +9,7 @@ import {
   deleteException,
   loadClosures,
   loadClosuresOf,
+  loadBlocks,
   loadExceptions,
   loadWeekly,
   putClosures,
@@ -18,7 +19,7 @@ import {
 } from "./schedule.repository.js";
 import type { DayChange, WeeklyInterval } from "./schedule.schema.js";
 import { fitsWorkingIntervals, type MinuteInterval } from "./slots.js";
-import { addDays, daysBetween, isoWeekday, localDateTimeOf, type LocalDate } from "./zoned-time.js";
+import { addDays, daysBetween, isoWeekday, localDateTimeOf, localDateTimeToInstant, type LocalDate } from "./zoned-time.js";
 
 export type ScheduleConflict = { bookingId: string; startsAt: string; endsAt: string; serviceName: string };
 
@@ -27,7 +28,9 @@ export type ScheduleConflict = { bookingId: string; startsAt: string; endsAt: st
  * - intervals / source: the schedule of the date (its exception, else the
  *   weekly rule) — also what the date returns to when a closure is removed;
  * - closure: the date is closed for new bookings and moves (ScheduleClosure);
- * - effective: what can be booked: nothing while closed, else the schedule.
+ * - effective: what can be booked: nothing while closed, else the schedule
+ *   (working hours; blocks are listed apart and not cut out of it);
+ * - blocks: blocks of the calendar overlapping the date, by start.
  */
 export type DayView = {
   date: LocalDate;
@@ -36,6 +39,7 @@ export type DayView = {
   source: "weekly" | "exception";
   closure: { closedAt: Date } | null;
   effective: MinuteInterval[];
+  blocks: ScheduleBlock[];
 };
 
 /** A confirmed booking, not yet ended, on one of the dates of a closure. */
@@ -138,28 +142,44 @@ export const createScheduleService = ({
       return deleteException(tx, date);
     });
 
+  const dayStart = (date: LocalDate): Date => localDateTimeToInstant(date, 0, rules.timeZone);
+
+  /** Blocks overlapping any of the local dates first–last. */
+  const blocksOf = (db: Tx, first: LocalDate, last: LocalDate): Promise<ScheduleBlock[]> =>
+    loadBlocks(db, { from: dayStart(first), to: dayStart(addDays(last, 1)) });
+
   const daysOf = (
     dates: LocalDate[],
     weekly: WeeklyInterval[],
     exceptions: Map<LocalDate, MinuteInterval[]>,
     closures: Map<LocalDate, Date>,
+    blocks: ScheduleBlock[],
   ): DayView[] =>
     dates.map((date) => {
       const schedule = dayScheduleOf(date, weekly, exceptions);
       const closedAt = closures.get(date);
+      const from = dayStart(date).getTime();
+      const to = dayStart(addDays(date, 1)).getTime();
       return {
         date,
         weekday: isoWeekday(date),
         ...schedule,
         closure: closedAt === undefined ? null : { closedAt },
         effective: closedAt === undefined ? schedule.intervals : [],
+        blocks: blocks.filter((block) => block.startsAt.getTime() < to && block.endsAt.getTime() > from),
       };
     });
 
   /** Every date of [from, to] (a week, a month): its schedule, closure and what can be booked. */
   const getDays = async (range: { from: LocalDate; to: LocalDate }): Promise<DayView[]> => {
     const dates = Array.from({ length: daysBetween(range.from, range.to) + 1 }, (_, index) => addDays(range.from, index));
-    return daysOf(dates, await loadWeekly(prisma), await loadExceptions(prisma, range), await loadClosures(prisma, range));
+    return daysOf(
+      dates,
+      await loadWeekly(prisma),
+      await loadExceptions(prisma, range),
+      await loadClosures(prisma, range),
+      await blocksOf(prisma, range.from, range.to),
+    );
   };
 
   /** Current views of some dates, read inside the transaction that changed them. */
@@ -171,7 +191,7 @@ export const createScheduleService = ({
       return [];
     }
     const exceptions = await loadExceptions(tx, { from: first, to: last });
-    return daysOf(sorted, await loadWeekly(tx), exceptions, await loadClosuresOf(tx, sorted));
+    return daysOf(sorted, await loadWeekly(tx), exceptions, await loadClosuresOf(tx, sorted), await blocksOf(tx, first, last));
   };
 
   /**

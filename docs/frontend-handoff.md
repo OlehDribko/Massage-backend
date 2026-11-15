@@ -6,7 +6,7 @@
 
 - **`docs/openapi.json`** — актуальний OpenAPI 3.1 цього репозиторію. Згенерований з коду (`services/booking/src/openapi/document.ts`, схеми — `src/openapi/schemas.ts` і ті самі Zod-схеми, що валідують запити). Тест `services/booking/test/openapi-snapshot.test.ts` у CI падає, якщо файл розійшовся з кодом; оновлення: `npm run openapi:export -w services/booking`.
 - **Живий `/openapi.json` і `/docs`** вмикаються лише `ENABLE_API_DOCS=true`; на staging вимкнено. До деплою `develop` staging може віддавати старішу версію API — перевіряйте версію в `GET /health/ready` (`version` = commit SHA).
-- Детально: [booking.md](booking.md) (бронювання, графік, закриття дат), [notifications.md](notifications.md) (листи й статуси), [auth-and-profiles.md](auth-and-profiles.md) (профіль, підписка).
+- Детально: [booking.md](booking.md) (бронювання, графік, закриття дат, блоки зайнятості), [notifications.md](notifications.md) (листи й статуси), [auth-and-profiles.md](auth-and-profiles.md) (профіль, підписка).
 
 ## Стан розгортання
 
@@ -15,6 +15,7 @@
 - З 2026-11-11 на staging розгорнуто `841f4ee`: листи про бронювання й маркетинг **увімкнені**, але лише для погоджених тестових адрес (інші → `skipped` / `403 TEST_RECIPIENT_NOT_ALLOWED`).
 - Пряма підписка підтвердженого користувача (`outcome: "subscribed"` / `"already_subscribed"`) — у `develop` після PR про пряму підписку; до її деплою staging відповідає за старим правилом (`202 confirmation_sent` і для підтвердженого email).
 - Заявки на сертифікати (`/api/gift-card-requests`, `/api/admin/gift-card-requests`) — у `develop` після PR #55 і #54; до деплою й міграції staging відповідає `404 NOT_FOUND`.
+- Блоки зайнятості (`/api/admin/schedule/blocks`, поле `blocks` у `GET /api/admin/schedule/days`) — у гілці `feature/schedule-blocks`; до злиття, деплою й міграції `20261116120000_schedule_blocks` staging їх не має (`404 NOT_FOUND`, у днях немає `blocks`).
 - Інтерфейс має коректно працювати і з вимкненими функціями: `booking.notification` = `null`, `notifications` = `[]`, `marketingAvailable` = `false`, маршрути маркетингу → `404`.
 
 ## Інструкція для frontend-агента
@@ -36,7 +37,8 @@ GET /api/admin/schedule/days?from=2027-03-01&to=2027-03-31 → 200
   { "date": "2027-03-10", "weekday": 3, "closed": false, "source": "weekly",
     "intervals": [{ "start": "09:00", "end": "20:30" }],
     "closure": { "closedAt": "2027-03-01T08:00:00.000Z" },
-    "effective": { "open": false, "intervals": [] } } ] }
+    "effective": { "open": false, "intervals": [] },
+    "blocks": [] } ] }
 - closed / source / intervals = графік дати (виняток "exception" або тижневе правило "weekly") — до нього дата повернеться після відкриття.
 - closure ≠ null = дата закрита для нових бронювань і перенесень (наявні записи лишаються).
 - effective = робочі інтервали з урахуванням закриття: effective.open=false і [] — дата закрита або без робочих годин.
@@ -44,7 +46,7 @@ GET /api/admin/schedule/days?from=2027-03-01&to=2027-03-31 → 200
   (GET /api/services/{serviceId}/availability?from&to — слоти для послуги); не вираховуй їх із effective і бронювань.
 Показуй: «закрито» — за closure; «вихідний за графіком» — за closed; робочі години дня — effective.intervals.
 Не виводь закриття з closed і робочі години з intervals (це графік без урахування закриття).
-У календарі адміністратора робочі інтервали (effective) і бронювання (п. нижче) — окремі шари; не віднімай одне від іншого.
+У календарі адміністратора робочі інтервали (effective), блоки (blocks, п. 2a) і бронювання (п. нижче) — окремі шари; не віднімай одне від іншого.
 
 GET /api/admin/bookings?from=2027-03-01&to=2027-03-31 → 200 { "from", "to", "timeZone", "bookings": [AdminBooking] }
 (одна дата: ?date=2027-03-02 → { "date", "timeZone", "bookings" }; date разом із from/to → 400). Усі статуси, за startsAt.
@@ -64,6 +66,31 @@ POST /api/admin/schedule/closures/reopen { "dates": [...] } → 200 { "timeZone"
 Зміна годин (наявне, без змін): PUT /api/admin/schedule/days { "days": [ { "date", "intervals": [{start,end}] } | { "date", "closed": true } | { "date", "useWeekly": true } ] }
 → 200 { timeZone, days } або 409 SCHEDULE_CONFLICT { conflicts: [{ bookingId, startsAt, endsAt, serviceName }] } (нічого не змінено).
 Закриття (closures) і «вихідний» (PUT days closed:true) — різні дії: перша не чіпає записів, друга відхиляється при записах (409).
+
+2a. Блоки зайнятості (ручно зайнятий час: особиста зустріч, навчання) — лише адміністратор
+Блок = { id, title, note|null, start: "2027-03-03T14:00", end: "2027-03-03T15:00", startsAt, endsAt, createdAt, updatedAt }.
+start/end — місцевий час Europe/Paris БЕЗ зсуву (YYYY-MM-DDTHH:MM), хвилини кратні 5; end "…T24:00" = наступна північ
+(у відповіді — наступна дата T00:00). startsAt/endsAt — ті самі межі в UTC. Відображай блок за start/end.
+GET /api/admin/schedule/days → кожен день має blocks: [Блок] — блоки, що перетинають дату (блок через північ — на обох датах).
+  effective.intervals лишається робочими годинами; блоки — окремий шар (не вирізай їх з годин).
+GET /api/admin/schedule/blocks?from=2027-03-01&to=2027-03-31 → 200 { timeZone, blocks: [Блок] } (обидві дати обов'язкові, до 62 дат).
+POST /api/admin/schedule/blocks + заголовок Idempotency-Key (як для бронювання: новий ключ на кожне рішення «створити блок»,
+  той самий ключ+тіло для повтору після тайм-ауту чи 503) { "title": "…" (1–100), "note"?: "…" (до 500), "start", "end" }
+  → 201 { timeZone, block }; повтор → 200 + Idempotent-Replayed: true (блок у поточному стані);
+  інше тіло з тим самим ключем → 422 IDEMPOTENCY_KEY_REUSED; повтор після видалення блоку → 410 BLOCK_DELETED (блок НЕ відновлюється).
+GET /api/admin/schedule/blocks/{id} → 200 { timeZone, block } | 404 BLOCK_NOT_FOUND.
+PATCH /api/admin/schedule/blocks/{id} { title?, note? (null — прибрати), start?, end? } (хоча б одне поле) → 200 { timeZone, block, changed }.
+DELETE /api/admin/schedule/blocks/{id} → 200 { id, deleted: true|false } (жорстке видалення; повтор — deleted: false).
+Правила (перевіряє сервер; у формі лише підказки): start і end — одна місцева дата, end щонайпізніше T24:00 (повертається як наступна дата T00:00),
+  щонайменше 15 хв; end має бути в майбутньому; start щонайпізніше сьогодні + 365 днів. PATCH перевіряє підсумкові межі навіть при зміні лише назви
+  чи примітки → минулий блок лише читається й видаляється (у формі зроби його тільки для читання, з кнопкою «Видалити»);
+  блок тримає перерву 15 хв з кожного боку: 14:00–15:00 → попередній сеанс до 13:45, наступний з 15:15; блоки можуть перетинатися.
+  У дні переходу часу місцевий час, якого немає (весна 02:00–02:55) або який двічі (осінь 02:00–02:55) → 400 VALIDATION_FAILED з полем start/end.
+Помилки: 400 VALIDATION_FAILED { errors: [{ field: ["start"|"end"|"title"|…], message }] };
+  409 BLOCK_CONFLICT { conflicts: [{ bookingId, startsAt, endsAt, serviceName }] } — блок зачіпає підтверджені записи (з перервою),
+  нічого не записано: покажи список записів, як для SCHEDULE_CONFLICT; 503 CALENDAR_BUSY → повтор (для POST — з тим самим ключем).
+Клієнт блоків не бачить: у доступності просто менше слотів; бронювання на зайнятий час → 409 SLOT_UNAVAILABLE reason "taken".
+Блоки не створюють листів і подій.
 
 3. Результат створення, перенесення, скасування (клієнт)
 POST /api/bookings (заголовок Idempotency-Key: 8–128 символів [A-Za-z0-9_-]) { serviceId, startsAt }

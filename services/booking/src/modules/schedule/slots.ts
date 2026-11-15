@@ -16,7 +16,7 @@ import {
 /** Local wall-clock interval, minutes since local midnight, [start, end). */
 export type MinuteInterval = { startMinute: number; endMinute: number };
 
-/** Time taken by an existing confirmed booking, break included: [startsAt, blockedUntil). */
+/** Time taken by a confirmed booking or a block of the calendar, break after it included: [startsAt, blockedUntil). */
 export type OccupiedTime = { startsAt: Date; blockedUntil: Date };
 
 export type Slot = { startsAt: Date; endsAt: Date };
@@ -57,7 +57,7 @@ export const intervalInstants = (
  * Starts offered on one local date for a session of `durationMinutes`.
  *
  * Each working interval is split into free stretches by the confirmed
- * bookings in it. A stretch begins at the interval start or where an earlier
+ * bookings and blocks in it (overlapping ones merge). A stretch begins at the interval start or where an earlier
  * booking's break ends (its `blockedUntil`), and the possible starts step
  * every slotStepMinutes from that beginning. So the grid never lengthens
  * the break: a session ending at 14:10 leaves 14:25, 14:40, … (not 14:30).

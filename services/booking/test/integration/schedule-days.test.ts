@@ -28,6 +28,8 @@ const daySchema = z.strictObject({
   intervals: z.array(z.strictObject({ start: z.string(), end: z.string() })),
   closure: z.strictObject({ closedAt: z.string() }).nullable(),
   effective: z.strictObject({ open: z.boolean(), intervals: z.array(z.strictObject({ start: z.string(), end: z.string() })) }),
+  // No blocks in these tests (blocks: test/integration/schedule-blocks.test.ts).
+  blocks: z.tuple([]),
 });
 const daysOf = (body: unknown) => z.strictObject({ timeZone: z.literal("Europe/Paris"), days: z.array(daySchema) }).parse(body).days;
 
@@ -82,7 +84,7 @@ describe("schedule of a week or a month", () => {
     // No closures here: what can be booked is the schedule itself.
     expect(days.every((day) => day.closure === null && day.effective.open === !day.closed)).toBe(true);
     expect(days.map((day) => day.effective.intervals)).toEqual(days.map((day) => day.intervals));
-    const week = days.map(({ closure: _closure, effective: _effective, ...schedule }) => schedule);
+    const week = days.map(({ closure: _closure, effective: _effective, blocks: _blocks, ...schedule }) => schedule);
     expect(week).toEqual([
       { date: "2027-03-01", weekday: 1, closed: false, source: "weekly", intervals: [{ start: "09:00", end: "20:30" }] },
       {

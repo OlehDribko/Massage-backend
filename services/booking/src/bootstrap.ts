@@ -26,6 +26,7 @@ import { createProfileService } from "./modules/profiles/profile.service.js";
 import { createPublicAvailabilityRouter } from "./modules/schedule/availability.routes.js";
 import { DEFAULT_BOOKING_RULES, type BookingRules } from "./modules/schedule/booking-rules.js";
 import { createCalendarTransaction, type CalendarTransaction } from "./modules/schedule/calendar-transaction.js";
+import { createScheduleBlockService } from "./modules/schedule/schedule-block.service.js";
 import { createAdminScheduleRouter } from "./modules/schedule/schedule.routes.js";
 import { createScheduleService } from "./modules/schedule/schedule.service.js";
 
@@ -180,6 +181,8 @@ export const createApplication = ({
       "/schedule",
       createAdminScheduleRouter({
         schedule: createScheduleService({ prisma: database.prisma, calendar, rules, now }),
+        // Blocks use the calendar lock of bookings but no wake-up: they write no events.
+        blocks: createScheduleBlockService({ prisma: database.prisma, calendar, rules, now }),
         rules,
         now,
       }),

@@ -15,6 +15,8 @@ import {
   weeklyScheduleSchema,
 } from "../modules/schedule/schedule.schema.js";
 import { DEFAULT_BOOKING_RULES } from "../modules/schedule/booking-rules.js";
+import { BLOCK_NOTE_MAX_LENGTH, BLOCK_TITLE_MAX_LENGTH, createBlockSchema, updateBlockSchema } from "../modules/schedule/schedule-block.schema.js";
+import { BLOCK_HORIZON_DAYS } from "../modules/schedule/schedule-block.service.js";
 import {
   adminBookingSchema,
   adminGiftCardRequestListSchema,
@@ -34,6 +36,10 @@ import {
   readySchema,
   scheduleExceptionViewSchema,
   scheduleDayViewSchema,
+  scheduleBlockListSchema,
+  scheduleBlockResultSchema,
+  scheduleBlockSchema,
+  scheduleBlockUpdateResultSchema,
   scheduleClosureResultSchema,
   scheduleDaysViewSchema,
   scheduleViewSchema,
@@ -137,6 +143,10 @@ const COMPONENT_SCHEMAS = {
   ScheduleDay: scheduleDayViewSchema,
   ScheduleDays: scheduleDaysViewSchema,
   ScheduleClosureResult: scheduleClosureResultSchema,
+  ScheduleBlock: scheduleBlockSchema,
+  ScheduleBlockResult: scheduleBlockResultSchema,
+  ScheduleBlockUpdateResult: scheduleBlockUpdateResultSchema,
+  ScheduleBlockList: scheduleBlockListSchema,
   Live: liveSchema,
   Ready: readySchema,
   NotReady: notReadySchema,
@@ -362,7 +372,20 @@ const SCHEDULE_EXAMPLE = {
   exceptions: [{ date: "2027-03-08", closed: true, intervals: [] }],
 };
 
-const OPEN = (intervals: Json[]) => ({ closure: null, effective: { open: intervals.length > 0, intervals } });
+const OPEN = (intervals: Json[]) => ({ closure: null, effective: { open: intervals.length > 0, intervals }, blocks: [] });
+const BLOCK_ID = "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d";
+const blockIdParam = pathParam("blockId", "Block id", { type: "string", format: "uuid" }, BLOCK_ID);
+const BLOCK_EXAMPLE = {
+  id: BLOCK_ID,
+  title: "Rendez-vous personnel",
+  note: null,
+  start: "2027-03-03T14:00",
+  end: "2027-03-03T15:00",
+  startsAt: "2027-03-03T13:00:00.000Z",
+  endsAt: "2027-03-03T14:00:00.000Z",
+  createdAt: "2027-03-01T08:00:00.000Z",
+  updatedAt: "2027-03-01T08:00:00.000Z",
+};
 const SCHEDULE_DAYS_EXAMPLE = {
   timeZone: "Europe/Paris",
   days: [
@@ -375,7 +398,15 @@ const SCHEDULE_DAYS_EXAMPLE = {
       ...OPEN([{ start: "09:00", end: "13:00" }, { start: "14:00", end: "20:30" }]),
     },
     { date: "2027-03-02", weekday: 2, closed: true, source: "exception", intervals: [], ...OPEN([]) },
-    { date: "2027-03-03", weekday: 3, closed: false, source: "weekly", intervals: [{ start: "09:00", end: "20:30" }], ...OPEN([{ start: "09:00", end: "20:30" }]) },
+    {
+      date: "2027-03-03",
+      weekday: 3,
+      closed: false,
+      source: "weekly",
+      intervals: [{ start: "09:00", end: "20:30" }],
+      ...OPEN([{ start: "09:00", end: "20:30" }]),
+      blocks: [BLOCK_EXAMPLE],
+    },
   ],
 };
 
@@ -387,6 +418,7 @@ const CLOSED_DAY_EXAMPLE = {
   intervals: [{ start: "09:00", end: "20:30" }],
   closure: { closedAt: "2027-03-01T08:00:00.000Z" },
   effective: { open: false, intervals: [] },
+  blocks: [],
 };
 
 const rules = DEFAULT_BOOKING_RULES;
@@ -430,7 +462,7 @@ Integer **euro cents**, currency \`EUR\` (8500 = 85,00 €).
 - **Cancelling** (client or admin) only **before the start**.
 
 ## Idempotency-Key
-Required on \`POST /api/bookings\` and \`POST /api/gift-card-requests\` (the same rules for both; below for bookings): 8–128 characters \`[A-Za-z0-9_-]\` (a UUID fits), one per booking attempt of the client. A repeat with the same key and the same request returns the original booking (\`200\`, header \`Idempotent-Replayed: true\`) with its original price, even after a sale has ended; no second booking or event. The same key with a different request is \`422 IDEMPOTENCY_KEY_REUSED\`. Rescheduling and cancelling are idempotent without a key: a repeat answers \`changed: false\`.
+Required on \`POST /api/bookings\`, \`POST /api/gift-card-requests\` and \`POST /api/admin/schedule/blocks\` (the same rules; below for bookings; for blocks see that operation): 8–128 characters \`[A-Za-z0-9_-]\` (a UUID fits), one per booking attempt of the client. A repeat with the same key and the same request returns the original booking (\`200\`, header \`Idempotent-Replayed: true\`) with its original price, even after a sale has ended; no second booking or event. The same key with a different request is \`422 IDEMPOTENCY_KEY_REUSED\`. Rescheduling and cancelling are idempotent without a key: a repeat answers \`changed: false\`.
 
 ## Email status
 Booking emails are separate from the booking status. \`accepted\` means **accepted by the email provider for sending, not delivered to the mailbox**. A failed email never cancels or changes the booking.
@@ -911,7 +943,7 @@ const paths = (): OpenApiDocument["paths"] => ({
       operationId: "getScheduleDays",
       tags: ["Admin: schedule"],
       summary: "Hours in effect on each date of a range (a week, a month)",
-      description: `Every date from \`from\` to \`to\` (inclusive, at most ${String(MAX_DAYS_PER_REQUEST)} dates) with its working hours: the exception of the date if set, else the weekly rule. Verified administrator only.`,
+      description: `Every date from \`from\` to \`to\` (inclusive, at most ${String(MAX_DAYS_PER_REQUEST)} dates) with its working hours: the exception of the date if set, else the weekly rule. \`effective.intervals\` stays the working hours; \`blocks\` lists the blocks overlapping the date (their time is not cut out of the hours). Verified administrator only.`,
       security: PROTECTED,
       parameters: [queryParam("from", "First date (required)", true, "2027-03-01"), queryParam("to", "Last date (required)", true, "2027-03-07")],
       responses: withAuth(
@@ -987,6 +1019,109 @@ const paths = (): OpenApiDocument["paths"] => ({
           }),
           "400": errors("Invalid body", [validation("dates"), INVALID_JSON]),
         },
+        { ...adminOnly(), "503": [{ message: "The calendar is busy; retry shortly", code: "CALENDAR_BUSY", retryAfterSeconds: 2 }] },
+      ),
+    }),
+  },
+  "/api/admin/schedule/blocks": {
+    get: op({
+      operationId: "listScheduleBlocks",
+      tags: ["Admin: schedule"],
+      summary: "Blocks of the calendar in a range of dates",
+      description: `Blocks overlapping any local date from \`from\` to \`to\` (inclusive, at most ${String(MAX_DAYS_PER_REQUEST)} dates), by start. The same blocks are in \`GET /api/admin/schedule/days\` per date. Verified administrator only.`,
+      security: PROTECTED,
+      parameters: [queryParam("from", "First date (required)", true, "2027-03-01"), queryParam("to", "Last date (required)", true, "2027-03-07")],
+      responses: withAuth(
+        {
+          "200": ok("Blocks", ref("ScheduleBlockList"), { timeZone: "Europe/Paris", blocks: [BLOCK_EXAMPLE] }),
+          "400": errors("Missing or invalid dates, or too long a range", [validation("to")]),
+        },
+        adminOnly(),
+      ),
+    }),
+    post: op({
+      operationId: "createScheduleBlock",
+      tags: ["Admin: schedule"],
+      summary: "Block time in the calendar (e.g. a personal appointment)",
+      description: `Time kept out of booking on top of the working hours: no new booking or move overlaps the block, and a ${String(rules.breakMinutes)}-minute break is kept on each side (a block 14:00–15:00 allows a session ending at 13:45 and the next start at 15:15; the grid after a block starts at its end plus the break). Blocks may overlap each other; their time merges. \`start\` and \`end\`: local time of ${rules.timeZone}, \`YYYY-MM-DDTHH:MM\` without an offset, minutes a multiple of 5; \`start\` and \`end\` lie on one local date: \`end\` may be \`…T24:00\` (the midnight ending that date, the same as the next date at 00:00; returned as the next date at 00:00), any later end is refused (\`400\`, field \`end\`). At least 15 minutes of real time; a whole local day is allowed also on the days of summer and winter time (23 or 25 real hours). Local times that do not exist (spring) or occur twice (autumn) on that date are refused (\`400\`). \`end\` must be in the future when written (\`400\`, field \`end\`); the start date is at most today + ${String(BLOCK_HORIZON_DAYS)} days. \`title\` 1–${String(BLOCK_TITLE_MAX_LENGTH)} characters, \`note\` optional, up to ${String(BLOCK_NOTE_MAX_LENGTH)} (both trimmed; an empty note is none). Refused with \`409 BLOCK_CONFLICT\` (listing them) if a confirmed booking or its break would touch the block or its breaks; nothing is cancelled. Checked and written under the calendar lock of bookings. No events and no emails. Requires \`Idempotency-Key\` (one per block the admin decides to create): a repeat with the same request returns the block as it is now (\`200\`, \`Idempotent-Replayed: true\`); the same key with another request is \`422 IDEMPOTENCY_KEY_REUSED\`; a repeat after the block was deleted is \`410 BLOCK_DELETED\` and never creates it again. Verified administrator only.`,
+      security: PROTECTED,
+      parameters: [
+        {
+          name: "Idempotency-Key",
+          in: "header",
+          required: true,
+          description: "8–128 characters [A-Za-z0-9_-]; one per block to create. Repeat it to retry safely.",
+          schema: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          example: "5c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f",
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: json(input(createBlockSchema), { title: "Rendez-vous personnel", start: "2027-03-03T14:00", end: "2027-03-03T15:00" }),
+      },
+      responses: withAuth(
+        {
+          "201": ok("Created", ref("ScheduleBlockResult"), { timeZone: "Europe/Paris", block: BLOCK_EXAMPLE }),
+          "200": ok("Repeat of an earlier request with the same key: the block as it is now", ref("ScheduleBlockResult"), { timeZone: "Europe/Paris", block: BLOCK_EXAMPLE }, {
+            "Idempotent-Replayed": { description: "true", schema: { type: "string", const: "true" } },
+          }),
+          "400": errors("Invalid body or key", [
+            validation("end"),
+            { message: "Idempotency-Key header is required", code: "IDEMPOTENCY_KEY_REQUIRED" },
+            { message: "Idempotency-Key must be 8–128 characters of A–Z, a–z, 0–9, _ or -", code: "IDEMPOTENCY_KEY_INVALID" },
+            INVALID_JSON,
+          ]),
+          "409": errors("Confirmed bookings in the way", [blockConflict()]),
+          "410": errors("The block of this request was deleted", [{ message: "The block created by this request has been deleted", code: "BLOCK_DELETED" }]),
+          "422": errors("Key reused for another request", [{ message: "This Idempotency-Key was already used for a different request", code: "IDEMPOTENCY_KEY_REUSED" }]),
+        },
+        { ...adminOnly(), "503": [{ message: "The calendar is busy; retry shortly", code: "CALENDAR_BUSY", retryAfterSeconds: 2 }] },
+      ),
+    }),
+  },
+  "/api/admin/schedule/blocks/{blockId}": {
+    get: op({
+      operationId: "getScheduleBlock",
+      tags: ["Admin: schedule"],
+      summary: "One block",
+      description: "Verified administrator only.",
+      security: PROTECTED,
+      parameters: [blockIdParam],
+      responses: withAuth(
+        {
+          "200": ok("The block", ref("ScheduleBlockResult"), { timeZone: "Europe/Paris", block: BLOCK_EXAMPLE }),
+          "404": errors("No such block", [{ message: "Schedule block not found", code: "BLOCK_NOT_FOUND" }]),
+        },
+        adminOnly(),
+      ),
+    }),
+    patch: op({
+      operationId: "updateScheduleBlock",
+      tags: ["Admin: schedule"],
+      summary: "Change a block",
+      description: "Any of `title`, `note` (`null` removes it), `start`, `end`; the others keep their values. The resulting bounds are checked by the rules of creating a block on every change, also of the title or note only (`400`): a past block can be read and deleted, not changed. Moved bounds are refused with `409 BLOCK_CONFLICT` if a confirmed booking or its break would touch them. Repeating a request changes nothing (`changed: false`). Under the calendar lock; no events and no emails. Verified administrator only.",
+      security: PROTECTED,
+      parameters: [blockIdParam],
+      requestBody: { required: true, content: json(input(updateBlockSchema), { end: "2027-03-03T15:30" }) },
+      responses: withAuth(
+        {
+          "200": ok("The block now", ref("ScheduleBlockUpdateResult"), { timeZone: "Europe/Paris", block: { ...BLOCK_EXAMPLE, end: "2027-03-03T15:30", endsAt: "2027-03-03T14:30:00.000Z", updatedAt: "2027-03-01T09:00:00.000Z" }, changed: true }),
+          "400": errors("Invalid body", [validation("end"), INVALID_JSON]),
+          "404": errors("No such block", [{ message: "Schedule block not found", code: "BLOCK_NOT_FOUND" }]),
+          "409": errors("Confirmed bookings in the way", [blockConflict()]),
+        },
+        { ...adminOnly(), "503": [{ message: "The calendar is busy; retry shortly", code: "CALENDAR_BUSY", retryAfterSeconds: 2 }] },
+      ),
+    }),
+    delete: op({
+      operationId: "deleteScheduleBlock",
+      tags: ["Admin: schedule"],
+      summary: "Delete a block for good",
+      description: "Its time is free for booking again at once (subject to the other rules). Deleting a missing block answers `deleted: false`. A later repeat of the request that created it is `410 BLOCK_DELETED`. No events and no emails. Verified administrator only.",
+      security: PROTECTED,
+      parameters: [blockIdParam],
+      responses: withAuth(
+        { "200": ok("Deleted, or there was no such block", object({ id: { type: "string", format: "uuid" }, deleted: { type: "boolean" } }), { id: BLOCK_ID, deleted: true }) },
         { ...adminOnly(), "503": [{ message: "The calendar is busy; retry shortly", code: "CALENDAR_BUSY", retryAfterSeconds: 2 }] },
       ),
     }),
@@ -1215,6 +1350,14 @@ function adminOnly(): Record<string, ErrorExample[]> {
   return { "403": [{ message: "Forbidden", code: "FORBIDDEN" }] };
 }
 
+function blockConflict(): ErrorExample {
+  return {
+    message: "The block would overlap confirmed bookings or their breaks; resolve them first",
+    code: "BLOCK_CONFLICT",
+    conflicts: [{ bookingId: BOOKING_ID, startsAt: "2027-03-03T12:00:00.000Z", endsAt: "2027-03-03T12:50:00.000Z", serviceName: "Massage example" }],
+  };
+}
+
 function scheduleConflict(): ErrorExample {
   return {
     message: "The change would leave active bookings outside the working hours; resolve them first",
@@ -1235,7 +1378,7 @@ export const buildOpenApiDocument = (): OpenApiDocument => ({
     { name: "Profile", description: "The caller's own profile (Firebase ID token)" },
     { name: "Marketing", description: "Offers subscription with double opt-in" },
     { name: "Bookings", description: "The caller's own bookings (Firebase ID token)" },
-    { name: "Admin: schedule", description: "Working hours (verified administrator)" },
+    { name: "Admin: schedule", description: "Working hours, closures and blocks of the calendar (verified administrator)" },
     { name: "Admin: bookings", description: "All bookings (verified administrator)" },
     { name: "Gift card requests", description: "A client asks the studio for a gift card, handled by hand (Firebase ID token)" },
     { name: "Admin: gift card requests", description: "Gift card requests and their status (verified administrator)" },
