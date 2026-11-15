@@ -8,6 +8,7 @@ import { MARKETING_CONSENT_TEXT_VERSION } from "../src/modules/marketing/consent
 import { subscribeSchema } from "../src/modules/marketing/marketing.routes.js";
 import { ownSubscriptionSchema, syncSchema } from "../src/modules/profiles/profile.routes.js";
 import { updateOwnProfileSchema } from "../src/modules/profiles/profile.schema.js";
+import { createBlockSchema, updateBlockSchema } from "../src/modules/schedule/schedule-block.schema.js";
 import { scheduleClosuresSchema, scheduleDaysSchema, scheduleExceptionSchema, weeklyScheduleSchema } from "../src/modules/schedule/schedule.schema.js";
 import { buildOpenApiDocument } from "../src/openapi/document.js";
 
@@ -160,6 +161,8 @@ const BODY_SCHEMAS: Record<string, z.ZodType> = {
   setScheduleDays: scheduleDaysSchema,
   closeScheduleDates: scheduleClosuresSchema,
   reopenScheduleDates: scheduleClosuresSchema,
+  createScheduleBlock: createBlockSchema,
+  updateScheduleBlock: updateBlockSchema,
   cancelAnyBooking: adminCancelSchema,
   createGiftCardRequest: createGiftCardRequestSchema,
   setGiftCardRequestStatus: updateGiftCardStatusSchema,
@@ -239,9 +242,18 @@ describe("Postman collection", () => {
       expect(key === "{{bookingIdempotencyKey}}" || idempotencyKeySchema.safeParse(key).success, r.name).toBe(true);
     }
     const generators = allScripts.filter((s) => s.includes("{{$guid}}"));
-    expect(generators).toHaveLength(2);
+    expect(generators).toHaveLength(3);
     expect(generators[0]).toContain('if (missing.length === 0 && !pm.environment.get("bookingIdempotencyKey"))');
     expect(generators[1]).toContain('if (!pm.environment.get("giftCardIdempotencyKey"))');
+    expect(generators[2]).toContain('if (!pm.environment.get("blockIdempotencyKey"))');
+  });
+
+  it("createScheduleBlock always sends the key of its own variable", () => {
+    const creates = apiRequests.filter((r) => operationOf(r)?.operationId === "createScheduleBlock");
+    expect(creates).toHaveLength(1);
+    for (const r of creates) {
+      expect(r.request.header.find((h) => h.key === "Idempotency-Key")?.value, r.name).toBe("{{blockIdempotencyKey}}");
+    }
   });
 
   it("createGiftCardRequest sends a key from its own variable (or a fixed one for the expected refusal) and no contacts", () => {
@@ -289,7 +301,7 @@ describe("Postman collection", () => {
 
   it("scripts keep tokens in the environment only and print no values", () => {
     const saved = new Set(allScripts.flatMap((s) => [...s.matchAll(/pm\.environment\.set\((\w+|"\w+")/g)].map((m) => m[1] ?? "")));
-    expect([...saved].sort()).toEqual(['"adminProfileId"', '"bookingId"', '"bookingIdempotencyKey"', '"clientProfileId"', '"giftCardIdempotencyKey"', '"giftCardRequestId"', "ID_VAR", "REFRESH_VAR"]);
+    expect([...saved].sort()).toEqual(['"adminProfileId"', '"blockId"', '"blockIdempotencyKey"', '"bookingId"', '"bookingIdempotencyKey"', '"clientProfileId"', '"giftCardIdempotencyKey"', '"giftCardRequestId"', "ID_VAR", "REFRESH_VAR"]);
     for (const s of allScripts) {
       expect(s).not.toMatch(/pm\.(globals|collectionVariables)\.set|pm\.variables\.set|pm\.sendRequest|setNextRequest|postman\.set/);
       for (const call of s.match(/console\.\w+\([^\n]*/g) ?? []) {

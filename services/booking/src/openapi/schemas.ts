@@ -379,6 +379,40 @@ export const adminGiftCardRequestListSchema = z
 // --- Admin schedule -------------------------------------------------------------
 
 const interval = z.strictObject({ start: localTime, end: localTime });
+
+const localDateTime = z
+  .string()
+  .meta({ description: "Local date and time of the studio (Europe/Paris), YYYY-MM-DDTHH:MM, no offset", examples: ["2027-03-02T14:00"] });
+
+export const scheduleBlockSchema = z
+  .strictObject({
+    id: z.uuid(),
+    title: z.string().meta({ description: "Shown to the admin only (1–100 characters)" }),
+    note: z.string().nullable().meta({ description: "Optional, admin only (up to 500 characters); null: none" }),
+    start: localDateTime,
+    end: localDateTime.meta({ description: "Local end; a block ending at midnight shows the next date at 00:00" }),
+    startsAt: instant,
+    endsAt: instant,
+    createdAt: instant,
+    updatedAt: instant,
+  })
+  .meta({ id: "ScheduleBlock" });
+
+export const scheduleBlockResultSchema = z
+  .strictObject({ timeZone: z.literal("Europe/Paris"), block: scheduleBlockSchema })
+  .meta({ id: "ScheduleBlockResult" });
+
+export const scheduleBlockUpdateResultSchema = z
+  .strictObject({
+    timeZone: z.literal("Europe/Paris"),
+    block: scheduleBlockSchema,
+    changed: z.boolean().meta({ description: "false: the block already had these values, nothing was written" }),
+  })
+  .meta({ id: "ScheduleBlockUpdateResult" });
+
+export const scheduleBlockListSchema = z
+  .strictObject({ timeZone: z.literal("Europe/Paris"), blocks: z.array(scheduleBlockSchema).meta({ description: "By start" }) })
+  .meta({ id: "ScheduleBlockList" });
 export const scheduleExceptionViewSchema = z
   .strictObject({ date: localDate, closed: z.boolean(), intervals: z.array(interval) })
   .meta({ id: "ScheduleException" });
@@ -399,7 +433,10 @@ export const scheduleDayViewSchema = z
         open: z.boolean().meta({ description: "Something can be booked on this date (subject to booking rules and other bookings)" }),
         intervals: z.array(interval).meta({ description: "Hours open for booking: none while closed, else the schedule" }),
       })
-      .meta({ description: "What can be booked now" }),
+      .meta({ description: "What can be booked now: the working hours. Blocks are not cut out of them: see `blocks`" }),
+    blocks: z
+      .array(scheduleBlockSchema)
+      .meta({ description: "Blocks of the calendar overlapping this date, by start; their time (plus a break on each side) takes no bookings" }),
   })
   .meta({ id: "ScheduleDay" });
 

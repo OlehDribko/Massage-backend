@@ -1995,6 +1995,281 @@
           }
         },
         {
+          "name": "Blocks: list of a range (week, month)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"scheduleDaysFrom\", \"scheduleDaysTo\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Set scheduleDaysFrom and scheduleDaysTo (YYYY-MM-DD).\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/schedule/blocks?from={{scheduleDaysFrom}}&to={{scheduleDaysTo}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "schedule",
+                "blocks"
+              ],
+              "query": [
+                {
+                  "key": "from",
+                  "value": "{{scheduleDaysFrom}}"
+                },
+                {
+                  "key": "to",
+                  "value": "{{scheduleDaysTo}}"
+                }
+              ]
+            },
+            "description": "GET /api/admin/schedule/blocks (listScheduleBlocks). Blocks overlapping the dates from–to (inclusive, at most 62), by start."
+          }
+        },
+        {
+          "name": "Blocks: ⚠️ create (Idempotency-Key)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// One key per block: generated only while the variable is empty, never on a repeat.",
+                  "if (!pm.environment.get(\"blockIdempotencyKey\")) {",
+                  "  pm.environment.set(\"blockIdempotencyKey\", pm.variables.replaceIn(\"{{$guid}}\"));",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 201 or 200\", () => pm.expect([201, 200]).to.include(pm.response.code));",
+                  "const replayed = pm.response.headers.get(\"Idempotent-Replayed\") === \"true\";",
+                  "pm.test(replayed ? \"repeat of the same request: the block returned\" : \"new block created\", () => pm.expect(pm.response.code).to.equal(replayed ? 200 : 201));",
+                  "const block = [200, 201].includes(pm.response.code) ? pm.response.json().block : null;",
+                  "if (block && typeof block.id === \"string\" && pm.environment.name) {",
+                  "  pm.environment.set(\"blockId\", block.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{blockIdempotencyKey}}",
+                "description": "One key per block. Same key + same body = safe repeat. Clear blockIdempotencyKey for a new block."
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Rendez-vous personnel\",\n  \"note\": \"Exemple\",\n  \"start\": \"2027-03-03T14:00\",\n  \"end\": \"2027-03-03T15:00\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/schedule/blocks",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "schedule",
+                "blocks"
+              ]
+            },
+            "description": "⚠️ POST /api/admin/schedule/blocks (createScheduleBlock). **Blocks real time in the calendar.** Local times of Europe/Paris without an offset, 5-minute grid; a 15-minute break is kept on each side. `409 BLOCK_CONFLICT` lists confirmed bookings in the way. **Invented example times: edit them before sending.**\n\n**Idempotency-Key** comes from `blockIdempotencyKey` (filled once with a UUID while empty): repeat without changes → `200` with `Idempotent-Replayed: true`; same key with another body → `422 IDEMPOTENCY_KEY_REUSED`; repeat after the block was deleted → `410 BLOCK_DELETED`. Clear the variable for a new block.\n\nSaves the block `id` into `blockId`."
+          }
+        },
+        {
+          "name": "Blocks: get one",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"blockId\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Set blockId (from Blocks: create or list).\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/schedule/blocks/{{blockId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "schedule",
+                "blocks",
+                "{{blockId}}"
+              ]
+            },
+            "description": "GET /api/admin/schedule/blocks/{blockId} (getScheduleBlock)."
+          }
+        },
+        {
+          "name": "Blocks: ⚠️ change",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"blockId\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Set blockId (from Blocks: create or list).\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"end\": \"2027-03-03T15:30\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/schedule/blocks/{{blockId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "schedule",
+                "blocks",
+                "{{blockId}}"
+              ]
+            },
+            "description": "⚠️ PATCH /api/admin/schedule/blocks/{blockId} (updateScheduleBlock). Any of title, note (null removes it), start, end. New bounds are checked against confirmed bookings (`409 BLOCK_CONFLICT`). **Invented example time: edit it before sending.**"
+          }
+        },
+        {
+          "name": "Blocks: ⚠️ delete",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skips the request while a required variable is empty (no values are printed).",
+                  "const missing = [\"blockId\"].filter((name) => !pm.environment.get(name));",
+                  "if (missing.length > 0) {",
+                  "  console.warn(\"Request skipped. Empty: \" + missing.join(\", \") + \". Set blockId (from Blocks: create or list).\");",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/schedule/blocks/{{blockId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "schedule",
+                "blocks",
+                "{{blockId}}"
+              ]
+            },
+            "description": "⚠️ DELETE /api/admin/schedule/blocks/{blockId} (deleteScheduleBlock). Hard delete; the time is free again at once. A missing block answers `deleted: false`."
+          }
+        },
+        {
           "name": "Schedule: list exceptions",
           "event": [
             {

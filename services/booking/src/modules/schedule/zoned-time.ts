@@ -125,6 +125,35 @@ export const localDateTimeToInstant = (date: LocalDate, minuteOfDay: number, tim
   return new Date(wall - offsetBefore * MINUTE_MS);
 };
 
+/** A local date and time as one instant, or why it is not exactly one. */
+export type ResolvedLocalTime =
+  | { kind: "exact"; instant: Date }
+  /** In the spring gap: this wall-clock time never happens on that date. */
+  | { kind: "nonexistent" }
+  /** In the autumn overlap: this wall-clock time happens twice. */
+  | { kind: "ambiguous" };
+
+/**
+ * Strict counterpart of localDateTimeToInstant for times an admin enters:
+ * nothing is shifted or chosen, a time in a DST gap or overlap is reported.
+ */
+export const resolveLocalDateTime = (date: LocalDate, minuteOfDay: number, timeZone: string): ResolvedLocalTime => {
+  const { year, month, day } = dateFields(date);
+  const wall = Date.UTC(year, month - 1, day, 0, minuteOfDay);
+  const offsets = new Set([offsetMinutesAt(wall - DAY_MS, timeZone), offsetMinutesAt(wall + DAY_MS, timeZone)]);
+  const valid = [...offsets]
+    .map((offset) => wall - offset * MINUTE_MS)
+    .filter((candidate) => offsetMinutesAt(candidate, timeZone) * MINUTE_MS === wall - candidate);
+  const [only, second] = valid;
+  if (only === undefined) {
+    return { kind: "nonexistent" };
+  }
+  if (second !== undefined) {
+    return { kind: "ambiguous" };
+  }
+  return { kind: "exact", instant: new Date(only) };
+};
+
 export const addDays = (date: LocalDate, days: number): LocalDate => {
   const { year, month, day } = dateFields(date);
   return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);

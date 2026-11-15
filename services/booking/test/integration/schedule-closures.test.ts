@@ -29,6 +29,8 @@ const daySchema = z.strictObject({
   intervals: z.array(interval),
   closure: z.strictObject({ closedAt: z.string() }).nullable(),
   effective: z.strictObject({ open: z.boolean(), intervals: z.array(interval) }),
+  // No blocks in these tests (blocks: test/integration/schedule-blocks.test.ts).
+  blocks: z.tuple([]),
 });
 const daysOf = (body: unknown) => z.object({ days: z.array(daySchema) }).parse(body).days;
 const bookingsOf = (body: unknown) =>

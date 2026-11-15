@@ -1,7 +1,8 @@
+import type { ScheduleBlock } from "../../generated/prisma/client.js";
 import type { Tx } from "./calendar-transaction.js";
 import type { WeeklyInterval } from "./schedule.schema.js";
-import type { MinuteInterval } from "./slots.js";
-import { isoWeekday, localDateFromDb, localDateToDb, type LocalDate } from "./zoned-time.js";
+import type { MinuteInterval, OccupiedTime } from "./slots.js";
+import { isoWeekday, localDateFromDb, localDateToDb, minutesToMs, type LocalDate } from "./zoned-time.js";
 
 /** Working intervals of a date: its exception if any, else the weekly rule. */
 export type DaySchedule = { intervals: MinuteInterval[]; source: "weekly" | "exception" };
@@ -158,4 +159,30 @@ export const putDays = async (
   if (intervals.length > 0) {
     await tx.scheduleExceptionInterval.createMany({ data: intervals });
   }
+};
+
+/** Blocks overlapping [from, to) (their own time, without breaks), by start. */
+export const loadBlocks = (db: Tx, range: { from: Date; to: Date }): Promise<ScheduleBlock[]> =>
+  db.scheduleBlock.findMany({
+    where: { startsAt: { lt: range.to }, endsAt: { gt: range.from } },
+    orderBy: [{ startsAt: "asc" }, { endsAt: "asc" }, { id: "asc" }],
+  });
+
+/**
+ * Time kept by blocks for availability, overlapping [from, to): a block
+ * [startsAt, endsAt) is occupied like a booking, with one break after it
+ * (blockedUntil = endsAt + break). The break before it comes from the slot
+ * rules: a session plus its break must end by the block's start. Overlapping
+ * blocks simply merge.
+ */
+export const blockTimes = async (
+  db: Tx,
+  range: { from: Date; to: Date; breakMinutes: number },
+): Promise<OccupiedTime[]> => {
+  const breakMs = minutesToMs(range.breakMinutes);
+  const blocks = await db.scheduleBlock.findMany({
+    where: { startsAt: { lt: range.to }, endsAt: { gt: new Date(range.from.getTime() - breakMs) } },
+    select: { startsAt: true, endsAt: true },
+  });
+  return blocks.map((block) => ({ startsAt: block.startsAt, blockedUntil: new Date(block.endsAt.getTime() + breakMs) }));
 };

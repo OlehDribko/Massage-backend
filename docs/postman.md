@@ -85,7 +85,8 @@
 2. `Schedule: get` → `Schedule: ⚠️ replace weekly`. Години в тілі запиту вигадані, відредагуйте їх перед надсиланням.
 3. Винятки: заповніть `exceptionDate`, далі `Schedule: ⚠️ set exception of a date` або `⚠️ remove exception of a date`. Закрити кілька дат без скасування записів — `Schedule: ⚠️ close dates (bookings stay)`, відкрити — `Schedule: ⚠️ reopen dates` (дати в тілі вигадані).
 4. Тиждень чи місяць: заповніть `scheduleDaysFrom` / `scheduleDaysTo` (`YYYY-MM-DD`, щонайбільше 62 дні) → `Schedule: days of a range (week, month)`. Для змін — `Schedule: ⚠️ set several dates (week, month)`: дати й години в тілі вигадані, відредагуйте їх перед надсиланням.
-5. Бронювання: заповніть `adminBookingsDate` для `Bookings: list of a date` або використайте `scheduleDaysFrom` / `scheduleDaysTo` для `Bookings: list of a range (week, month)`, далі `Bookings: get any` і `Bookings: ⚠️ cancel (studio)` за `bookingId`.
+5. Блоки зайнятості: `Blocks: ⚠️ create (Idempotency-Key)` → зберігає `blockId`; межі в тілі вигадані (місцевий час Europe/Paris без зсуву, `YYYY-MM-DDTHH:MM`, крок 5 хв), відредагуйте їх. Ключ — зі змінної `blockIdempotencyKey` за правилами `bookingIdempotencyKey` нижче; для нового блоку очистіть її. Повтор після видалення блоку → `410 BLOCK_DELETED`. Далі `Blocks: get one` / `⚠️ change` / `⚠️ delete`; перегляд — `Blocks: list of a range (week, month)` за `scheduleDaysFrom` / `scheduleDaysTo`.
+6. Бронювання: заповніть `adminBookingsDate` для `Bookings: list of a date` або використайте `scheduleDaysFrom` / `scheduleDaysTo` для `Bookings: list of a range (week, month)`, далі `Bookings: get any` і `Bookings: ⚠️ cancel (studio)` за `bookingId`.
 
 **Клієнт** (`3. Client`):
 1. `Bookings: ⚠️ create (Idempotency-Key)` → зберігає `bookingId`.
@@ -126,6 +127,7 @@
 | `Profile: ⚠️ sign out everywhere` | Відкликає всі сесії акаунта, після цього потрібен новий вхід |
 | `Bookings: ⚠️ create` / `⚠️ reschedule` / `⚠️ cancel own` | Створює, переносить або скасовує бронювання. Листи про бронювання на staging вимкнено; після їх увімкнення ці запити надсилатимуть листи |
 | `Schedule: ⚠️ replace weekly` / `⚠️ set exception` / `⚠️ remove exception` / `⚠️ set several dates` | Змінює графік студії |
+| `Blocks: ⚠️ create` / `⚠️ change` / `⚠️ delete` | Займає, змінює або звільняє час у календарі: клієнти бачать менше (або знову більше) слотів. Листів немає |
 | `Bookings: ⚠️ cancel (studio)` | Скасовує бронювання клієнта (і лист клієнту, коли листи увімкнено) |
 | `Gift cards: ⚠️ request a gift card` | Створює заявку; лист адміністратору (коли листи увімкнено, на staging лише за allowlist) |
 | `Gift cards: ⚠️ set status` | Змінює статус заявки й додає запис історії (листів немає) |

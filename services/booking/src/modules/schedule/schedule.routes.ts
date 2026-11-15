@@ -1,7 +1,12 @@
 import { Router, type Request } from "express";
 import { AppError } from "../../shared/errors/app-error.js";
+import { idempotencyKeyFrom } from "../../shared/http/idempotency-key.js";
 import { withValidatedBody } from "../../shared/http/validated-body.js";
+import { requireActor } from "../access/require-access.js";
 import type { BookingRules } from "./booking-rules.js";
+import { blockIdSchema, createBlockSchema, updateBlockSchema } from "./schedule-block.schema.js";
+import { blockNotFound, type ScheduleBlockService } from "./schedule-block.service.js";
+import { toBlockView } from "./schedule-block.view.js";
 import {
   dayRangeSchema,
   formatLocalTime,
@@ -32,8 +37,8 @@ const exceptionsView = (exceptions: Map<LocalDate, MinuteInterval[]>) =>
 
 // closed / source / intervals: the date's schedule (unchanged meaning; what a
 // reopened date returns to). closure: a ScheduleClosure. effective: what can
-// be booked now.
-const daysView = (days: DayView[]) =>
+// be booked now (working hours). blocks: blocks overlapping the date.
+const daysView = (days: DayView[], timeZone: string) =>
   days.map((day) => ({
     date: day.date,
     weekday: day.weekday,
@@ -42,6 +47,7 @@ const daysView = (days: DayView[]) =>
     intervals: day.intervals.map(intervalView),
     closure: day.closure === null ? null : { closedAt: day.closure.closedAt.toISOString() },
     effective: { open: day.effective.length > 0, intervals: day.effective.map(intervalView) },
+    blocks: day.blocks.map((block) => toBlockView(block, timeZone)),
   }));
 
 const dateParam = (req: Request): LocalDate => {
@@ -70,13 +76,23 @@ const optionalDateQuery = (req: Request, name: "from" | "to"): LocalDate | undef
   return parsed.data;
 };
 
+const blockIdParam = (req: Request): string => {
+  const parsed = blockIdSchema.safeParse(req.params.blockId);
+  if (!parsed.success) {
+    throw blockNotFound();
+  }
+  return parsed.data;
+};
+
 /** Admin: /api/admin/schedule. Mount behind authenticate + requireAdmin. */
 export const createAdminScheduleRouter = ({
   schedule,
+  blocks,
   rules,
   now,
 }: {
   schedule: ScheduleService;
+  blocks: ScheduleBlockService;
   rules: BookingRules;
   now: () => Date;
 }): Router => {
@@ -129,14 +145,14 @@ export const createAdminScheduleRouter = ({
         details: { errors: parsed.error.issues.map((issue) => ({ field: issue.path.map(String), message: issue.message })) },
       });
     }
-    res.status(200).json({ timeZone: rules.timeZone, days: daysView(await schedule.getDays(parsed.data)) });
+    res.status(200).json({ timeZone: rules.timeZone, days: daysView(await schedule.getDays(parsed.data), rules.timeZone) });
   });
 
   // Several dates at once, all or nothing.
   router.put(
     "/days",
     withValidatedBody(scheduleDaysSchema, async (changes, res) => {
-      res.status(200).json({ timeZone: rules.timeZone, days: daysView(await schedule.setDays(changes)) });
+      res.status(200).json({ timeZone: rules.timeZone, days: daysView(await schedule.setDays(changes), rules.timeZone) });
     }),
   );
 
@@ -145,7 +161,7 @@ export const createAdminScheduleRouter = ({
     "/closures",
     withValidatedBody(scheduleClosuresSchema, async (dates, res) => {
       const result = await schedule.closeDates(dates);
-      res.status(200).json({ timeZone: rules.timeZone, days: daysView(result.days), bookings: result.bookings });
+      res.status(200).json({ timeZone: rules.timeZone, days: daysView(result.days, rules.timeZone), bookings: result.bookings });
     }),
   );
 
@@ -153,9 +169,55 @@ export const createAdminScheduleRouter = ({
   router.post(
     "/closures/reopen",
     withValidatedBody(scheduleClosuresSchema, async (dates, res) => {
-      res.status(200).json({ timeZone: rules.timeZone, days: daysView(await schedule.reopenDates(dates)) });
+      res.status(200).json({ timeZone: rules.timeZone, days: daysView(await schedule.reopenDates(dates), rules.timeZone) });
     }),
   );
+
+  // Blocks of the calendar overlapping the dates from–to (both required).
+  router.get("/blocks", async (req, res) => {
+    const parsed = dayRangeSchema.safeParse({ from: req.query.from, to: req.query.to });
+    if (!parsed.success) {
+      throw new AppError(400, "Validation failed", {
+        code: "VALIDATION_FAILED",
+        details: { errors: parsed.error.issues.map((issue) => ({ field: issue.path.map(String), message: issue.message })) },
+      });
+    }
+    res.status(200).json({
+      timeZone: rules.timeZone,
+      blocks: (await blocks.list(parsed.data)).map((block) => toBlockView(block, rules.timeZone)),
+    });
+  });
+
+  router.post(
+    "/blocks",
+    withValidatedBody(createBlockSchema, async (body, res, _next, req) => {
+      const idempotencyKey = idempotencyKeyFrom(req);
+      const result = await blocks.create(requireActor(req), body, idempotencyKey);
+      if (!result.changed) {
+        res.setHeader("Idempotent-Replayed", "true");
+      }
+      res.status(result.changed ? 201 : 200).json({ timeZone: rules.timeZone, block: toBlockView(result.block, rules.timeZone) });
+    }),
+  );
+
+  router.get("/blocks/:blockId", async (req, res) => {
+    const block = await blocks.get(blockIdParam(req));
+    res.status(200).json({ timeZone: rules.timeZone, block: toBlockView(block, rules.timeZone) });
+  });
+
+  router.patch(
+    "/blocks/:blockId",
+    withValidatedBody(updateBlockSchema, async (body, res, _next, req) => {
+      const result = await blocks.update(blockIdParam(req), body);
+      res.status(200).json({ timeZone: rules.timeZone, block: toBlockView(result.block, rules.timeZone), changed: result.changed });
+    }),
+  );
+
+  // Hard delete; deleting a missing block again answers deleted: false.
+  router.delete("/blocks/:blockId", async (req, res) => {
+    const id = blockIdParam(req);
+    res.status(200).json({ id, deleted: await blocks.remove(id) });
+  });
 
   // Back to the weekly rule for that date.
   router.delete("/exceptions/:date", async (req, res) => {

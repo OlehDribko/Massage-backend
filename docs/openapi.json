@@ -3,7 +3,7 @@
   "info": {
     "title": "Massage booking API",
     "version": "1.0.0",
-    "description": "Booking API of the massage studio (modular monolith, one application). All payloads are JSON.\n\n## Try it out runs real operations\n\"Try it out\" sends real requests to **this server**, in the environment you opened the page from: bookings are created, profiles and schedules change, emails can be sent. Use test accounts and test data.\n\n## Sign-in happens in Firebase, not in this API\nGoogle, email/password and anonymous (guest) sign-in are done by the frontend with the **Firebase Authentication client SDK**. This API has no sign-in, sign-up or password routes. It only receives the resulting **Firebase ID token** in `Authorization: Bearer <token>` and verifies it on every request (signature, project, expiry, revocation, disabled account).\n\nTo try protected operations: obtain an ID token from your own Firebase session in the frontend (`await auth.currentUser.getIdToken()`), click **Authorize** and paste it. ID tokens expire after about an hour. The page does not keep the token after a reload. Never paste tokens of other people.\n\n## Who may do what\n- **Public** (no token): catalogue, availability, health, the marketing subscription form and its email links. A token sent to a public route is ignored.\n- **Guest**: Firebase anonymous session. Has a profile (`POST /api/me/sync`), sees and cancels own bookings, but **cannot book** (`BOOKING_NOT_READY` with `anonymous_session`).\n- **Registered client**: role `client`, not anonymous. To book or reschedule, the email must be verified and the profile needs a name and a phone (`bookingReadiness.blockers` lists what is missing).\n- **Gift card requests** (`POST /api/gift-card-requests`): the same profile requirements as booking (`GIFT_CARD_REQUEST_NOT_READY` with the same `blockers`); guests cannot submit.\n- **Administrator**: role `admin` (assigned by the owner with a command, never through the API), not anonymous, **verified email**. Only administrators use `/api/admin`; they do not book for themselves.\n\nRoutes under `/api/me`, `/api/bookings`, `/api/gift-card-requests` and `/api/admin` exist only when Firebase is configured on the server; `/api/marketing` and `POST /api/me/marketing/subscription` only when marketing is enabled (otherwise `404 NOT_FOUND`).\n\n## Money\nInteger **euro cents**, currency `EUR` (8500 = 85,00 €).\n- `priceCents` — regular price; `effectivePriceCents` — price of a booking created **now**.\n- `salePriceCents` and `saleEndsAt` — only while a sale is active (server time strictly before `saleEndsAt`), otherwise both `null`. Exactly at `saleEndsAt` the regular price applies.\n- The price is decided by the server at the **moment the booking is created** (not the session date) and stored in the booking (`service.priceCents` of the booking). Rescheduling, the end of a sale and catalogue changes never change it. Prices in requests are not accepted.\n\n## Time\n- Requests: instants in ISO 8601 **with an offset** (`2027-03-02T08:00:00Z` or `2027-03-02T09:00:00+01:00`). Responses: UTC (`…Z`).\n- Business time zone: **Europe/Paris** (summer and winter time). Local dates are `YYYY-MM-DD`, local times `HH:MM`.\n- One minimum break of **15 minutes** between two sessions.\n- **Grid of starts:** every 15 minutes from the start of a free stretch: the start of a working interval, or the end of the previous session plus the break. The session must fit in the working interval (the break after the last session need not).\n- **Latest start 19:00** local time (inclusive).\n- A new start (booking or rescheduling) must be at least **12 h** from now and not later than the end of the local day **today + 45 days**.\n- **Rescheduling** by the client only while **more than 12 h** remain before the current start; the service and the agreed price stay.\n- **Cancelling** (client or admin) only **before the start**.\n\n## Idempotency-Key\nRequired on `POST /api/bookings` and `POST /api/gift-card-requests` (the same rules for both; below for bookings): 8–128 characters `[A-Za-z0-9_-]` (a UUID fits), one per booking attempt of the client. A repeat with the same key and the same request returns the original booking (`200`, header `Idempotent-Replayed: true`) with its original price, even after a sale has ended; no second booking or event. The same key with a different request is `422 IDEMPOTENCY_KEY_REUSED`. Rescheduling and cancelling are idempotent without a key: a repeat answers `changed: false`.\n\n## Email status\nBooking emails are separate from the booking status. `accepted` means **accepted by the email provider for sending, not delivered to the mailbox**. A failed email never cancels or changes the booking.\n\n## retryAfterSeconds\n- In errors (also the `Retry-After` header, and in the message): `AUTH_UNAVAILABLE` (5 s), `CALENDAR_BUSY` (2 s), `GIFT_CARD_REQUEST_BUSY` (2 s), `GIFT_CARD_REQUEST_LIMIT_REACHED` (until the oldest of the client's requests of the last 24 h is 24 h old), `CONFIRMATION_EMAIL_NOT_SENT`: the remaining resend block of the address after a provider rate limit (until the provider's Retry-After, or 10 minutes), otherwise 60 s. A retry before that sends nothing and answers `no_action`.\n- In `POST /api/me/marketing/subscription` with `outcome: \"no_action\"`: seconds until \"send again\" may send a new confirmation email (10-minute interval after a sent email; after a provider rate limit, until the provider's Retry-After).\n\n## Errors\n`{ \"message\": \"…\", \"code\": \"…\" }` plus fields of some codes (`errors`, `blockers`, `reason`, `retryAfterSeconds`, `currentConsentTextVersion`, `conflicts`). Unknown fields in request bodies are rejected (`400 VALIDATION_FAILED`). Malformed JSON: `400 INVALID_JSON`; body over 16 kB: `413 PAYLOAD_TOO_LARGE`; unknown route: `404 NOT_FOUND`."
+    "description": "Booking API of the massage studio (modular monolith, one application). All payloads are JSON.\n\n## Try it out runs real operations\n\"Try it out\" sends real requests to **this server**, in the environment you opened the page from: bookings are created, profiles and schedules change, emails can be sent. Use test accounts and test data.\n\n## Sign-in happens in Firebase, not in this API\nGoogle, email/password and anonymous (guest) sign-in are done by the frontend with the **Firebase Authentication client SDK**. This API has no sign-in, sign-up or password routes. It only receives the resulting **Firebase ID token** in `Authorization: Bearer <token>` and verifies it on every request (signature, project, expiry, revocation, disabled account).\n\nTo try protected operations: obtain an ID token from your own Firebase session in the frontend (`await auth.currentUser.getIdToken()`), click **Authorize** and paste it. ID tokens expire after about an hour. The page does not keep the token after a reload. Never paste tokens of other people.\n\n## Who may do what\n- **Public** (no token): catalogue, availability, health, the marketing subscription form and its email links. A token sent to a public route is ignored.\n- **Guest**: Firebase anonymous session. Has a profile (`POST /api/me/sync`), sees and cancels own bookings, but **cannot book** (`BOOKING_NOT_READY` with `anonymous_session`).\n- **Registered client**: role `client`, not anonymous. To book or reschedule, the email must be verified and the profile needs a name and a phone (`bookingReadiness.blockers` lists what is missing).\n- **Gift card requests** (`POST /api/gift-card-requests`): the same profile requirements as booking (`GIFT_CARD_REQUEST_NOT_READY` with the same `blockers`); guests cannot submit.\n- **Administrator**: role `admin` (assigned by the owner with a command, never through the API), not anonymous, **verified email**. Only administrators use `/api/admin`; they do not book for themselves.\n\nRoutes under `/api/me`, `/api/bookings`, `/api/gift-card-requests` and `/api/admin` exist only when Firebase is configured on the server; `/api/marketing` and `POST /api/me/marketing/subscription` only when marketing is enabled (otherwise `404 NOT_FOUND`).\n\n## Money\nInteger **euro cents**, currency `EUR` (8500 = 85,00 €).\n- `priceCents` — regular price; `effectivePriceCents` — price of a booking created **now**.\n- `salePriceCents` and `saleEndsAt` — only while a sale is active (server time strictly before `saleEndsAt`), otherwise both `null`. Exactly at `saleEndsAt` the regular price applies.\n- The price is decided by the server at the **moment the booking is created** (not the session date) and stored in the booking (`service.priceCents` of the booking). Rescheduling, the end of a sale and catalogue changes never change it. Prices in requests are not accepted.\n\n## Time\n- Requests: instants in ISO 8601 **with an offset** (`2027-03-02T08:00:00Z` or `2027-03-02T09:00:00+01:00`). Responses: UTC (`…Z`).\n- Business time zone: **Europe/Paris** (summer and winter time). Local dates are `YYYY-MM-DD`, local times `HH:MM`.\n- One minimum break of **15 minutes** between two sessions.\n- **Grid of starts:** every 15 minutes from the start of a free stretch: the start of a working interval, or the end of the previous session plus the break. The session must fit in the working interval (the break after the last session need not).\n- **Latest start 19:00** local time (inclusive).\n- A new start (booking or rescheduling) must be at least **12 h** from now and not later than the end of the local day **today + 45 days**.\n- **Rescheduling** by the client only while **more than 12 h** remain before the current start; the service and the agreed price stay.\n- **Cancelling** (client or admin) only **before the start**.\n\n## Idempotency-Key\nRequired on `POST /api/bookings`, `POST /api/gift-card-requests` and `POST /api/admin/schedule/blocks` (the same rules; below for bookings; for blocks see that operation): 8–128 characters `[A-Za-z0-9_-]` (a UUID fits), one per booking attempt of the client. A repeat with the same key and the same request returns the original booking (`200`, header `Idempotent-Replayed: true`) with its original price, even after a sale has ended; no second booking or event. The same key with a different request is `422 IDEMPOTENCY_KEY_REUSED`. Rescheduling and cancelling are idempotent without a key: a repeat answers `changed: false`.\n\n## Email status\nBooking emails are separate from the booking status. `accepted` means **accepted by the email provider for sending, not delivered to the mailbox**. A failed email never cancels or changes the booking.\n\n## retryAfterSeconds\n- In errors (also the `Retry-After` header, and in the message): `AUTH_UNAVAILABLE` (5 s), `CALENDAR_BUSY` (2 s), `GIFT_CARD_REQUEST_BUSY` (2 s), `GIFT_CARD_REQUEST_LIMIT_REACHED` (until the oldest of the client's requests of the last 24 h is 24 h old), `CONFIRMATION_EMAIL_NOT_SENT`: the remaining resend block of the address after a provider rate limit (until the provider's Retry-After, or 10 minutes), otherwise 60 s. A retry before that sends nothing and answers `no_action`.\n- In `POST /api/me/marketing/subscription` with `outcome: \"no_action\"`: seconds until \"send again\" may send a new confirmation email (10-minute interval after a sent email; after a provider rate limit, until the provider's Retry-After).\n\n## Errors\n`{ \"message\": \"…\", \"code\": \"…\" }` plus fields of some codes (`errors`, `blockers`, `reason`, `retryAfterSeconds`, `currentConsentTextVersion`, `conflicts`). Unknown fields in request bodies are rejected (`400 VALIDATION_FAILED`). Malformed JSON: `400 INVALID_JSON`; body over 16 kB: `413 PAYLOAD_TOO_LARGE`; unknown route: `404 NOT_FOUND`."
   },
   "servers": [
     {
@@ -38,7 +38,7 @@
     },
     {
       "name": "Admin: schedule",
-      "description": "Working hours (verified administrator)"
+      "description": "Working hours, closures and blocks of the calendar (verified administrator)"
     },
     {
       "name": "Admin: bookings",
@@ -3803,7 +3803,7 @@
           "Admin: schedule"
         ],
         "summary": "Hours in effect on each date of a range (a week, a month)",
-        "description": "Every date from `from` to `to` (inclusive, at most 62 dates) with its working hours: the exception of the date if set, else the weekly rule. Verified administrator only.",
+        "description": "Every date from `from` to `to` (inclusive, at most 62 dates) with its working hours: the exception of the date if set, else the weekly rule. `effective.intervals` stays the working hours; `blocks` lists the blocks overlapping the date (their time is not cut out of the hours). Verified administrator only.",
         "security": [
           {
             "firebaseIdToken": []
@@ -3872,7 +3872,8 @@
                             "end": "20:30"
                           }
                         ]
-                      }
+                      },
+                      "blocks": []
                     },
                     {
                       "date": "2027-03-02",
@@ -3884,7 +3885,8 @@
                       "effective": {
                         "open": false,
                         "intervals": []
-                      }
+                      },
+                      "blocks": []
                     },
                     {
                       "date": "2027-03-03",
@@ -3906,7 +3908,20 @@
                             "end": "20:30"
                           }
                         ]
-                      }
+                      },
+                      "blocks": [
+                        {
+                          "id": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d",
+                          "title": "Rendez-vous personnel",
+                          "note": null,
+                          "start": "2027-03-03T14:00",
+                          "end": "2027-03-03T15:00",
+                          "startsAt": "2027-03-03T13:00:00.000Z",
+                          "endsAt": "2027-03-03T14:00:00.000Z",
+                          "createdAt": "2027-03-01T08:00:00.000Z",
+                          "updatedAt": "2027-03-01T08:00:00.000Z"
+                        }
+                      ]
                     }
                   ]
                 }
@@ -4199,7 +4214,8 @@
                             "end": "20:30"
                           }
                         ]
-                      }
+                      },
+                      "blocks": []
                     },
                     {
                       "date": "2027-03-02",
@@ -4211,7 +4227,8 @@
                       "effective": {
                         "open": false,
                         "intervals": []
-                      }
+                      },
+                      "blocks": []
                     },
                     {
                       "date": "2027-03-03",
@@ -4233,7 +4250,20 @@
                             "end": "20:30"
                           }
                         ]
-                      }
+                      },
+                      "blocks": [
+                        {
+                          "id": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d",
+                          "title": "Rendez-vous personnel",
+                          "note": null,
+                          "start": "2027-03-03T14:00",
+                          "end": "2027-03-03T15:00",
+                          "startsAt": "2027-03-03T13:00:00.000Z",
+                          "endsAt": "2027-03-03T14:00:00.000Z",
+                          "createdAt": "2027-03-01T08:00:00.000Z",
+                          "updatedAt": "2027-03-01T08:00:00.000Z"
+                        }
+                      ]
                     }
                   ]
                 }
@@ -4466,7 +4496,8 @@
                       "effective": {
                         "open": false,
                         "intervals": []
-                      }
+                      },
+                      "blocks": []
                     }
                   ],
                   "bookings": [
@@ -4684,7 +4715,8 @@
                             "end": "20:30"
                           }
                         ]
-                      }
+                      },
+                      "blocks": []
                     }
                   ]
                 }
@@ -4719,6 +4751,1090 @@
                       "code": "INVALID_JSON"
                     }
                   }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No, invalid, expired or revoked ID token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "AUTH_REQUIRED": {
+                    "value": {
+                      "message": "Authentication required",
+                      "code": "AUTH_REQUIRED"
+                    }
+                  },
+                  "INVALID_TOKEN": {
+                    "value": {
+                      "message": "Invalid ID token",
+                      "code": "INVALID_TOKEN"
+                    }
+                  },
+                  "TOKEN_EXPIRED": {
+                    "value": {
+                      "message": "ID token expired; refresh it and retry",
+                      "code": "TOKEN_EXPIRED"
+                    }
+                  },
+                  "SESSION_REVOKED": {
+                    "value": {
+                      "message": "Session revoked; sign in again",
+                      "code": "SESSION_REVOKED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "ACCOUNT_DISABLED": {
+                    "value": {
+                      "message": "Account disabled",
+                      "code": "ACCOUNT_DISABLED"
+                    }
+                  },
+                  "FORBIDDEN": {
+                    "value": {
+                      "message": "Forbidden",
+                      "code": "FORBIDDEN"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying (same as retryAfterSeconds)",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "AUTH_UNAVAILABLE": {
+                    "value": {
+                      "message": "Authentication is temporarily unavailable; retry later",
+                      "code": "AUTH_UNAVAILABLE",
+                      "retryAfterSeconds": 5
+                    }
+                  },
+                  "CALENDAR_BUSY": {
+                    "value": {
+                      "message": "The calendar is busy; retry shortly",
+                      "code": "CALENDAR_BUSY",
+                      "retryAfterSeconds": 2
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/schedule/blocks": {
+      "get": {
+        "operationId": "listScheduleBlocks",
+        "tags": [
+          "Admin: schedule"
+        ],
+        "summary": "Blocks of the calendar in a range of dates",
+        "description": "Blocks overlapping any local date from `from` to `to` (inclusive, at most 62 dates), by start. The same blocks are in `GET /api/admin/schedule/days` per date. Verified administrator only.",
+        "security": [
+          {
+            "firebaseIdToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "required": true,
+            "description": "First date (required)",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
+            "example": "2027-03-01"
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": true,
+            "description": "Last date (required)",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
+            "example": "2027-03-07"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Blocks",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleBlockList"
+                },
+                "example": {
+                  "timeZone": "Europe/Paris",
+                  "blocks": [
+                    {
+                      "id": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d",
+                      "title": "Rendez-vous personnel",
+                      "note": null,
+                      "start": "2027-03-03T14:00",
+                      "end": "2027-03-03T15:00",
+                      "startsAt": "2027-03-03T13:00:00.000Z",
+                      "endsAt": "2027-03-03T14:00:00.000Z",
+                      "createdAt": "2027-03-01T08:00:00.000Z",
+                      "updatedAt": "2027-03-01T08:00:00.000Z"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid dates, or too long a range",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "VALIDATION_FAILED": {
+                    "value": {
+                      "message": "Validation failed",
+                      "code": "VALIDATION_FAILED",
+                      "errors": [
+                        {
+                          "field": [
+                            "to"
+                          ],
+                          "message": "Invalid input"
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No, invalid, expired or revoked ID token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "AUTH_REQUIRED": {
+                    "value": {
+                      "message": "Authentication required",
+                      "code": "AUTH_REQUIRED"
+                    }
+                  },
+                  "INVALID_TOKEN": {
+                    "value": {
+                      "message": "Invalid ID token",
+                      "code": "INVALID_TOKEN"
+                    }
+                  },
+                  "TOKEN_EXPIRED": {
+                    "value": {
+                      "message": "ID token expired; refresh it and retry",
+                      "code": "TOKEN_EXPIRED"
+                    }
+                  },
+                  "SESSION_REVOKED": {
+                    "value": {
+                      "message": "Session revoked; sign in again",
+                      "code": "SESSION_REVOKED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "ACCOUNT_DISABLED": {
+                    "value": {
+                      "message": "Account disabled",
+                      "code": "ACCOUNT_DISABLED"
+                    }
+                  },
+                  "FORBIDDEN": {
+                    "value": {
+                      "message": "Forbidden",
+                      "code": "FORBIDDEN"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Firebase cannot be reached to verify the token",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying (same as retryAfterSeconds)",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "AUTH_UNAVAILABLE": {
+                    "value": {
+                      "message": "Authentication is temporarily unavailable; retry later",
+                      "code": "AUTH_UNAVAILABLE",
+                      "retryAfterSeconds": 5
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createScheduleBlock",
+        "tags": [
+          "Admin: schedule"
+        ],
+        "summary": "Block time in the calendar (e.g. a personal appointment)",
+        "description": "Time kept out of booking on top of the working hours: no new booking or move overlaps the block, and a 15-minute break is kept on each side (a block 14:00–15:00 allows a session ending at 13:45 and the next start at 15:15; the grid after a block starts at its end plus the break). Blocks may overlap each other; their time merges. `start` and `end`: local time of Europe/Paris, `YYYY-MM-DDTHH:MM` without an offset, minutes a multiple of 5; `start` and `end` lie on one local date: `end` may be `…T24:00` (the midnight ending that date, the same as the next date at 00:00; returned as the next date at 00:00), any later end is refused (`400`, field `end`). At least 15 minutes of real time; a whole local day is allowed also on the days of summer and winter time (23 or 25 real hours). Local times that do not exist (spring) or occur twice (autumn) on that date are refused (`400`). `end` must be in the future when written (`400`, field `end`); the start date is at most today + 365 days. `title` 1–100 characters, `note` optional, up to 500 (both trimmed; an empty note is none). Refused with `409 BLOCK_CONFLICT` (listing them) if a confirmed booking or its break would touch the block or its breaks; nothing is cancelled. Checked and written under the calendar lock of bookings. No events and no emails. Requires `Idempotency-Key` (one per block the admin decides to create): a repeat with the same request returns the block as it is now (`200`, `Idempotent-Replayed: true`); the same key with another request is `422 IDEMPOTENCY_KEY_REUSED`; a repeat after the block was deleted is `410 BLOCK_DELETED` and never creates it again. Verified administrator only.",
+        "security": [
+          {
+            "firebaseIdToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "8–128 characters [A-Za-z0-9_-]; one per block to create. Repeat it to retry safely.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{8,128}$"
+            },
+            "example": "5c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "title": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "note": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "maxLength": 500
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "start": {
+                    "type": "string",
+                    "pattern": "^(\\d{4}-\\d{2}-\\d{2})T(\\d{2}):(\\d{2})$"
+                  },
+                  "end": {
+                    "type": "string",
+                    "pattern": "^(\\d{4}-\\d{2}-\\d{2})T(\\d{2}):(\\d{2})$"
+                  }
+                },
+                "required": [
+                  "title",
+                  "start",
+                  "end"
+                ],
+                "additionalProperties": false
+              },
+              "example": {
+                "title": "Rendez-vous personnel",
+                "start": "2027-03-03T14:00",
+                "end": "2027-03-03T15:00"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Repeat of an earlier request with the same key: the block as it is now",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "true",
+                "schema": {
+                  "type": "string",
+                  "const": "true"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleBlockResult"
+                },
+                "example": {
+                  "timeZone": "Europe/Paris",
+                  "block": {
+                    "id": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d",
+                    "title": "Rendez-vous personnel",
+                    "note": null,
+                    "start": "2027-03-03T14:00",
+                    "end": "2027-03-03T15:00",
+                    "startsAt": "2027-03-03T13:00:00.000Z",
+                    "endsAt": "2027-03-03T14:00:00.000Z",
+                    "createdAt": "2027-03-01T08:00:00.000Z",
+                    "updatedAt": "2027-03-01T08:00:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleBlockResult"
+                },
+                "example": {
+                  "timeZone": "Europe/Paris",
+                  "block": {
+                    "id": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d",
+                    "title": "Rendez-vous personnel",
+                    "note": null,
+                    "start": "2027-03-03T14:00",
+                    "end": "2027-03-03T15:00",
+                    "startsAt": "2027-03-03T13:00:00.000Z",
+                    "endsAt": "2027-03-03T14:00:00.000Z",
+                    "createdAt": "2027-03-01T08:00:00.000Z",
+                    "updatedAt": "2027-03-01T08:00:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body or key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "VALIDATION_FAILED": {
+                    "value": {
+                      "message": "Validation failed",
+                      "code": "VALIDATION_FAILED",
+                      "errors": [
+                        {
+                          "field": [
+                            "end"
+                          ],
+                          "message": "Invalid input"
+                        }
+                      ]
+                    }
+                  },
+                  "IDEMPOTENCY_KEY_REQUIRED": {
+                    "value": {
+                      "message": "Idempotency-Key header is required",
+                      "code": "IDEMPOTENCY_KEY_REQUIRED"
+                    }
+                  },
+                  "IDEMPOTENCY_KEY_INVALID": {
+                    "value": {
+                      "message": "Idempotency-Key must be 8–128 characters of A–Z, a–z, 0–9, _ or -",
+                      "code": "IDEMPOTENCY_KEY_INVALID"
+                    }
+                  },
+                  "INVALID_JSON": {
+                    "value": {
+                      "message": "Malformed JSON request body",
+                      "code": "INVALID_JSON"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No, invalid, expired or revoked ID token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "AUTH_REQUIRED": {
+                    "value": {
+                      "message": "Authentication required",
+                      "code": "AUTH_REQUIRED"
+                    }
+                  },
+                  "INVALID_TOKEN": {
+                    "value": {
+                      "message": "Invalid ID token",
+                      "code": "INVALID_TOKEN"
+                    }
+                  },
+                  "TOKEN_EXPIRED": {
+                    "value": {
+                      "message": "ID token expired; refresh it and retry",
+                      "code": "TOKEN_EXPIRED"
+                    }
+                  },
+                  "SESSION_REVOKED": {
+                    "value": {
+                      "message": "Session revoked; sign in again",
+                      "code": "SESSION_REVOKED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "ACCOUNT_DISABLED": {
+                    "value": {
+                      "message": "Account disabled",
+                      "code": "ACCOUNT_DISABLED"
+                    }
+                  },
+                  "FORBIDDEN": {
+                    "value": {
+                      "message": "Forbidden",
+                      "code": "FORBIDDEN"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Confirmed bookings in the way",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "BLOCK_CONFLICT": {
+                    "value": {
+                      "message": "The block would overlap confirmed bookings or their breaks; resolve them first",
+                      "code": "BLOCK_CONFLICT",
+                      "conflicts": [
+                        {
+                          "bookingId": "8f0c2b1e-4a5d-4c6e-9f7a-1b2c3d4e5f60",
+                          "startsAt": "2027-03-03T12:00:00.000Z",
+                          "endsAt": "2027-03-03T12:50:00.000Z",
+                          "serviceName": "Massage example"
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "The block of this request was deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "BLOCK_DELETED": {
+                    "value": {
+                      "message": "The block created by this request has been deleted",
+                      "code": "BLOCK_DELETED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Key reused for another request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "IDEMPOTENCY_KEY_REUSED": {
+                    "value": {
+                      "message": "This Idempotency-Key was already used for a different request",
+                      "code": "IDEMPOTENCY_KEY_REUSED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying (same as retryAfterSeconds)",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "AUTH_UNAVAILABLE": {
+                    "value": {
+                      "message": "Authentication is temporarily unavailable; retry later",
+                      "code": "AUTH_UNAVAILABLE",
+                      "retryAfterSeconds": 5
+                    }
+                  },
+                  "CALENDAR_BUSY": {
+                    "value": {
+                      "message": "The calendar is busy; retry shortly",
+                      "code": "CALENDAR_BUSY",
+                      "retryAfterSeconds": 2
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/schedule/blocks/{blockId}": {
+      "get": {
+        "operationId": "getScheduleBlock",
+        "tags": [
+          "Admin: schedule"
+        ],
+        "summary": "One block",
+        "description": "Verified administrator only.",
+        "security": [
+          {
+            "firebaseIdToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "blockId",
+            "in": "path",
+            "required": true,
+            "description": "Block id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "example": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The block",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleBlockResult"
+                },
+                "example": {
+                  "timeZone": "Europe/Paris",
+                  "block": {
+                    "id": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d",
+                    "title": "Rendez-vous personnel",
+                    "note": null,
+                    "start": "2027-03-03T14:00",
+                    "end": "2027-03-03T15:00",
+                    "startsAt": "2027-03-03T13:00:00.000Z",
+                    "endsAt": "2027-03-03T14:00:00.000Z",
+                    "createdAt": "2027-03-01T08:00:00.000Z",
+                    "updatedAt": "2027-03-01T08:00:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No, invalid, expired or revoked ID token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "AUTH_REQUIRED": {
+                    "value": {
+                      "message": "Authentication required",
+                      "code": "AUTH_REQUIRED"
+                    }
+                  },
+                  "INVALID_TOKEN": {
+                    "value": {
+                      "message": "Invalid ID token",
+                      "code": "INVALID_TOKEN"
+                    }
+                  },
+                  "TOKEN_EXPIRED": {
+                    "value": {
+                      "message": "ID token expired; refresh it and retry",
+                      "code": "TOKEN_EXPIRED"
+                    }
+                  },
+                  "SESSION_REVOKED": {
+                    "value": {
+                      "message": "Session revoked; sign in again",
+                      "code": "SESSION_REVOKED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "ACCOUNT_DISABLED": {
+                    "value": {
+                      "message": "Account disabled",
+                      "code": "ACCOUNT_DISABLED"
+                    }
+                  },
+                  "FORBIDDEN": {
+                    "value": {
+                      "message": "Forbidden",
+                      "code": "FORBIDDEN"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such block",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "BLOCK_NOT_FOUND": {
+                    "value": {
+                      "message": "Schedule block not found",
+                      "code": "BLOCK_NOT_FOUND"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Firebase cannot be reached to verify the token",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying (same as retryAfterSeconds)",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "AUTH_UNAVAILABLE": {
+                    "value": {
+                      "message": "Authentication is temporarily unavailable; retry later",
+                      "code": "AUTH_UNAVAILABLE",
+                      "retryAfterSeconds": 5
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateScheduleBlock",
+        "tags": [
+          "Admin: schedule"
+        ],
+        "summary": "Change a block",
+        "description": "Any of `title`, `note` (`null` removes it), `start`, `end`; the others keep their values. The resulting bounds are checked by the rules of creating a block on every change, also of the title or note only (`400`): a past block can be read and deleted, not changed. Moved bounds are refused with `409 BLOCK_CONFLICT` if a confirmed booking or its break would touch them. Repeating a request changes nothing (`changed: false`). Under the calendar lock; no events and no emails. Verified administrator only.",
+        "security": [
+          {
+            "firebaseIdToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "blockId",
+            "in": "path",
+            "required": true,
+            "description": "Block id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "example": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "title": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "note": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "maxLength": 500
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "start": {
+                    "type": "string",
+                    "pattern": "^(\\d{4}-\\d{2}-\\d{2})T(\\d{2}):(\\d{2})$"
+                  },
+                  "end": {
+                    "type": "string",
+                    "pattern": "^(\\d{4}-\\d{2}-\\d{2})T(\\d{2}):(\\d{2})$"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "example": {
+                "end": "2027-03-03T15:30"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The block now",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleBlockUpdateResult"
+                },
+                "example": {
+                  "timeZone": "Europe/Paris",
+                  "block": {
+                    "id": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d",
+                    "title": "Rendez-vous personnel",
+                    "note": null,
+                    "start": "2027-03-03T14:00",
+                    "end": "2027-03-03T15:30",
+                    "startsAt": "2027-03-03T13:00:00.000Z",
+                    "endsAt": "2027-03-03T14:30:00.000Z",
+                    "createdAt": "2027-03-01T08:00:00.000Z",
+                    "updatedAt": "2027-03-01T09:00:00.000Z"
+                  },
+                  "changed": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "VALIDATION_FAILED": {
+                    "value": {
+                      "message": "Validation failed",
+                      "code": "VALIDATION_FAILED",
+                      "errors": [
+                        {
+                          "field": [
+                            "end"
+                          ],
+                          "message": "Invalid input"
+                        }
+                      ]
+                    }
+                  },
+                  "INVALID_JSON": {
+                    "value": {
+                      "message": "Malformed JSON request body",
+                      "code": "INVALID_JSON"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No, invalid, expired or revoked ID token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "AUTH_REQUIRED": {
+                    "value": {
+                      "message": "Authentication required",
+                      "code": "AUTH_REQUIRED"
+                    }
+                  },
+                  "INVALID_TOKEN": {
+                    "value": {
+                      "message": "Invalid ID token",
+                      "code": "INVALID_TOKEN"
+                    }
+                  },
+                  "TOKEN_EXPIRED": {
+                    "value": {
+                      "message": "ID token expired; refresh it and retry",
+                      "code": "TOKEN_EXPIRED"
+                    }
+                  },
+                  "SESSION_REVOKED": {
+                    "value": {
+                      "message": "Session revoked; sign in again",
+                      "code": "SESSION_REVOKED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "ACCOUNT_DISABLED": {
+                    "value": {
+                      "message": "Account disabled",
+                      "code": "ACCOUNT_DISABLED"
+                    }
+                  },
+                  "FORBIDDEN": {
+                    "value": {
+                      "message": "Forbidden",
+                      "code": "FORBIDDEN"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such block",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "BLOCK_NOT_FOUND": {
+                    "value": {
+                      "message": "Schedule block not found",
+                      "code": "BLOCK_NOT_FOUND"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Confirmed bookings in the way",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "BLOCK_CONFLICT": {
+                    "value": {
+                      "message": "The block would overlap confirmed bookings or their breaks; resolve them first",
+                      "code": "BLOCK_CONFLICT",
+                      "conflicts": [
+                        {
+                          "bookingId": "8f0c2b1e-4a5d-4c6e-9f7a-1b2c3d4e5f60",
+                          "startsAt": "2027-03-03T12:00:00.000Z",
+                          "endsAt": "2027-03-03T12:50:00.000Z",
+                          "serviceName": "Massage example"
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying (same as retryAfterSeconds)",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "AUTH_UNAVAILABLE": {
+                    "value": {
+                      "message": "Authentication is temporarily unavailable; retry later",
+                      "code": "AUTH_UNAVAILABLE",
+                      "retryAfterSeconds": 5
+                    }
+                  },
+                  "CALENDAR_BUSY": {
+                    "value": {
+                      "message": "The calendar is busy; retry shortly",
+                      "code": "CALENDAR_BUSY",
+                      "retryAfterSeconds": 2
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteScheduleBlock",
+        "tags": [
+          "Admin: schedule"
+        ],
+        "summary": "Delete a block for good",
+        "description": "Its time is free for booking again at once (subject to the other rules). Deleting a missing block answers `deleted: false`. A later repeat of the request that created it is `410 BLOCK_DELETED`. No events and no emails. Verified administrator only.",
+        "security": [
+          {
+            "firebaseIdToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "blockId",
+            "in": "path",
+            "required": true,
+            "description": "Block id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "example": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted, or there was no such block",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "deleted": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "deleted"
+                  ],
+                  "additionalProperties": false
+                },
+                "example": {
+                  "id": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d",
+                  "deleted": true
                 }
               }
             }
@@ -9442,7 +10558,14 @@
               "intervals"
             ],
             "additionalProperties": false,
-            "description": "What can be booked now"
+            "description": "What can be booked now: the working hours. Blocks are not cut out of them: see `blocks`"
+          },
+          "blocks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ScheduleBlock"
+            },
+            "description": "Blocks of the calendar overlapping this date, by start; their time (plus a break on each side) takes no bookings"
           }
         },
         "required": [
@@ -9452,7 +10575,8 @@
           "source",
           "intervals",
           "closure",
-          "effective"
+          "effective",
+          "blocks"
         ],
         "additionalProperties": false
       },
@@ -9542,6 +10666,144 @@
           "timeZone",
           "days",
           "bookings"
+        ],
+        "additionalProperties": false
+      },
+      "ScheduleBlock": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string",
+            "description": "Shown to the admin only (1–100 characters)"
+          },
+          "note": {
+            "description": "Optional, admin only (up to 500 characters); null: none",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "start": {
+            "type": "string",
+            "description": "Local date and time of the studio (Europe/Paris), YYYY-MM-DDTHH:MM, no offset",
+            "examples": [
+              "2027-03-02T14:00"
+            ]
+          },
+          "end": {
+            "type": "string",
+            "description": "Local end; a block ending at midnight shows the next date at 00:00",
+            "examples": [
+              "2027-03-02T14:00"
+            ]
+          },
+          "startsAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Moment in UTC, ISO 8601 with Z",
+            "examples": [
+              "2027-03-02T08:00:00.000Z"
+            ]
+          },
+          "endsAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Moment in UTC, ISO 8601 with Z",
+            "examples": [
+              "2027-03-02T08:00:00.000Z"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Moment in UTC, ISO 8601 with Z",
+            "examples": [
+              "2027-03-02T08:00:00.000Z"
+            ]
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Moment in UTC, ISO 8601 with Z",
+            "examples": [
+              "2027-03-02T08:00:00.000Z"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "note",
+          "start",
+          "end",
+          "startsAt",
+          "endsAt",
+          "createdAt",
+          "updatedAt"
+        ],
+        "additionalProperties": false
+      },
+      "ScheduleBlockResult": {
+        "type": "object",
+        "properties": {
+          "timeZone": {
+            "type": "string",
+            "const": "Europe/Paris"
+          },
+          "block": {
+            "$ref": "#/components/schemas/ScheduleBlock"
+          }
+        },
+        "required": [
+          "timeZone",
+          "block"
+        ],
+        "additionalProperties": false
+      },
+      "ScheduleBlockUpdateResult": {
+        "type": "object",
+        "properties": {
+          "timeZone": {
+            "type": "string",
+            "const": "Europe/Paris"
+          },
+          "block": {
+            "$ref": "#/components/schemas/ScheduleBlock"
+          },
+          "changed": {
+            "type": "boolean",
+            "description": "false: the block already had these values, nothing was written"
+          }
+        },
+        "required": [
+          "timeZone",
+          "block",
+          "changed"
+        ],
+        "additionalProperties": false
+      },
+      "ScheduleBlockList": {
+        "type": "object",
+        "properties": {
+          "timeZone": {
+            "type": "string",
+            "const": "Europe/Paris"
+          },
+          "blocks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ScheduleBlock"
+            },
+            "description": "By start"
+          }
+        },
+        "required": [
+          "timeZone",
+          "blocks"
         ],
         "additionalProperties": false
       },
